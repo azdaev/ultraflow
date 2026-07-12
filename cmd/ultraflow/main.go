@@ -122,8 +122,13 @@ func main() {
 	root.Handle("/mcp/", mcpHandler)
 	root.Handle("/", webMux)
 
-	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("ultraflow listening on http://localhost%s  (mcp: %s)", addr, mcpURL)
+	// Bind loopback only. The whole system is local-only by design — the WebSocket
+	// terminal handler already restricts origins to localhost — and the HTTP API and
+	// /mcp endpoint are unauthenticated. Binding all interfaces (":port") would let
+	// anyone on the network reach create_task / POST /api/tasks, whose body becomes an
+	// agent prompt run under bypassPermissions — i.e. remote code execution on the host.
+	addr := fmt.Sprintf("127.0.0.1:%d", *port)
+	log.Printf("ultraflow listening on http://%s  (mcp: %s)", addr, mcpURL)
 
 	srv := &http.Server{Addr: addr, Handler: root}
 	go func() {

@@ -78,7 +78,7 @@ func (o *Orchestrator) buildStepReengagePrompt(t model.Task, step flow.Step, gui
 	return fmt.Sprintf(`You got stuck on the %s step of this Ultraflow task and asked the human for help. They responded.
 
 Task ID: %s
-Title: %s
+Title: %s%s
 
 Their guidance:
 %s
@@ -86,7 +86,7 @@ Their guidance:
 Use it to get unstuck and complete this step. Your earlier work is still here in this
 working directory.
 
-%s`, step.Role, t.ID, t.Title, strings.TrimSpace(guidance), stepFinishContract(t.ID))
+%s`, step.Role, t.ID, t.Title, taskBrief(t), strings.TrimSpace(guidance), stepFinishContract(t.ID))
 }
 
 // buildStepSelfHealPrompt resumes a work step's conversation after it crashed, so
@@ -95,11 +95,11 @@ func (o *Orchestrator) buildStepSelfHealPrompt(t model.Task, step flow.Step, ret
 	return fmt.Sprintf(`Your last attempt at the %s step of this Ultraflow task ended with an ERROR — the process exited unexpectedly.
 
 Task ID: %s
-Title: %s
+Title: %s%s
 
 This is self-heal retry %d of %d. Work out what went wrong, fix the root cause, and
 complete this step — your earlier work is still here in this working directory. Don't
 just repeat what failed; diagnose it first.
 
-%s`, step.Role, t.ID, t.Title, retry, budget, stepFinishContract(t.ID))
+%s`, step.Role, t.ID, t.Title, taskBrief(t), retry, budget, stepFinishContract(t.ID))
 }
