@@ -19,6 +19,7 @@ import (
 
 	"ultraflow/internal/core"
 	"ultraflow/internal/devserver"
+	"ultraflow/internal/journal"
 	mcpserver "ultraflow/internal/mcp"
 	"ultraflow/internal/model"
 	"ultraflow/internal/orchestrator"
@@ -39,8 +40,24 @@ func main() {
 		wtRoot    = flag.String("worktrees", ".ultraflow/worktrees", "root dir for per-task git worktrees")
 		attachDir = flag.String("attachments", ".ultraflow/attachments", "dir for images uploaded from a composer")
 		maxConc   = flag.Int("max-concurrent", 3, "max concurrent agents (subscription rate-limit guard)")
+		journalP  = flag.String("journal", "", "verbose activity journal (JSONL) path; default <db-dir>/journal.jsonl, 'off' to disable")
 	)
 	flag.Parse()
+
+	// Verbose activity journal: user clicks, task-status moves, agent lifecycle. On
+	// by default next to the DB so a couple of days of real use can be analysed
+	// after the fact; `-journal off` disables it. Best-effort — a failure to open
+	// only logs and leaves journaling off, never stops the daemon.
+	if jp := *journalP; jp != "off" {
+		if jp == "" {
+			jp = filepath.Join(filepath.Dir(*dbPath), "journal.jsonl")
+		}
+		if err := journal.Open(jp); err != nil {
+			log.Printf("journal: couldn't open %s: %v", jp, err)
+		} else {
+			log.Printf("journaling activity to %s", jp)
+		}
+	}
 
 	st, err := store.Open(*dbPath)
 	if err != nil {

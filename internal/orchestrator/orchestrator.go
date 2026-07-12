@@ -20,6 +20,7 @@ import (
 	"ultraflow/internal/core"
 	"ultraflow/internal/devserver"
 	"ultraflow/internal/flow"
+	"ultraflow/internal/journal"
 	"ultraflow/internal/model"
 	"ultraflow/internal/port"
 	"ultraflow/internal/terminal"
@@ -428,6 +429,7 @@ func (o *Orchestrator) runAgent(taskID, dir string, isClaude bool, cmd *exec.Cmd
 	}
 	o.svc.AgentStarted(taskID)
 	o.svc.AppendTaskEvent(taskID, "status", runningMsg)
+	journal.Log("agent", "start", map[string]any{"task": taskID, "dir": dir, "claude": isClaude})
 
 	// Free the slot when the agent ends its turn without finish_task: an interactive
 	// TUI never exits on its own, so without this it would idle at its prompt holding
@@ -448,6 +450,16 @@ func (o *Orchestrator) runAgent(taskID, dir string, isClaude bool, cmd *exec.Cmd
 	if werr != nil {
 		log.Printf("task %s: agent exited before finishing: %v", taskID, werr)
 	}
+	// Journal the exit with its signal disposition so the analysis can finally tell
+	// a normal step/idle close (the daemon SIGKILLs the PTY to end a turn) from a
+	// human stop (SIGINT/SIGTERM) or a real crash. The event stream just above in
+	// the journal ("advancing the flow" / "went idle" / an error) gives the reason.
+	fields := map[string]any{"task": taskID, "ok": werr == nil}
+	if werr != nil {
+		fields["err"] = werr.Error()
+		fields["human_stop"] = stoppedByHuman(werr)
+	}
+	journal.Log("agent", "exit", fields)
 	return werr, true
 }
 

@@ -9,6 +9,7 @@ import { TaskDetail } from "./components/TaskDetail";
 import type { AttentionItem } from "./components/RailCard";
 import { RunsContext } from "./runsContext";
 import { BoardPage } from "./board/BoardPage";
+import { installClickJournal, logUI } from "./journal";
 
 export function App() {
   const { tasks, requests, activity, activityKind, projects, runs, context } = useBoard();
@@ -22,6 +23,10 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+
+  // Verbose activity journal (see ./journal): a delegated click listener records
+  // every actionable click for a couple of days of after-the-fact analysis.
+  useEffect(() => installClickJournal(), []);
 
   // Pressing "n" opens the composer (Linear/GitHub style). ⌘N is a browser-chrome
   // shortcut (new window) that the page can never intercept, so we use a plain key
@@ -98,7 +103,10 @@ export function App() {
         now={now}
         running={running}
         queued={queued}
-        onOpenTask={setOpenTaskId}
+        onOpenTask={(id) => {
+          logUI("open_task", { task: id });
+          setOpenTaskId(id);
+        }}
         onNewTask={openComposer}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenChangelog={() => setChangelogOpen(true)}

@@ -22,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"ultraflow/internal/core"
+	"ultraflow/internal/journal"
 	"ultraflow/internal/model"
 	"ultraflow/internal/terminal"
 )
@@ -113,6 +114,7 @@ func New(svc *core.Service, term *terminal.Manager, staticDir, attachDir string,
 	r.POST("/api/uploads", s.uploadImages)
 	r.GET("/api/uploads/:name", s.serveUpload)
 	r.GET("/api/events", s.events)
+	r.POST("/api/journal", s.journalUI)
 	// The React build (and its assets) is everything that isn't an API route; serve
 	// it as the fallback so client-side paths reach index.html.
 	switch {
@@ -455,6 +457,24 @@ func (s *server) deleteTask(c *gin.Context) {
 
 // archiveClosed removes every closed (done or cancelled) task in one sweep — the
 // board's "Clear" affordance so the Done column doesn't grow without bound.
+// journalUI records a front-end interaction (a click, a drag, a panel opened) in
+// the activity journal. The body is a free JSON object; "event" names it and the
+// rest are recorded as fields. Fire-and-forget: always 204, never errors the UI.
+func (s *server) journalUI(c *gin.Context) {
+	var body map[string]any
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil || body == nil {
+		c.Status(http.StatusNoContent)
+		return
+	}
+	event, _ := body["event"].(string)
+	delete(body, "event")
+	if event == "" {
+		event = "interaction"
+	}
+	journal.Log("ui", event, body)
+	c.Status(http.StatusNoContent)
+}
+
 func (s *server) archiveClosed(c *gin.Context) {
 	n, err := s.svc.ArchiveClosed()
 	if err != nil {

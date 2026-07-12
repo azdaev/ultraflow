@@ -19,6 +19,7 @@ import (
 
 	"ultraflow/internal/devserver"
 	"ultraflow/internal/flow"
+	"ultraflow/internal/journal"
 	"ultraflow/internal/model"
 	"ultraflow/internal/port"
 	"ultraflow/internal/store"
@@ -151,6 +152,10 @@ func NewID() string {
 }
 
 func (s *Service) publish(kind string, payload any) {
+	// Mirror every board fan-out into the activity journal (no-op when off): this
+	// single tap captures task_updated (status moves), event (all task events),
+	// context, and runs — the whole task/agent story — without new call sites.
+	journal.Log("bus", kind, map[string]any{"data": payload})
 	msg, _ := json.Marshal(map[string]any{"kind": kind, "data": payload})
 	s.Broker.Publish(msg)
 }
