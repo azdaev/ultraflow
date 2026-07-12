@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -320,6 +322,73 @@ func (s *Service) TaskDiff(id string) (worktree.DiffResult, error) {
 	return s.wt.Diff(p.RepoPath, id)
 }
 
+// ShotsDir resolves the directory an agent saves screenshots into for a task
+// (<worktree>/.ultraflow/shots). Errors when the task ran in place (no worktree
+// to hold them), so callers 404 / show an empty gallery.
+func (s *Service) ShotsDir(taskID string) (string, error) {
+	t, err := s.store.GetTask(taskID)
+	if err != nil {
+		return "", err
+	}
+	if t.Worktree == "" {
+		return "", fmt.Errorf("no worktree")
+	}
+	return filepath.Join(t.Worktree, ".ultraflow", "shots"), nil
+}
+
+// TaskShots lists the screenshot filenames the agent saved for a task, in
+// directory order. Best-effort: a missing dir / no worktree is simply an empty
+// gallery, never an error.
+func (s *Service) TaskShots(taskID string) []string {
+	names := []string{}
+	dir, err := s.ShotsDir(taskID)
+	if err != nil {
+		return names
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return names
+	}
+	for _, e := range entries {
+		if !e.IsDir() && IsImageFile(e.Name()) {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+// IsImageFile reports whether a filename looks like a browser-renderable image,
+// so the review/checkpoint galleries only list displayable screenshots.
+func IsImageFile(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		return true
+	}
+	return false
+}
+
+// captureContext snapshots the fast context for a task's ask_human checkpoint:
+// the worktree's change magnitude (+added −removed and the changed-file list)
+// plus any screenshots the agent saved. Best-effort — a task with no worktree
+// (M0 shared workdir) or no edits still asks cleanly with zero magnitude.
+func (s *Service) captureContext(taskID string) (added, removed int, files []model.ChangedFile, shots []string) {
+	files = []model.ChangedFile{}
+	if d, err := s.TaskDiff(taskID); err == nil {
+		for _, f := range d.Files {
+			// Ultraflow's own metadata (screenshots and the like under .ultraflow/)
+			// isn't the agent's code change — the shots have their own gallery — so
+			// keep it out of the magnitude the human reads as "what changed".
+			if strings.HasPrefix(f.Path, ".ultraflow/") {
+				continue
+			}
+			added += f.Added
+			removed += f.Removed
+			files = append(files, model.ChangedFile{Path: f.Path, Added: f.Added, Removed: f.Removed})
+		}
+	}
+	return added, removed, files, s.TaskShots(taskID)
+}
+
 // --- projects ---
 
 // projectPalette holds board hues for projects — deliberately distinct from the
@@ -421,6 +490,7 @@ func (s *Service) SetMaxConcurrent(n int) (int, error) {
 // terminal's stdin and the agent resumes from its next input. Returns the
 // created request so the caller can tell the agent what it just asked.
 func (s *Service) AskHuman(taskID, question string, options []string, contextStr string) (model.HumanRequest, error) {
+	added, removed, files, shots := s.captureContext(taskID)
 	req := model.HumanRequest{
 		ID:        NewID(),
 		TaskID:    taskID,
@@ -428,6 +498,10 @@ func (s *Service) AskHuman(taskID, question string, options []string, contextStr
 		Options:   options,
 		Context:   contextStr,
 		Status:    "pending",
+		Added:     added,
+		Removed:   removed,
+		Files:     files,
+		Shots:     shots,
 		CreatedAt: time.Now(),
 	}
 	if err := s.store.CreateHumanRequest(req); err != nil {

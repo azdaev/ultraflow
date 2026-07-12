@@ -4,6 +4,7 @@ import { api, type HumanRequest, type Task, type TaskEvent } from "../api";
 import { agentColor, agentLabel, ago, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { AnswerBox } from "./AnswerBox";
+import { CheckpointContext } from "./CheckpointContext";
 import { AgentTerminal } from "./AgentTerminal";
 import { ReviewPanel } from "./ReviewPanel";
 import { ReviseBox } from "./ReviseBox";
@@ -156,12 +157,10 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                     <p className="text-[15px] font-semibold leading-snug text-ink">
                       {request.question}
                     </p>
-                    {request.context && (
-                      <p className="mt-1.5 rounded-lg bg-surface px-2.5 py-1.5 text-[12px] leading-relaxed text-muted">
-                        {request.context}
-                      </p>
-                    )}
                     <div className="mt-2">
+                      <CheckpointContext request={request} />
+                    </div>
+                    <div className="mt-3">
                       <AnswerBox request={request} />
                     </div>
                   </div>

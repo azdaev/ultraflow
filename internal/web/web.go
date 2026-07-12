@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -353,59 +352,27 @@ func (s *server) revise(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// shotsDir resolves the screenshots directory an agent writes into for a task's
-// worktree. Empty worktree (ran in place) yields an error so callers 404/empty.
-func (s *server) shotsDir(taskID string) (string, error) {
-	t, err := s.svc.GetTask(taskID)
-	if err != nil {
-		return "", err
-	}
-	if t.Worktree == "" {
-		return "", fmt.Errorf("no worktree")
-	}
-	return filepath.Join(t.Worktree, ".ultraflow", "shots"), nil
-}
-
 // listShots returns the screenshot filenames the agent left for a task, if any.
-// Absent dir / no worktree is not an error — it's simply an empty gallery.
+// Absent dir / no worktree is not an error — it's simply an empty gallery. Same
+// capture the daemon snapshots onto an ask_human request (see core.TaskShots).
 func (s *server) listShots(w http.ResponseWriter, r *http.Request) {
-	names := []string{}
-	if dir, err := s.shotsDir(r.PathValue("id")); err == nil {
-		if entries, err := os.ReadDir(dir); err == nil {
-			for _, e := range entries {
-				if !e.IsDir() && isImage(e.Name()) {
-					names = append(names, e.Name())
-				}
-			}
-		}
-	}
-	writeJSON(w, http.StatusOK, names)
+	writeJSON(w, http.StatusOK, s.svc.TaskShots(r.PathValue("id")))
 }
 
 // getShot serves one screenshot image by name. The name is validated to a bare
 // image filename (no path separators or "..") so it can't escape the shots dir.
 func (s *server) getShot(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") || !isImage(name) {
+	if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") || !core.IsImageFile(name) {
 		http.Error(w, "bad screenshot name", http.StatusBadRequest)
 		return
 	}
-	dir, err := s.shotsDir(r.PathValue("id"))
+	dir, err := s.svc.ShotsDir(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	http.ServeFile(w, r, filepath.Join(dir, name))
-}
-
-// isImage reports whether a filename looks like a browser-renderable image, so
-// the review gallery only lists/serves displayable screenshots.
-func isImage(name string) bool {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
-		return true
-	}
-	return false
 }
 
 // terminal upgrades to a WebSocket bridged to the task's live PTY session: it

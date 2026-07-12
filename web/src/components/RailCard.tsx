@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { api, type HumanRequest, type Task } from "../api";
 import { agentLabel, ago, copyText } from "../util";
 import { AnswerBox } from "./AnswerBox";
+import { CheckpointContext } from "./CheckpointContext";
 import { ContextMenu, useContextMenu, type MenuItem } from "./ContextMenu";
 
 export type AttentionItem =
@@ -87,11 +88,9 @@ function CheckpointCard({
         <p className="mt-1 text-[16px] font-semibold leading-snug text-ink">
           {request.question}
         </p>
-        {request.context && (
-          <p className="mt-1.5 rounded-lg bg-board px-2.5 py-1.5 text-[12px] leading-relaxed text-muted">
-            {request.context}
-          </p>
-        )}
+        <div className="mt-1.5">
+          <CheckpointContext request={request} />
+        </div>
         <div className="mt-auto pt-2">
           <AnswerBox request={request} />
         </div>

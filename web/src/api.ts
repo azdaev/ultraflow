@@ -47,6 +47,13 @@ export interface HumanRequest {
   context: string;
   answer: string;
   status: string;
+  // Fast context the daemon captured server-side at ask_human time: the
+  // worktree's change magnitude (+added −removed across `files`) and the
+  // screenshots the agent saved. The decision surfaces lead with these.
+  added: number;
+  removed: number;
+  files: DiffFile[] | null;
+  shots: string[] | null;
   createdAt: string;
   answeredAt?: string;
 }

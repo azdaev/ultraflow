@@ -183,7 +183,7 @@ function Changes({ taskId, sig }: { taskId: string; sig?: string }) {
 // DiffBody renders a unified patch with light per-line coloring (added green,
 // removed rust, hunk headers steel), horizontally scrollable so long lines don't
 // break the layout.
-function DiffBody({ patch, truncated }: { patch: string; truncated: boolean }) {
+export function DiffBody({ patch, truncated }: { patch: string; truncated: boolean }) {
   const lines = patch.split("\n");
   return (
     <div className="max-h-[50vh] overflow-auto border-t border-white/10 p-3">

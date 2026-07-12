@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -280,6 +281,93 @@ func TestAskHumanPostsAndDelivers(t *testing.T) {
 	}
 	if got := string(ft.writes[task.ID]); got != "yes\r" {
 		t.Fatalf("expected answer delivered to terminal as %q, got %q", "yes\r", got)
+	}
+}
+
+// TestAskHumanCapturesContext is the acceptance check: an ask_human checkpoint on
+// a task with real edits and a saved screenshot captures the +N −N magnitude, the
+// changed-file list, and the shot filenames server-side — without the agent
+// hand-formatting them into the context string.
+func TestAskHumanCapturesContext(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	// A throwaway repo with one commit — the base the worktree forks from.
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"}, {"config", "user.email", "t@t.dev"}, {"config", "user.name", "t"},
+		{"commit", "--allow-empty", "-q", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	svc := newTestService(t)
+	wtRoot := filepath.Join(t.TempDir(), "worktrees")
+	m := worktree.New(wtRoot)
+	svc.UseWorktrees(m)
+
+	if _, err := svc.CreateProject("proj", repo); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, _ := svc.CreateTask("t", "", "proj")
+
+	wt, err := m.Create(repo, task.ID)
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	svc.SetWorktree(task.ID, wt.Path)
+
+	// The agent's work: a new file (+3) and a saved screenshot.
+	if err := os.WriteFile(filepath.Join(wt.Path, "feature.txt"), []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatalf("write edit: %v", err)
+	}
+	shotsDir := filepath.Join(wt.Path, ".ultraflow", "shots")
+	if err := os.MkdirAll(shotsDir, 0o755); err != nil {
+		t.Fatalf("mkdir shots: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(shotsDir, "before.png"), []byte("png"), 0o644); err != nil {
+		t.Fatalf("write shot: %v", err)
+	}
+
+	req, err := svc.AskHuman(task.ID, "Ship it?", []string{"yes"}, "")
+	if err != nil {
+		t.Fatalf("ask_human: %v", err)
+	}
+
+	// The magnitude counts the real edit (feature.txt, +3) — captured server-side,
+	// not hand-formatted by the agent.
+	var feature *model.ChangedFile
+	for i := range req.Files {
+		if req.Files[i].Path == "feature.txt" {
+			feature = &req.Files[i]
+		}
+	}
+	if feature == nil || feature.Added != 3 || feature.Removed != 0 {
+		t.Fatalf("changed files = %+v; want feature.txt +3 −0", req.Files)
+	}
+	// The magnitude excludes Ultraflow's own .ultraflow/ metadata (the shot), so
+	// it reads as exactly the agent's +3, not +4.
+	if req.Added != 3 || req.Removed != 0 {
+		t.Fatalf("magnitude = +%d −%d; want +3 −0 (excluding .ultraflow metadata)", req.Added, req.Removed)
+	}
+	for _, f := range req.Files {
+		if strings.HasPrefix(f.Path, ".ultraflow/") {
+			t.Fatalf("changed files should exclude .ultraflow metadata, got %q", f.Path)
+		}
+	}
+	if len(req.Shots) != 1 || req.Shots[0] != "before.png" {
+		t.Fatalf("shots = %v; want [before.png]", req.Shots)
+	}
+
+	// And it survives the round trip through the store (the new columns persist).
+	got, err := svc.store.GetHumanRequest(req.ID)
+	if err != nil {
+		t.Fatalf("reload request: %v", err)
+	}
+	if got.Added != req.Added || len(got.Files) != len(req.Files) || len(got.Shots) != 1 {
+		t.Fatalf("persisted context lost: +%d files=%d shots=%d", got.Added, len(got.Files), len(got.Shots))
 	}
 }
 

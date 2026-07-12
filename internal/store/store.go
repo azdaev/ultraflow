@@ -50,8 +50,9 @@ func Open(path string) (*Store, error) {
 var migrations = []string{
 	schema,
 	settingsSchema,
-	selfHealSchema, // migration 3: tasks.attempt, tasks.max_attempts
-	portSchema,     // migration 4: tasks.port
+	selfHealSchema,     // migration 3: tasks.attempt, tasks.max_attempts
+	portSchema,         // migration 4: tasks.port
+	humanContextSchema, // migration 5: human_requests added/removed/files/shots
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -153,6 +154,17 @@ ALTER TABLE tasks ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3;
 // the board can show a clickable http://localhost:PORT link and the daemon can
 // re-reserve it after a restart. 0 means no port.
 const portSchema = `ALTER TABLE tasks ADD COLUMN port INTEGER NOT NULL DEFAULT 0;`
+
+// humanContextSchema (migration 5) attaches the server-captured fast context to
+// each request: the worktree's change magnitude (added/removed line counts plus
+// the changed-file list as JSON) and the screenshots the agent saved (JSON
+// filename list). Defaults keep pre-migration rows valid.
+const humanContextSchema = `
+ALTER TABLE human_requests ADD COLUMN added   INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE human_requests ADD COLUMN removed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE human_requests ADD COLUMN files   TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE human_requests ADD COLUMN shots   TEXT NOT NULL DEFAULT '[]';
+`
 
 // --- tasks ---
 
@@ -329,24 +341,30 @@ func (s *Store) DeleteProject(id string) error {
 
 func (s *Store) CreateHumanRequest(r model.HumanRequest) error {
 	opts, _ := json.Marshal(r.Options)
+	files, _ := json.Marshal(r.Files)
+	shots, _ := json.Marshal(r.Shots)
 	_, err := s.db.Exec(
-		`INSERT INTO human_requests (id,task_id,question,options,context,answer,status,created_at)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		r.ID, r.TaskID, r.Question, string(opts), r.Context, r.Answer, r.Status, r.CreatedAt)
+		`INSERT INTO human_requests (id,task_id,question,options,context,answer,status,added,removed,files,shots,created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.TaskID, r.Question, string(opts), r.Context, r.Answer, r.Status,
+		r.Added, r.Removed, string(files), string(shots), r.CreatedAt)
 	return err
 }
 
-const hrCols = `id,task_id,question,options,context,answer,status,created_at,answered_at`
+const hrCols = `id,task_id,question,options,context,answer,status,added,removed,files,shots,created_at,answered_at`
 
 func scanHumanRequest(sc interface{ Scan(...any) error }) (model.HumanRequest, error) {
 	var r model.HumanRequest
-	var opts string
+	var opts, files, shots string
 	var answeredAt sql.NullTime
-	err := sc.Scan(&r.ID, &r.TaskID, &r.Question, &opts, &r.Context, &r.Answer, &r.Status, &r.CreatedAt, &answeredAt)
+	err := sc.Scan(&r.ID, &r.TaskID, &r.Question, &opts, &r.Context, &r.Answer, &r.Status,
+		&r.Added, &r.Removed, &files, &shots, &r.CreatedAt, &answeredAt)
 	if err != nil {
 		return r, err
 	}
 	_ = json.Unmarshal([]byte(opts), &r.Options)
+	_ = json.Unmarshal([]byte(files), &r.Files)
+	_ = json.Unmarshal([]byte(shots), &r.Shots)
 	if answeredAt.Valid {
 		r.AnsweredAt = &answeredAt.Time
 	}

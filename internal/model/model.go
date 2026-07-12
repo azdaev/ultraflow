@@ -53,18 +53,35 @@ type Task struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
+// ChangedFile is one path a task touched, with its line magnitude — the
+// at-a-glance signal the board leads with (see spec.md "What to surface").
+type ChangedFile struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Removed int    `json:"removed"`
+}
+
 // HumanRequest is a blocking question an agent raised via ask_human. The agent's
 // MCP call is parked until Status becomes "answered" and Answer is filled.
+//
+// Added/Removed/Files/Shots are the fast context the daemon captures server-side
+// at ask_human time — the worktree's change magnitude and any screenshots the
+// agent saved — so the decision surfaces show what changed without the agent
+// hand-formatting it into Context.
 type HumanRequest struct {
-	ID         string     `json:"id"`
-	TaskID     string     `json:"taskId"`
-	Question   string     `json:"question"`
-	Options    []string   `json:"options"`
-	Context    string     `json:"context"`
-	Answer     string     `json:"answer"`
-	Status     string     `json:"status"` // pending, answered
-	CreatedAt  time.Time  `json:"createdAt"`
-	AnsweredAt *time.Time `json:"answeredAt,omitempty"`
+	ID         string        `json:"id"`
+	TaskID     string        `json:"taskId"`
+	Question   string        `json:"question"`
+	Options    []string      `json:"options"`
+	Context    string        `json:"context"`
+	Answer     string        `json:"answer"`
+	Status     string        `json:"status"` // pending, answered
+	Added      int           `json:"added"`
+	Removed    int           `json:"removed"`
+	Files      []ChangedFile `json:"files"`
+	Shots      []string      `json:"shots"`
+	CreatedAt  time.Time     `json:"createdAt"`
+	AnsweredAt *time.Time    `json:"answeredAt,omitempty"`
 }
 
 // Event is an append-only record of something that happened on a task, also
