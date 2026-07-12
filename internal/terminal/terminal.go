@@ -170,11 +170,13 @@ func (s *Session) Resize(rows, cols uint16) error {
 	return pty.Setsize(s.pty, &pty.Winsize{Rows: rows, Cols: cols})
 }
 
-// Wait blocks until the agent process exits, then closes the session.
+// Wait blocks until the agent process exits. It deliberately does NOT close the
+// session: after the process exits the PTY can still hold unread trailing output
+// (e.g. the agent's final lines), so closure is left to pump, which reads to EOF
+// first and then marks the session closed. Callers use Wait only to learn the
+// exit result.
 func (s *Session) Wait() error {
-	err := s.cmd.Wait()
-	s.markClosed()
-	return err
+	return s.cmd.Wait()
 }
 
 // Close terminates the process and tears the session down.

@@ -83,9 +83,6 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		o.sem <- struct{}{}
 		defer func() { <-o.sem }()
 
-		// Slot acquired — now it is genuinely running.
-		o.svc.UpdateStatus(t.ID, model.StatusRunning)
-
 		// Give the task its own isolated checkout so parallel agents don't collide.
 		// Falls back to the shared workdir when the task has no registered git repo.
 		// The worktree is intentionally kept after the run so the human can review
@@ -120,6 +117,9 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 			o.fail(t.ID, "couldn't start the agent terminal: "+err.Error())
 			return
 		}
+		// Flip to running only now the terminal exists, so the card's terminal never
+		// opens to a 404 before the session is registered.
+		o.svc.UpdateStatus(t.ID, model.StatusRunning)
 		o.svc.AppendTaskEvent(t.ID, "status", "running — open the card to watch or type in the live terminal")
 
 		if err := sess.Wait(); err != nil {

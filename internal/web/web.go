@@ -3,6 +3,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -230,12 +231,23 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no live terminal for this task", http.StatusNotFound)
 		return
 	}
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	// This terminal drives an agent running with bypassPermissions, so only allow
+	// connections from the local board itself (dev :5173, the built app :7787).
+	// A remote page's Origin is its own host, which the browser won't let it forge,
+	// so this blocks cross-site WebSocket hijacking.
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		OriginPatterns: []string{"localhost:*", "127.0.0.1:*", "[::1]:*"},
+	})
 	if err != nil {
 		return
 	}
 	defer c.CloseNow()
-	ctx := r.Context()
+
+	// Cancel when either direction fails, so a browser disconnect (which the reader
+	// goroutine notices) also unblocks the writer loop below — otherwise the handler
+	// leaks, blocked on a quiet session until the agent exits.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	scrollback, out, detach := sess.Attach()
 	defer detach()
@@ -248,6 +260,7 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 	// Browser → PTY: binary frames are keystrokes; a text frame is a control
 	// message (resize).
 	go func() {
+		defer cancel()
 		for {
 			typ, data, err := c.Read(ctx)
 			if err != nil {
@@ -270,13 +283,22 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// PTY → browser, until the session ends or the client falls behind.
-	for chunk := range out {
-		if err := c.Write(ctx, websocket.MessageBinary, chunk); err != nil {
+	// PTY → browser, until the session ends, the client falls behind, or it
+	// disconnects (ctx cancelled by the reader goroutine).
+	for {
+		select {
+		case <-ctx.Done():
 			return
+		case chunk, ok := <-out:
+			if !ok {
+				_ = c.Close(websocket.StatusNormalClosure, "session ended")
+				return
+			}
+			if err := c.Write(ctx, websocket.MessageBinary, chunk); err != nil {
+				return
+			}
 		}
 	}
-	_ = c.Close(websocket.StatusNormalClosure, "session ended")
 }
 
 func (s *server) taskEvents(w http.ResponseWriter, r *http.Request) {
