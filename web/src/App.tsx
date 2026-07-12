@@ -13,7 +13,7 @@ import { TaskDetail } from "./components/TaskDetail";
 import type { AttentionItem } from "./components/RailCard";
 
 export function App() {
-  const { tasks, requests, activity, projects, connected } = useBoard();
+  const { tasks, requests, activity, activityKind, projects, connected } = useBoard();
   const [layout, setLayout] = useLayout();
   const now = useNow(1000);
   const [composerOpen, setComposerOpen] = useState(false);
@@ -47,10 +47,14 @@ export function App() {
     for (const t of tasks) {
       if (t.status === "failed") {
         items.push({ type: "failed", task: t, activity: activity[t.id] });
+      } else if (t.status === "review" && activityKind[t.id] === "merge_failed") {
+        // A merge that couldn't land returns the card to review; raise it here so
+        // it isn't a silent dead-end with only a tiny inline error.
+        items.push({ type: "merge_failed", task: t, message: activity[t.id] });
       }
     }
     return items;
-  }, [requests, tasks, byId, activity]);
+  }, [requests, tasks, byId, activity, activityKind]);
 
   // Orange strictly for needs_human; failures counted (and shown) separately.
   const needCount = requests.length;

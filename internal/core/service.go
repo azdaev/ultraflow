@@ -173,7 +173,9 @@ func (s *Service) MergeTask(id string) error {
 
 	if _, err := s.wt.Merge(p.RepoPath, id, "Ultraflow: "+t.Title); err != nil {
 		_ = s.UpdateStatus(id, model.StatusReview) // keep the worktree for a retry
-		s.appendEvent(id, "status", "merge couldn't complete (your repo was left clean): "+err.Error())
+		// "merge_failed" (not "status") so the board can lift this into the
+		// attention rail instead of letting it read as a quiet status line.
+		s.appendEvent(id, "merge_failed", "merge couldn't complete (your repo was left clean): "+err.Error())
 		return err
 	}
 
@@ -182,6 +184,24 @@ func (s *Service) MergeTask(id string) error {
 		return err
 	}
 	s.appendEvent(id, "status", "merged and cleaned up the worktree")
+	return nil
+}
+
+// FinishReview marks a reviewed task done without a merge. It's for tasks that
+// ran in place (a non-git or shared-workdir project has no worktree to land), so
+// "merge" is meaningless — the human just confirms the work and closes it out.
+func (s *Service) FinishReview(id string) error {
+	t, err := s.store.GetTask(id)
+	if err != nil {
+		return err
+	}
+	if t.Status != model.StatusReview {
+		return fmt.Errorf("only a task in review can be marked done (this one is %s)", t.Status)
+	}
+	if err := s.UpdateStatus(id, model.StatusDone); err != nil {
+		return err
+	}
+	s.appendEvent(id, "status", "marked done by human")
 	return nil
 }
 
@@ -378,4 +398,11 @@ func (s *Service) TaskEvents(taskID string) ([]model.Event, error) {
 // LatestActivity returns the latest activity line per task for the board.
 func (s *Service) LatestActivity() (map[string]string, error) {
 	return s.store.LatestActivity()
+}
+
+// LatestActivityKind returns the kind of each task's latest activity line, so the
+// board can distinguish an ordinary status line from a "merge_failed" event it
+// should raise into the attention rail.
+func (s *Service) LatestActivityKind() (map[string]string, error) {
+	return s.store.LatestActivityKind()
 }

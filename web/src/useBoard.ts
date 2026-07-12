@@ -5,6 +5,7 @@ export interface BoardState {
   tasks: Task[];
   requests: HumanRequest[];
   activity: Record<string, string>;
+  activityKind: Record<string, string>;
   projects: Project[];
   connected: boolean;
   reload: () => void;
@@ -20,6 +21,7 @@ export function useBoard(): BoardState {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [requests, setRequests] = useState<HumanRequest[]>([]);
   const [activity, setActivity] = useState<Record<string, string>>({});
+  const [activityKind, setActivityKind] = useState<Record<string, string>>({});
   const [projects, setProjects] = useState<Project[]>([]);
   const [connected, setConnected] = useState(false);
 
@@ -29,6 +31,7 @@ export function useBoard(): BoardState {
       setTasks(b.tasks);
       setRequests(b.requests);
       setActivity(b.activity ?? {});
+      setActivityKind(b.activityKind ?? {});
       setProjects(b.projects ?? []);
     } catch {
       /* transient; SSE reconnect will resync */
@@ -56,25 +59,26 @@ export function useBoard(): BoardState {
       } catch {
         return;
       }
-      applyEvent(env, { setTasks, setRequests, setActivity, setProjects });
+      applyEvent(env, { setTasks, setRequests, setActivity, setActivityKind, setProjects });
     };
 
     return () => es.close();
   }, []);
 
-  return { tasks, requests, activity, projects, connected, reload };
+  return { tasks, requests, activity, activityKind, projects, connected, reload };
 }
 
 type Setters = {
   setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
   setRequests: React.Dispatch<React.SetStateAction<HumanRequest[]>>;
   setActivity: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  setActivityKind: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
 };
 
 function applyEvent(
   env: Envelope,
-  { setTasks, setRequests, setActivity, setProjects }: Setters,
+  { setTasks, setRequests, setActivity, setActivityKind, setProjects }: Setters,
 ) {
   switch (env.kind) {
     case "task_created": {
@@ -132,9 +136,12 @@ function applyEvent(
       break;
     }
     case "event": {
-      const ev = env.data as { taskId: string; data: string };
+      const ev = env.data as { taskId: string; kind: string; data: string };
       if (ev.data) {
         setActivity((prev) => ({ ...prev, [ev.taskId]: ev.data }));
+        // Track the latest event's kind in lockstep so the attention rail can
+        // tell a "merge_failed" event from an ordinary status line.
+        setActivityKind((prev) => ({ ...prev, [ev.taskId]: ev.kind }));
       }
       break;
     }
