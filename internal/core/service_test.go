@@ -20,6 +20,7 @@ func newTestService(t *testing.T) *Service {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+	answerSubmitDelay = 0 // no real terminal in tests; skip the paste-safe submit gap
 	return NewService(st)
 }
 
@@ -216,7 +217,8 @@ func TestRecoverInFlight(t *testing.T) {
 // human's answer is injected as the agent's next input. dead=true simulates a
 // terminal whose agent has already exited (WriteTo reports no live session).
 type fakeTerm struct {
-	writes map[string][]byte
+	writes map[string][]byte   // concatenated bytes per task
+	chunks map[string][][]byte // each WriteTo recorded separately
 	dead   bool
 }
 
@@ -226,8 +228,10 @@ func (f *fakeTerm) WriteTo(id string, p []byte) (bool, error) {
 	}
 	if f.writes == nil {
 		f.writes = map[string][]byte{}
+		f.chunks = map[string][][]byte{}
 	}
 	f.writes[id] = append(f.writes[id], p...)
+	f.chunks[id] = append(f.chunks[id], append([]byte(nil), p...))
 	return true, nil
 }
 
@@ -281,6 +285,37 @@ func TestAskHumanPostsAndDelivers(t *testing.T) {
 	}
 	if got := string(ft.writes[task.ID]); got != "yes\r" {
 		t.Fatalf("expected answer delivered to terminal as %q, got %q", "yes\r", got)
+	}
+}
+
+// TestAnswerHumanSubmitsSeparately guards the paste bug: the answer text and the
+// Enter that submits it must arrive as TWO writes (text, then a lone CR), not
+// glued as "yes\r". A single glued write is read as a paste by interactive TUIs,
+// which keep the CR as a literal newline and never submit — the reported symptom
+// of a typed-but-unsent answer.
+func TestAnswerHumanSubmitsSeparately(t *testing.T) {
+	svc := newTestService(t)
+	ft := &fakeTerm{}
+	svc.UseTerminal(ft)
+	task, _ := svc.CreateTask("t", "", "")
+
+	req, err := svc.AskHuman(task.ID, "Merge to main?", []string{"yes", "no"}, "")
+	if err != nil {
+		t.Fatalf("ask_human: %v", err)
+	}
+	if err := svc.AnswerHuman(req.ID, "yes"); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+
+	chunks := ft.chunks[task.ID]
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 writes (text then CR), got %d: %q", len(chunks), chunks)
+	}
+	if string(chunks[0]) != "yes" {
+		t.Fatalf("first write should be the text without a trailing CR, got %q", chunks[0])
+	}
+	if string(chunks[1]) != "\r" {
+		t.Fatalf("second write should be a lone submit CR, got %q", chunks[1])
 	}
 }
 

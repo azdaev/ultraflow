@@ -668,6 +668,12 @@ func (s *Service) AskHuman(taskID, question string, options []string, contextStr
 	return req, nil
 }
 
+// answerSubmitDelay is the gap between typing a board answer into the agent's
+// terminal and sending the Enter that submits it. It must outlast the TUI's
+// paste-detection window so the trailing CR is read as a keystroke, not as part
+// of a paste (see AnswerHuman). A var so tests can zero it.
+var answerSubmitDelay = 250 * time.Millisecond
+
 // AnswerHuman is called by the web API when the human replies on the board. It
 // records the answer, returns the task to running, and delivers the reply into
 // the agent's live terminal (its stdin) — which is how the parked interactive
@@ -699,18 +705,30 @@ func (s *Service) AnswerHuman(reqID, answer string) error {
 	s.appendEvent(req.TaskID, "human_answer", answer)
 	s.publish("human_answered", map[string]any{"id": reqID, "answer": answer})
 
-	// Deliver the reply into the agent's terminal exactly as if the human typed
-	// it there; the trailing CR submits it as the agent's next input. Newlines are
-	// flattened so an embedded one can't submit the line early. If no live terminal
-	// exists the agent exited between the swap and now — the orchestrator's Wait
-	// path fails the task — so the log is just a diagnostic.
+	// Deliver the reply into the agent's terminal exactly as if the human typed it
+	// there. Crucially the text and the Enter that submits it go as TWO writes with
+	// a gap between them: interactive TUIs (Claude Code, Codex) treat text and a
+	// trailing CR arriving glued together in one read as a *paste* and keep the CR
+	// as a literal newline in the prompt instead of submitting — so the answer would
+	// sit typed but un-sent (the "I selected an answer but Enter wasn't pressed"
+	// symptom). Newlines are flattened so an embedded one can't submit early. If no
+	// live terminal exists the agent exited between the swap and now — the
+	// orchestrator's Wait path fails the task — so the log is just a diagnostic.
 	if s.term != nil {
 		line := strings.NewReplacer("\r", " ", "\n", " ").Replace(answer)
-		live, werr := s.term.WriteTo(req.TaskID, []byte(line+"\r"))
+		live, werr := s.term.WriteTo(req.TaskID, []byte(line))
 		if werr != nil {
 			log.Printf("task %s: delivering answer to terminal: %v", req.TaskID, werr)
 		}
-		if !live {
+		if live {
+			// Submit as a separate keystroke once the TUI's paste-detection window
+			// has closed, so the lone CR registers as Enter rather than a pasted
+			// newline.
+			time.Sleep(answerSubmitDelay)
+			if _, err := s.term.WriteTo(req.TaskID, []byte("\r")); err != nil {
+				log.Printf("task %s: submitting answer to terminal: %v", req.TaskID, err)
+			}
+		} else {
 			// No live agent to take the answer. Normally this is a self-heal
 			// escalation ("tried N×, stuck") — the agent stopped after exhausting its
 			// retries — so re-launch it in place with the human's guidance rather than

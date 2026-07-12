@@ -4,6 +4,48 @@ Known issues and deferred cleanups. Newest first.
 
 ---
 
+## Fixed 250ms sleep to submit a board answer into the agent's terminal
+
+**Where:** `internal/core/service.go` — `AnswerHuman` and the `answerSubmitDelay`
+package var.
+
+**What it is:** When the human answers an `ask_human` checkpoint, we type the
+answer into the parked agent's PTY and then, after a hard-coded
+`time.Sleep(250ms)`, write a lone `\r` to submit it. The two-write split is
+necessary and correct — interactive TUIs (Claude Code, Codex) treat text and a
+trailing CR arriving glued in one read as a *paste* and keep the CR as a literal
+newline, so the answer sat typed-but-unsent (the original bug). The **fixed
+delay** is the debt: it's a guessed constant tuned to beat the TUIs'
+paste-detection window.
+
+**Why it's a smell:**
+
+- **Fragile.** If a TUI widens its paste window (or the machine is under load and
+  the two writes still land in one read), 250ms may not be enough and the bug
+  returns silently. If it shrinks, we're needlessly slow.
+- **Blocking.** The sleep runs inside the synchronous answer HTTP handler, so the
+  POST hangs 250ms. Harmless at one answer at a time, but it's latency baked into
+  the request path.
+- **Guessed, not measured.** The number isn't derived from either CLI's actual
+  behavior; it's "big enough, probably."
+
+**More robust options (deferred):**
+
+- **A — Bracketed paste, explicitly.** Wrap the text in `\e[200~ … \e[201~` and
+  send the submitting `\r` outside the markers. This tells the TUI unambiguously
+  "this chunk is a paste, this CR is a keystroke," removing the timing guess. Best
+  structural fix if both CLIs honor bracketed paste on PTY stdin (needs
+  verifying).
+- **B — Ack-driven submit.** Watch the session's output for the typed text
+  echoing back, then send `\r`, instead of sleeping a fixed time. Robust but adds
+  a read/parse loop and its own timeout.
+- **C — Make the delay non-blocking + configurable.** At minimum, move the sleep
+  off the HTTP handler (goroutine) and make `answerSubmitDelay` an env/flag so it
+  can be tuned without a rebuild. Cheapest mitigation; doesn't remove the guess.
+
+**Recommendation:** A if bracketed paste works against both CLIs; otherwise B.
+The current 250ms sleep ships as an accepted stopgap.
+
 ## macOS TCC permission-prompt storm when a task starts
 
 **Symptom:** Starting a task can trigger a burst of macOS privacy prompts —
