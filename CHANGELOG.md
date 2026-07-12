@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.10.8 — 2026-07-12
+
+- docs: activity-journal — the signal:killed diagnosis + how to analyse the journal
+- Ultraflow: verbose activity journal (UI clicks + task/agent lifecycle)
+- Ultraflow: вот наш логотип ultraflow. используй его
+
 ## v0.10.7 — 2026-07-12
 
 - Ultraflow: Для тасок на кодексе логотип неправильный отображаем. клодовский отображаем
