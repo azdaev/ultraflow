@@ -3,6 +3,8 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,7 +25,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *core.Service) {
 		t.Fatalf("store: %v", err)
 	}
 	svc := core.NewService(st)
-	return httptest.NewServer(New(svc, terminal.NewManager(), "", nil, nil)), svc
+	return httptest.NewServer(New(svc, terminal.NewManager(), "", "", nil, nil)), svc
 }
 
 // fakeConc is a stand-in orchestrator that records the limit the settings API
@@ -40,7 +42,7 @@ func newTestServerConc(t *testing.T, conc concurrencyController) (*httptest.Serv
 		t.Fatalf("store: %v", err)
 	}
 	svc := core.NewService(st)
-	return httptest.NewServer(New(svc, terminal.NewManager(), "", nil, conc)), svc
+	return httptest.NewServer(New(svc, terminal.NewManager(), "", "", nil, conc)), svc
 }
 
 // TestSettingsConcurrency drives GET /api/settings and POST
@@ -345,6 +347,96 @@ func deleteTask(t *testing.T, base, id string) int {
 	}
 	res.Body.Close()
 	return res.StatusCode
+}
+
+// tinyPNG is a valid 1x1 PNG, the smallest real image to post at the upload API.
+var tinyPNG = []byte{
+	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+	0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+	0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+	0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+	0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+	0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+}
+
+// postUpload posts one named file under the multipart `files` field to the given
+// server and returns the response.
+func postUpload(t *testing.T, url, filename string, data []byte) *http.Response {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	fw, err := w.CreateFormFile("files", filename)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	w.Close()
+	res, err := http.Post(url+"/api/uploads", w.FormDataContentType(), &buf)
+	if err != nil {
+		t.Fatalf("post upload: %v", err)
+	}
+	return res
+}
+
+// TestUploadImages drives POST /api/uploads: a real PNG is saved to attachDir and
+// echoed back with an absolute on-disk path plus a preview URL that serves the
+// file, while a non-image is rejected without writing anything.
+func TestUploadImages(t *testing.T) {
+	attachDir := filepath.Join(t.TempDir(), "attachments")
+	st, err := store.Open(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	svc := core.NewService(st)
+	ts := httptest.NewServer(New(svc, terminal.NewManager(), "", attachDir, nil, nil))
+	defer ts.Close()
+
+	res := postUpload(t, ts.URL, "shot.png", tinyPNG)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("upload png: status %d", res.StatusCode)
+	}
+	var got []struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+		URL  string `json:"url"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	res.Body.Close()
+	if len(got) != 1 {
+		t.Fatalf("want 1 attachment, got %d", len(got))
+	}
+	if got[0].Name != "shot.png" {
+		t.Fatalf("name = %q, want shot.png", got[0].Name)
+	}
+	if !filepath.IsAbs(got[0].Path) {
+		t.Fatalf("path %q is not absolute", got[0].Path)
+	}
+	if data, err := os.ReadFile(got[0].Path); err != nil {
+		t.Fatalf("saved file not written: %v", err)
+	} else if !bytes.Equal(data, tinyPNG) {
+		t.Fatalf("saved file contents differ from upload")
+	}
+	// The preview URL serves the same bytes back.
+	pres, err := http.Get(ts.URL + got[0].URL)
+	if err != nil {
+		t.Fatalf("get preview: %v", err)
+	}
+	body, _ := io.ReadAll(pres.Body)
+	pres.Body.Close()
+	if pres.StatusCode != http.StatusOK || !bytes.Equal(body, tinyPNG) {
+		t.Fatalf("preview status %d / bytes match=%v", pres.StatusCode, bytes.Equal(body, tinyPNG))
+	}
+
+	// A non-image is rejected.
+	bad := postUpload(t, ts.URL, "notes.txt", []byte("hello"))
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("non-image upload: status %d, want 400", bad.StatusCode)
+	}
+	bad.Body.Close()
 }
 
 func getJSON(t *testing.T, url string, v any) {

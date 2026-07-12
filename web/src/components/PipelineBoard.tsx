@@ -41,9 +41,9 @@ export function PipelineBoard({
   // instead — a task must never be created with no project.
   const project = addProject ?? "";
   const addTask = project
-    ? (title: string) =>
+    ? (title: string, body = "") =>
         api
-          .createTask({ title, body: "", project, agent: "claude", flow: "solo" })
+          .createTask({ title, body, project, agent: "claude", flow: "solo" })
           .then(() => {})
     : undefined;
   const onExpand = onExpandComposer

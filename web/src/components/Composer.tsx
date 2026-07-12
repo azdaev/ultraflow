@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, errMsg, type Project } from "../api";
 import { AGENTS, FLOWS } from "../util";
 import { Modal } from "./Modal";
+import { ImageAttachStrip, useImageAttach, withAttachments } from "./ImageAttach";
 
 interface Props {
   open: boolean;
@@ -23,6 +24,7 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
   const [agent, setAgent] = useState("claude");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const attach = useImageAttach();
   // A finished submit clears the fields on the NEXT open, not on close — so the
   // panel fades out still showing what you submitted, and an Esc-close keeps
   // your draft for next time.
@@ -37,11 +39,13 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
       setTitle(initialTitle ?? "");
       setProject(initialProject ?? "");
       setBody("");
+      attach.clear();
       submitted.current = false;
     } else if (submitted.current) {
       setTitle("");
       setBody("");
       setProject("");
+      attach.clear();
       submitted.current = false;
     }
     setErr(null);
@@ -62,11 +66,13 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
   }, [open, title, body, project, flow, agent]);
 
   async function submit() {
-    if (!title.trim() || !project || busy) return;
+    // attach.busy: an image is still uploading — block so its path isn't dropped
+    // from the body (a paste-then-Enter would otherwise submit without it).
+    if (!title.trim() || !project || busy || attach.busy) return;
     setBusy(true);
     setErr(null);
     try {
-      await api.createTask({ title, body, project, agent, flow });
+      await api.createTask({ title, body: withAttachments(body, attach.attachments), project, agent, flow });
       submitted.current = true;
       onClose();
     } catch (e) {
@@ -97,10 +103,12 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
         <textarea
           value={body}
           onChange={(e) => setBody(e.target.value)}
+          {...attach.pasteProps}
           placeholder="Details, acceptance criteria… (optional)"
           rows={3}
           className="mt-2 w-full resize-none rounded-lg border border-hairline bg-surface px-3 py-2.5 text-[14px] outline-none placeholder:text-muted/60 focus:border-ink/40"
         />
+        <ImageAttachStrip attach={attach} />
 
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label="Project">
@@ -147,7 +155,7 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
           <span className="text-[12px] text-muted">Runs in a fresh worktree · starts when a slot frees</span>
           <button
             onClick={submit}
-            disabled={busy || !title.trim() || !project}
+            disabled={busy || attach.busy || !title.trim() || !project}
             className="rounded-lg bg-accent px-4 py-2.5 text-[14px] font-semibold text-white transition hover:brightness-105 disabled:opacity-50"
           >
             {busy ? "Adding…" : "Add task ⌘↵"}

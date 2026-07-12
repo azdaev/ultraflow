@@ -15,7 +15,8 @@
     "@xterm/xterm": "^6.0.0",
     "motion": "^11.15.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-dropzone": "^16.0.0"
   },
   "devDependencies": {
     "@fontsource-variable/jetbrains-mono": "^5.1.1",

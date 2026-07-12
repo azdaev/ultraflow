@@ -123,6 +123,30 @@ export interface TaskDiff {
   truncated: boolean;
 }
 
+// Attachment is one image uploaded from a composer (see api.uploadImages). `path`
+// is the absolute on-disk path the agent's Read tool opens (appended to the
+// outgoing text by withAttachments); `url` is a board-relative link for preview.
+export interface Attachment {
+  name: string;
+  path: string;
+  url: string;
+}
+
+// uploadName returns a filename with an image extension for an upload. Picked and
+// dropped files already have a real name; a clipboard-pasted image is frequently a
+// nameless blob, so we synthesize one from its MIME type — the server validates by
+// extension and would otherwise reject it.
+const MIME_EXT: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+};
+function uploadName(f: File): string {
+  if (f.name && /\.(png|jpe?g|gif|webp)$/i.test(f.name)) return f.name;
+  return `pasted-image${MIME_EXT[f.type] ?? ".png"}`;
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error((await res.text()) || res.statusText);
   return res.json() as Promise<T>;
@@ -150,6 +174,20 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then((r) => json<Task>(r)),
+
+  // uploadImages saves images picked/dropped/pasted in a composer and returns one
+  // Attachment per file. Sent as multipart FormData — we deliberately don't set a
+  // Content-Type so the browser adds the multipart boundary itself.
+  uploadImages: (files: File[]): Promise<Attachment[]> => {
+    const fd = new FormData();
+    // A pasted-from-clipboard image is often a nameless/extensionless blob, but the
+    // server keys "is this an image?" off the filename extension — so give each file
+    // a name with an extension derived from its MIME type when it lacks one.
+    for (const f of files) fd.append("files", f, uploadName(f));
+    return fetch("/api/uploads", { method: "POST", body: fd }).then((r) =>
+      json<Attachment[]>(r),
+    );
+  },
 
   answer: (requestId: string, answer: string) =>
     fetch(`/api/human_requests/${requestId}/answer`, {
