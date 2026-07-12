@@ -14,10 +14,13 @@ interface Props {
   projectsByName?: Map<string, Project>;
   showChip?: boolean;
   // When provided, an inline "+ Add task" affordance renders under the cards
-  // (Trello-style). Resolves once the task is created.
+  // (Trello-style) and quick-creates in this column's project. Absent when the
+  // board has no concrete project (the "All" filter / "Unassigned" lane): the
+  // add then routes through onExpand so a project gets chosen first.
   onAdd?: (title: string) => Promise<void>;
-  // "More…" hands the current draft off to the full composer (project · flow ·
-  // agent · body), carrying whatever title has been typed so far.
+  // Hands the current draft off to the full composer (project · flow · agent ·
+  // body), carrying whatever title has been typed so far. It's the "More…"
+  // affordance when quick-add exists, and the primary action when it doesn't.
   onExpand?: (title: string) => void;
   // When provided, a "Clear" action renders in the header (once there are cards)
   // — used on the Done column to archive closed tasks so it can't grow unbounded.
@@ -78,12 +81,12 @@ export function Column({
             />
           ))}
         </AnimatePresence>
-        {tasks.length === 0 && !onAdd && (
+        {tasks.length === 0 && !onAdd && !onExpand && (
           <div className="rounded-xl border border-dashed border-hairline px-3 py-6 text-center text-[12px] text-muted/70">
             Nothing here
           </div>
         )}
-        {onAdd && <AddTask onAdd={onAdd} onExpand={onExpand} />}
+        {(onAdd || onExpand) && <AddTask onAdd={onAdd} onExpand={onExpand} />}
       </div>
     </div>
   );
@@ -94,12 +97,14 @@ export function Column({
 // action with a "More…" hand-off to the full composer. Enter (or Add) creates
 // via onAdd, Esc cancels, and after a successful create the input stays focused
 // so several can be added in a row. "More…" carries the typed title into the
-// composer instead of throwing the draft away.
+// composer instead of throwing the draft away. When onAdd is absent (no project
+// to attach), the primary action hands off to the composer so a project is
+// chosen before the task exists.
 function AddTask({
   onAdd,
   onExpand,
 }: {
-  onAdd: (title: string) => Promise<void>;
+  onAdd?: (title: string) => Promise<void>;
   onExpand?: (title: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -117,6 +122,12 @@ function AddTask({
   async function submit() {
     const t = title.trim();
     if (!t || busy) return;
+    // No quick-create here (no project to attach): hand the draft to the
+    // composer so a project is chosen before the task is created.
+    if (!onAdd) {
+      expand();
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
@@ -177,7 +188,9 @@ function AddTask({
       />
       {err && <p className="mt-1 px-1.5 text-[11px] text-rust">{err}</p>}
       <div className="mt-1.5 flex items-center justify-between gap-2 border-t border-hairline pt-2">
-        {onExpand ? (
+        {/* "More…" only when quick-add exists; without it the primary button is
+            already the composer hand-off, so a second one would be redundant. */}
+        {onAdd && onExpand ? (
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={expand}
@@ -194,7 +207,7 @@ function AddTask({
           disabled={busy || !title.trim()}
           className="rounded-lg bg-ink px-3 py-1 text-[12px] font-semibold text-white transition hover:brightness-110 disabled:opacity-40"
         >
-          {busy ? "Adding…" : "Add"}
+          {busy ? "Adding…" : onAdd ? "Add" : "Add…"}
         </button>
       </div>
     </div>

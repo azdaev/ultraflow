@@ -178,6 +178,15 @@ func TestCreateRequiresTitle(t *testing.T) {
 	}
 }
 
+func TestCreateRequiresProject(t *testing.T) {
+	ts, _ := newTestServer(t)
+	defer ts.Close()
+	res, _ := http.Post(ts.URL+"/api/tasks", "application/json", bytes.NewBufferString(`{"title":"do X","project":"  "}`))
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for blank project, got %d", res.StatusCode)
+	}
+}
+
 // TestAnswerEndpoint drives the HTTP answer path: a posted question shows up on
 // the pending endpoint, and answering it returns the task to running.
 func TestAnswerEndpoint(t *testing.T) {

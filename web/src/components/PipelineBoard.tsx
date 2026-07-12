@@ -35,18 +35,19 @@ export function PipelineBoard({
 }: Props) {
   const cols = groupColumns(tasks);
   const byName = projectMap(projects);
-  const addTask = (title: string) =>
-    api
-      .createTask({
-        title,
-        body: "",
-        project: addProject ?? "",
-        agent: "claude",
-        flow: "solo",
-      })
-      .then(() => {});
+  // Quick inline-create only when this board has a concrete project (a swimlane
+  // lane, or a selected filter chip). Under the "All" filter or the "Unassigned"
+  // lane there's no project to attach, so the inline add routes to the composer
+  // instead — a task must never be created with no project.
+  const project = addProject ?? "";
+  const addTask = project
+    ? (title: string) =>
+        api
+          .createTask({ title, body: "", project, agent: "claude", flow: "solo" })
+          .then(() => {})
+    : undefined;
   const onExpand = onExpandComposer
-    ? (title: string) => onExpandComposer(title, addProject ?? "")
+    ? (title: string) => onExpandComposer(title, project)
     : undefined;
   return (
     <div className={`flex ${compact ? "gap-4" : "gap-6"}`}>
