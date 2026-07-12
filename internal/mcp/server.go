@@ -112,6 +112,9 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 		if err := svc.UpdateStatus(a.TaskID, model.StatusReview); err != nil {
 			return nil, nil, err
 		}
+		// If the branch fell behind main while the agent worked, warn on the card
+		// (roadmap M4). Async so the git check doesn't slow this tool's response.
+		go svc.NoteFreshness(a.TaskID)
 		// End the live session so the slot frees. Close asynchronously: closing kills
 		// this agent's own process, and we want this tool call to return first.
 		if sess, ok := term.Get(a.TaskID); ok {

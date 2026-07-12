@@ -516,6 +516,74 @@ func (o *Orchestrator) Reengage(taskID, guidance string) error {
 	return nil
 }
 
+// Rebase re-engages a reviewed task's agent to bring its branch up to date with
+// main when an auto-rebase hit conflicts git couldn't resolve mechanically (see
+// core.ErrRebaseConflict, raised at merge time). It reuses the exact send-back
+// machinery as Revise — same worktree, `claude --continue` memory, concurrency
+// slot — so the agent resolves the rebase with the SAME auto-retry/escalate
+// self-heal policy: resolve what it can, and escalate a truly stuck conflict as a
+// plain-language ask_human item rather than a silent abort. A clean finish returns
+// the task to review on top of the latest main, ready to actually land.
+func (o *Orchestrator) Rebase(taskID string) error {
+	t, err := o.svc.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	if t.Status != model.StatusReview {
+		return fmt.Errorf("a rebase self-heal only starts from review (this one is %s)", t.Status)
+	}
+	if t.Worktree == "" {
+		return fmt.Errorf("this task has no worktree to rebase")
+	}
+	if _, live := o.term.Get(taskID); live {
+		return fmt.Errorf("this task already has a live session — type into its terminal instead")
+	}
+
+	ag := o.agents[t.Agent]
+	if ag == nil {
+		ag = o.agents["claude"]
+	}
+	ia, ok := ag.(interactiveAgent)
+	if !ok {
+		return fmt.Errorf("agent %s can't run interactively", ag.Name())
+	}
+
+	// Best-effort freshness figure for the prompt; the agent doesn't strictly need
+	// it, so a lookup failure just yields a generic "behind main" phrasing.
+	behind, base := 0, "main"
+	if p, perr := o.svc.ProjectByName(t.Project); perr == nil && p.RepoPath != "" {
+		if n, b, ferr := o.wt.Freshness(p.RepoPath, taskID); ferr == nil {
+			behind = n
+			if b != "" {
+				base = b
+			}
+		}
+	}
+
+	// Flip out of review synchronously so the board reflects the self-heal at once
+	// and a double-click can't launch two agents on the same worktree.
+	if err := o.svc.UpdateStatus(taskID, model.StatusQueued); err != nil {
+		return err
+	}
+	o.svc.AppendTaskEvent(taskID, "status", "auto-rebasing onto "+base+" — resolving conflicts")
+
+	go func() {
+		o.acquire()
+		defer o.release()
+		cmd, cleanup, err := ia.ResumeCommand(o.ctx(), t.Worktree, buildRebasePrompt(t, base, behind))
+		if err != nil {
+			o.fail(taskID, "couldn't build the agent command: "+err.Error())
+			return
+		}
+		injectPort(cmd, t.Port) // reuse the port reserved on the first run (no-op if none)
+		// Run under the same self-heal loop as a fresh start: the agent resolves what
+		// it can, retries on a stumble, and escalates a truly stuck conflict as a
+		// needs_human checkpoint — never a silent abort back to review.
+		o.runWithSelfHeal(o.ctx(), t, t.Worktree, ia, cmd, cleanup, "rebasing onto "+base+" — resolving conflicts (Ctrl-C to interrupt)")
+	}()
+	return nil
+}
+
 // ctx returns the daemon-lifetime context for out-of-band launches. Falls back
 // to Background if Run hasn't recorded one yet (e.g. in a unit test).
 func (o *Orchestrator) ctx() context.Context {
@@ -742,4 +810,44 @@ Use it to get unstuck. Your earlier work is still here in this working directory
 
 WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-line summary.`,
 		t.ID, t.Title, guidance, screenshotInstruction, t.ID)
+}
+
+// buildRebasePrompt is seeded when a task's branch has fallen behind main and the
+// mechanical auto-rebase hit conflicts. The agent's work is still in this worktree
+// (and, via --continue, in its memory). It asks the agent to rebase its branch
+// onto the latest base and resolve conflicts with the same self-heal policy it
+// uses for build/test failures: fix what it can, retry, and only escalate a truly
+// unresolvable conflict via ask_human — never leave the branch half-rebased.
+func buildRebasePrompt(t model.Task, base string, behind int) string {
+	behindStr := "behind the latest " + base
+	if behind > 0 {
+		behindStr = fmt.Sprintf("%d commit(s) behind the latest %s", behind, base)
+	}
+	return fmt.Sprintf(`Your branch for this Ultraflow task has fallen %s, and an automatic rebase
+hit merge conflicts it could not resolve on its own. Bring the branch up to date
+so it can land cleanly.
+
+Task ID: %s
+Title: %s
+
+Do this in your working directory (your earlier changes are already here):
+  1. Run: git rebase %s
+  2. Resolve each conflict using your judgment about BOTH your task's intent and
+     the changes that landed on %s. Edit the files, then git add them and run
+     git rebase --continue. Repeat until the rebase completes.
+  3. Re-run the build / tests to confirm your work still holds on top of %s. If
+     something broke because of the rebase, fix it — this is the same self-heal
+     you'd do for any failure: diagnose and retry, don't give up on the first try.
+
+If you hit a conflict you genuinely cannot resolve safely (a real semantic clash
+where you'd only be guessing), do NOT force it and do NOT abort silently. Call
+ask_human with task_id="%s", explain the conflict in plain language, and give
+options. Then STOP and wait for the answer.
+
+%s
+
+WHEN THE REBASE IS COMPLETE and your work is healthy on top of %s: call the MCP
+tool "finish_task" with task_id="%s" and a one-line summary. That returns it to
+review, now up to date and ready to merge.`,
+		behindStr, t.ID, t.Title, base, base, base, t.ID, screenshotInstruction, base, t.ID)
 }

@@ -5,6 +5,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -41,11 +42,20 @@ type reviser interface {
 	Revise(taskID, feedback string) error
 }
 
+// rebaser re-engages a reviewed task's agent to resolve a stale-branch rebase
+// whose conflicts the mechanical auto-rebase couldn't handle (the merge path
+// escalation for core.ErrRebaseConflict). Same orchestrator, recovered the same
+// way as reviser; nil in API-only setups.
+type rebaser interface {
+	Rebase(taskID string) error
+}
+
 type server struct {
 	svc     *core.Service
 	term    *terminal.Manager
 	conc    concurrencyController
 	reviser reviser
+	rebaser rebaser
 }
 
 // New returns the HTTP handler for the board. The frontend is served at the root
@@ -60,6 +70,9 @@ func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.
 	// capability without widening New's signature (a fake/nil conc simply lacks it).
 	if r, ok := conc.(reviser); ok {
 		s.reviser = r
+	}
+	if r, ok := conc.(rebaser); ok {
+		s.rebaser = r
 	}
 	// Release mode silences gin's debug banner/route dump; the daemon was previously
 	// silent on startup and we keep it that way.
@@ -338,10 +351,27 @@ func (s *server) retryTask(c *gin.Context) {
 }
 
 // mergeTask lands a reviewed task's worktree branch into the project repo and
-// finishes it. A merge that can't complete (e.g. a conflict) returns 409 with the
-// git explanation; the task is left in review with its worktree intact.
+// finishes it. Before merging it auto-rebases the branch onto the latest main so
+// what lands is what was reviewed. If that rebase hits conflicts the auto-rebase
+// can't resolve, the task's agent is re-engaged to resolve them (self-heal) and we
+// report "rebasing" instead of a dead-end. Any other merge failure returns 409
+// with the git explanation; the task is left in review with its worktree intact.
 func (s *server) mergeTask(c *gin.Context) {
-	if err := s.svc.MergeTask(c.Param("id")); err != nil {
+	id := c.Param("id")
+	err := s.svc.MergeTask(id)
+	if errors.Is(err, core.ErrRebaseConflict) {
+		if s.rebaser == nil {
+			http.Error(c.Writer, "the branch is behind main and needs the agent to rebase, which isn't available here", http.StatusServiceUnavailable)
+			return
+		}
+		if rerr := s.rebaser.Rebase(id); rerr != nil {
+			http.Error(c.Writer, rerr.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(c, http.StatusOK, map[string]string{"status": "rebasing"})
+		return
+	}
+	if err != nil {
 		http.Error(c.Writer, err.Error(), http.StatusConflict)
 		return
 	}

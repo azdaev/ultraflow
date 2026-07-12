@@ -98,6 +98,7 @@ export function App() {
           <SwimlanesBoard
             tasks={tasks}
             activity={activity}
+            activityKind={activityKind}
             now={now}
             onOpen={setOpenTaskId}
             projects={projects}
@@ -107,6 +108,7 @@ export function App() {
           <FilterBoard
             tasks={tasks}
             activity={activity}
+            activityKind={activityKind}
             now={now}
             onOpen={setOpenTaskId}
             projects={projects}

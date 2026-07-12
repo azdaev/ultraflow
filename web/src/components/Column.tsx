@@ -7,6 +7,7 @@ interface Props {
   title: string;
   tasks: Task[];
   activity: Record<string, string>;
+  activityKind: Record<string, string>;
   now: number;
   onOpen: (taskId: string) => void;
   accent?: "steel" | "moss" | "muted";
@@ -32,6 +33,7 @@ export function Column({
   title,
   tasks,
   activity,
+  activityKind,
   now,
   onOpen,
   accent = "muted",
@@ -55,6 +57,7 @@ export function Column({
               key={t.id}
               task={t}
               activity={activity[t.id]}
+              activityKind={activityKind[t.id]}
               now={now}
               onOpen={onOpen}
               project={projectsByName?.get(t.project)}

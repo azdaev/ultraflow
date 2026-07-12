@@ -18,14 +18,18 @@ const DEV_LINK_STATUSES = new Set<Task["status"]>([
 interface Props {
   task: Task;
   activity?: string;
+  activityKind?: string; // kind of the latest activity line (e.g. "stale")
   now: number;
   onOpen: (taskId: string) => void;
   project?: Project; // for the chip color
   showChip?: boolean; // filter layout shows chips; swimlanes name via the lane
 }
 
-export function TaskCard({ task, activity, now, onOpen, project, showChip }: Props) {
+export function TaskCard({ task, activity, activityKind, now, onOpen, project, showChip }: Props) {
   const needsHuman = task.status === "needs_human";
+  // A reviewed branch that has fallen behind main. The auto-rebase runs at merge,
+  // but we warn up front so the human knows the branch isn't current (roadmap M4).
+  const stale = task.status === "review" && activityKind === "stale";
   const menu = useContextMenu();
 
   // Right-click actions mirror a card's primary controls, keyed off its status,
@@ -109,6 +113,15 @@ export function TaskCard({ task, activity, now, onOpen, project, showChip }: Pro
           port, so offer a one-click open of its running app (localhost:PORT). */}
       {task.port > 0 && DEV_LINK_STATUSES.has(task.status) && (
         <DevServerLink port={task.port} />
+      )}
+
+      {/* stale-branch warning: the branch fell behind main. Merging auto-rebases
+          onto the latest main first, so what lands is what was reviewed. */}
+      {stale && (
+        <div className="mt-2 flex items-center gap-1.5 rounded-lg bg-amber-tint px-2.5 py-1.5 text-[12px] font-semibold text-amber">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber" />
+          <span className="truncate">{activity || "stale · behind main"}</span>
+        </div>
       )}
 
       {/* review → finish. With a worktree, land the branch (merge). Without one

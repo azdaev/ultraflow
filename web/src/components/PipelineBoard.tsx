@@ -5,6 +5,7 @@ import { Column } from "./Column";
 interface Props {
   tasks: Task[];
   activity: Record<string, string>;
+  activityKind: Record<string, string>;
   now: number;
   onOpen: (taskId: string) => void;
   projects: Project[];
@@ -23,6 +24,7 @@ interface Props {
 export function PipelineBoard({
   tasks,
   activity,
+  activityKind,
   now,
   onOpen,
   projects,
@@ -48,10 +50,10 @@ export function PipelineBoard({
     : undefined;
   return (
     <div className={`flex ${compact ? "gap-4" : "gap-6"}`}>
-      <Column title="Backlog" tasks={cols.backlog} activity={activity} now={now} onOpen={onOpen} accent="muted" projectsByName={byName} showChip={showChip} onAdd={addTask} onExpand={onExpand} />
-      <Column title="Running" tasks={cols.running} activity={activity} now={now} onOpen={onOpen} accent="steel" projectsByName={byName} showChip={showChip} />
-      <Column title="Review" tasks={cols.review} activity={activity} now={now} onOpen={onOpen} accent="moss" projectsByName={byName} showChip={showChip} />
-      <Column title="Done" tasks={cols.done} activity={activity} now={now} onOpen={onOpen} accent="moss" projectsByName={byName} showChip={showChip} />
+      <Column title="Backlog" tasks={cols.backlog} activity={activity} activityKind={activityKind} now={now} onOpen={onOpen} accent="muted" projectsByName={byName} showChip={showChip} onAdd={addTask} onExpand={onExpand} />
+      <Column title="Running" tasks={cols.running} activity={activity} activityKind={activityKind} now={now} onOpen={onOpen} accent="steel" projectsByName={byName} showChip={showChip} />
+      <Column title="Review" tasks={cols.review} activity={activity} activityKind={activityKind} now={now} onOpen={onOpen} accent="moss" projectsByName={byName} showChip={showChip} />
+      <Column title="Done" tasks={cols.done} activity={activity} activityKind={activityKind} now={now} onOpen={onOpen} accent="moss" projectsByName={byName} showChip={showChip} />
     </div>
   );
 }

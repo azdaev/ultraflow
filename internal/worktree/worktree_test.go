@@ -32,6 +32,120 @@ func initRepo(t *testing.T) string {
 // TestCreateUsesAbsolutePath guards the bug where a relative worktree root made
 // git and the daemon resolve the checkout against different cwds: the created
 // worktree path must be absolute so `cmd.Dir = path` works from any cwd.
+// commitFile writes name in repo's working tree and commits it, advancing the
+// repo's checked-out (base) branch — used to make a task's branch fall behind.
+func commitFile(t *testing.T, repo, name, content, msg string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-q", "-m", msg}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+// TestFreshness verifies the behind-main count: 0 right after fork, then N after
+// the base branch advances by N commits the task branch doesn't have.
+func TestFreshness(t *testing.T) {
+	repo := initRepo(t)
+	m := New(filepath.Join(t.TempDir(), "worktrees"))
+	if _, err := m.Create(repo, "fresh"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer m.Remove(repo, "fresh")
+
+	if behind, base, err := m.Freshness(repo, "fresh"); err != nil || behind != 0 {
+		t.Fatalf("just-forked branch: behind=%d base=%q err=%v; want behind=0", behind, base, err)
+	}
+
+	// Advance main by two commits the worktree branch doesn't have.
+	commitFile(t, repo, "a.txt", "a", "add a")
+	commitFile(t, repo, "b.txt", "b", "add b")
+
+	behind, base, err := m.Freshness(repo, "fresh")
+	if err != nil {
+		t.Fatalf("freshness: %v", err)
+	}
+	if behind != 2 {
+		t.Fatalf("behind = %d; want 2", behind)
+	}
+	if base == "" {
+		t.Fatal("base branch should be named, not empty")
+	}
+}
+
+// TestRebaseClean verifies a stale branch replays onto the advanced base without
+// conflict, picking up the new base commits, and then merges cleanly.
+func TestRebaseClean(t *testing.T) {
+	repo := initRepo(t)
+	m := New(filepath.Join(t.TempDir(), "worktrees"))
+	w, err := m.Create(repo, "clean")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer m.Remove(repo, "clean")
+
+	// Agent work in the worktree (uncommitted) on one file...
+	if err := os.WriteFile(filepath.Join(w.Path, "work.txt"), []byte("mine"), 0o644); err != nil {
+		t.Fatalf("write work: %v", err)
+	}
+	// ...while main advances on a DIFFERENT file — no conflict.
+	commitFile(t, repo, "upstream.txt", "theirs", "upstream change")
+
+	conflicted, out, err := m.Rebase(repo, "clean", "clean rebase")
+	if err != nil {
+		t.Fatalf("rebase: %v (%s)", err, out)
+	}
+	if conflicted {
+		t.Fatalf("expected a clean rebase, got a conflict: %s", out)
+	}
+	// The worktree branch now sits on top of main's new commit.
+	if _, err := os.Stat(filepath.Join(w.Path, "upstream.txt")); err != nil {
+		t.Fatalf("rebased branch missing the upstream commit: %v", err)
+	}
+	// And it lands cleanly.
+	if _, err := m.Merge(repo, "clean", "land it"); err != nil {
+		t.Fatalf("merge after rebase: %v", err)
+	}
+}
+
+// TestRebaseConflict verifies that when the branch and main both change the SAME
+// lines, the rebase reports a conflict and leaves the worktree CLEAN (aborted, no
+// half-finished rebase) so the caller can hand it to the agent's self-heal.
+func TestRebaseConflict(t *testing.T) {
+	repo := initRepo(t)
+	// Seed a shared file both sides will edit.
+	commitFile(t, repo, "shared.txt", "base\n", "seed shared")
+
+	m := New(filepath.Join(t.TempDir(), "worktrees"))
+	w, err := m.Create(repo, "clash")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer m.Remove(repo, "clash")
+
+	// The agent edits shared.txt in the worktree...
+	if err := os.WriteFile(filepath.Join(w.Path, "shared.txt"), []byte("mine\n"), 0o644); err != nil {
+		t.Fatalf("write worktree edit: %v", err)
+	}
+	// ...and main edits the SAME line differently.
+	commitFile(t, repo, "shared.txt", "theirs\n", "upstream edit")
+
+	conflicted, _, err := m.Rebase(repo, "clash", "conflicting rebase")
+	if err != nil {
+		t.Fatalf("rebase returned a hard error instead of a conflict signal: %v", err)
+	}
+	if !conflicted {
+		t.Fatal("expected conflicted=true for a same-line clash")
+	}
+	// Worktree must be clean (rebase aborted): no unmerged paths left wedged.
+	if out, _ := run(w.Path, "diff", "--name-only", "--diff-filter=U"); strings.TrimSpace(out) != "" {
+		t.Fatalf("worktree left with unmerged paths after a conflict: %s", out)
+	}
+}
+
 func TestCreateUsesAbsolutePath(t *testing.T) {
 	repo := initRepo(t)
 	// Deliberately construct the manager with a RELATIVE root.
