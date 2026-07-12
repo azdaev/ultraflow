@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.10.10 — 2026-07-12
+
+- Ultraflow: stop wiping a resumed task's work — reuse its branch, don't re-create from main
+- Ultraflow: Gate: replace dead terminal with review-focused view
+- Ultraflow: В состоянии Done задача. Нажимаю на нее и там тоже почти никакой инфы. Может стоит показывать что-то?
+
 ## v0.10.9 — 2026-07-12
 
 - Ultraflow: надо резолвить такие места как-то. то есть клод задает несколько вопросов, но это в терминале. то есть не отобразилось как needs my attention. комплексно подумай как чище всего решить эту проблему
