@@ -16,8 +16,17 @@ type Manager struct {
 	root string // where task worktrees live, e.g. <data>/worktrees
 }
 
-// New returns a Manager rooting its worktrees at root.
-func New(root string) *Manager { return &Manager{root: root} }
+// New returns a Manager rooting its worktrees at root. The root is resolved to
+// an absolute path so a worktree's location is the SAME whether git creates it
+// (with cwd at the project repo) or the daemon later chdirs into it (with its
+// own cwd) — a relative root resolves against different directories and the
+// checkout can't be found.
+func New(root string) *Manager {
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return &Manager{root: root}
+}
 
 // Worktree is a created checkout: an absolute path plus the branch it's on.
 type Worktree struct {

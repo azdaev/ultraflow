@@ -28,6 +28,28 @@ func initRepo(t *testing.T) string {
 	return repo
 }
 
+// TestCreateUsesAbsolutePath guards the bug where a relative worktree root made
+// git and the daemon resolve the checkout against different cwds: the created
+// worktree path must be absolute so `cmd.Dir = path` works from any cwd.
+func TestCreateUsesAbsolutePath(t *testing.T) {
+	repo := initRepo(t)
+	// Deliberately construct the manager with a RELATIVE root.
+	m := New("relative-worktrees-root")
+	t.Cleanup(func() { os.RemoveAll("relative-worktrees-root") })
+
+	w, err := m.Create(repo, "abs")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer m.Remove(repo, "abs")
+	if !filepath.IsAbs(w.Path) {
+		t.Fatalf("worktree path must be absolute, got %q", w.Path)
+	}
+	if st, err := os.Stat(w.Path); err != nil || !st.IsDir() {
+		t.Fatalf("worktree dir not found at %q: %v", w.Path, err)
+	}
+}
+
 func TestIsGitRepo(t *testing.T) {
 	repo := initRepo(t)
 	if !IsGitRepo(repo) {
