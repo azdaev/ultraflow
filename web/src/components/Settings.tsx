@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { motion } from "motion/react";
 import { api, type Project } from "../api";
 import type { BoardLayout } from "../useSettings";
+import { Modal } from "./Modal";
 
 interface Props {
   open: boolean;
@@ -20,12 +20,8 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!open) return;
-    setErr(null);
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    if (open) setErr(null);
+  }, [open]);
 
   async function chooseFolder() {
     if (picking) return;
@@ -49,17 +45,8 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
     }
   }
 
-  if (!open) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/25 p-4 pt-[8vh] backdrop-blur-sm">
-      <div className="absolute inset-0" onClick={onClose} />
-      <motion.div
-        initial={{ opacity: 0, y: 12, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ type: "spring", stiffness: 320, damping: 30 }}
-        className="relative w-full max-w-lg rounded-2xl border border-hairline bg-surface p-5 shadow-[0_24px_60px_-20px_rgba(23,23,26,0.4)]"
-      >
+    <Modal open={open} onClose={onClose} className="max-w-lg">
         <div className="mb-5 flex items-center justify-between">
           <h2 className="text-[17px] font-semibold text-ink">Settings</h2>
           <button
@@ -135,8 +122,7 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
         </p>
 
         {err && <p className="mt-3 text-[13px] text-rust">{err}</p>}
-      </motion.div>
-    </div>
+    </Modal>
   );
 }
 

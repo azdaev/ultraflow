@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import { motion } from "motion/react";
+import { useEffect, useRef, useState } from "react";
 import { api, type Project } from "../api";
 import { AGENTS, FLOWS } from "../util";
+import { Modal } from "./Modal";
 
 interface Props {
   open: boolean;
@@ -19,18 +19,26 @@ export function Composer({ open, onClose, projects }: Props) {
   const [agent, setAgent] = useState("claude");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // A finished submit clears the fields on the NEXT open, not on close — so the
+  // panel fades out still showing what you submitted, and an Esc-close keeps
+  // your draft for next time.
+  const submitted = useRef(false);
 
   useEffect(() => {
-    if (open) {
-      setErr(null);
-      setBusy(false);
+    if (!open) return;
+    if (submitted.current) {
+      setTitle("");
+      setBody("");
+      setProject("");
+      submitted.current = false;
     }
+    setErr(null);
+    setBusy(false);
   }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();
     };
     window.addEventListener("keydown", onKey);
@@ -44,9 +52,7 @@ export function Composer({ open, onClose, projects }: Props) {
     setErr(null);
     try {
       await api.createTask({ title, body, project, agent, flow });
-      setTitle("");
-      setBody("");
-      setProject("");
+      submitted.current = true;
       onClose();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "failed to create task");
@@ -54,17 +60,8 @@ export function Composer({ open, onClose, projects }: Props) {
     }
   }
 
-  if (!open) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/25 p-4 pt-[8vh] backdrop-blur-sm">
-      <div className="absolute inset-0" onClick={onClose} />
-      <motion.div
-        initial={{ opacity: 0, y: 12, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ type: "spring", stiffness: 320, damping: 30 }}
-        className="relative w-full max-w-xl rounded-2xl border border-hairline bg-surface p-5 shadow-[0_24px_60px_-20px_rgba(23,23,26,0.4)]"
-      >
+    <Modal open={open} onClose={onClose} className="max-w-xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-[17px] font-semibold text-ink">New task</h2>
           <button
@@ -133,8 +130,7 @@ export function Composer({ open, onClose, projects }: Props) {
             {busy ? "Adding…" : "Add task ⌘↵"}
           </button>
         </div>
-      </motion.div>
-    </div>
+    </Modal>
   );
 }
 
