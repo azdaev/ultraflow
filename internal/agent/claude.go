@@ -18,6 +18,8 @@ type Claude struct {
 	mcpURL string
 }
 
+const claudeNativeQuestionTool = "AskUserQuestion"
+
 func NewClaude(mcpURL string) *Claude { return &Claude{mcpURL: mcpURL} }
 
 func (c *Claude) Name() string { return "claude" }
@@ -33,13 +35,7 @@ func (c *Claude) Command(ctx context.Context, dir, prompt string) (*exec.Cmd, fu
 	}
 	cleanup := func() { os.Remove(cfgPath) }
 
-	cmd := exec.CommandContext(ctx, "claude",
-		prompt, // positional prompt: seed the task, then stay interactive
-		// Add Ultraflow's ask_human server on top of the user's own MCP servers
-		// (no --strict-mcp-config), so agents keep access to the human's full MCP set.
-		"--mcp-config", cfgPath,
-		"--permission-mode", "bypassPermissions",
-	)
+	cmd := exec.CommandContext(ctx, "claude", claudeInteractiveArgs(prompt, cfgPath, false)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -62,17 +58,32 @@ func (c *Claude) ResumeCommand(ctx context.Context, dir, prompt string) (*exec.C
 	}
 	cleanup := func() { os.Remove(cfgPath) }
 
-	cmd := exec.CommandContext(ctx, "claude",
-		"--continue", prompt, // resume this worktree's conversation, send the feedback
-		// Same as Command: keep the human's full MCP set alongside ask_human.
-		"--mcp-config", cfgPath,
-		"--permission-mode", "bypassPermissions",
-	)
+	cmd := exec.CommandContext(ctx, "claude", claudeInteractiveArgs(prompt, cfgPath, true)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	cmd.Env = agentEnv()
 	return cmd, cleanup, nil
+}
+
+// claudeInteractiveArgs centralizes the launch invariant shared by fresh and
+// resumed sessions. Claude's native AskUserQuestion renders only inside its PTY,
+// so it is deliberately unavailable: questions must go through MCP ask_human,
+// which durably sets needs_human and can be answered from the Ultraflow board.
+func claudeInteractiveArgs(prompt, cfgPath string, resume bool) []string {
+	args := make([]string, 0, 9)
+	if resume {
+		args = append(args, "--continue")
+	}
+	args = append(args,
+		prompt, // positional prompt: seed the task, then stay interactive
+		// Add Ultraflow's server on top of the user's own MCP servers (no
+		// --strict-mcp-config), preserving access to the human's full MCP set.
+		"--mcp-config", cfgPath,
+		"--disallowedTools", claudeNativeQuestionTool,
+		"--permission-mode", "bypassPermissions",
+	)
+	return args
 }
 
 // writeMCPConfig writes a throwaway MCP config pointing Claude Code at the
@@ -105,20 +116,7 @@ func (c *Claude) Run(ctx context.Context, dir, prompt string, out chan<- Event) 
 	}
 	defer os.Remove(cfgPath)
 
-	cmd := exec.CommandContext(ctx, "claude",
-		"-p", prompt,
-		"--output-format", "stream-json",
-		"--verbose",
-		// Add Ultraflow's ask_human server on top of the user's own MCP servers
-		// (no --strict-mcp-config), so agents keep access to the human's full MCP set.
-		"--mcp-config", cfgPath,
-		// Unattended: the agent runs in an isolated worktree, so it must not stall
-		// on permission prompts (which in headless mode are auto-denied, leaving the
-		// agent unable to run Bash/tests). This is the autonomous-orchestrator mode.
-		"--permission-mode", "bypassPermissions",
-		// Survive a momentarily overloaded primary model instead of failing the task.
-		"--fallback-model", "sonnet",
-	)
+	cmd := exec.CommandContext(ctx, "claude", claudeHeadlessArgs(prompt, cfgPath)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -152,6 +150,24 @@ func (c *Claude) Run(ctx context.Context, dir, prompt string, out chan<- Event) 
 		return err
 	}
 	return nil
+}
+
+func claudeHeadlessArgs(prompt, cfgPath string) []string {
+	return []string{
+		"-p", prompt,
+		"--output-format", "stream-json",
+		"--verbose",
+		// Add Ultraflow's ask_human server on top of the user's own MCP servers
+		// (no --strict-mcp-config), so agents keep access to the human's full MCP set.
+		"--mcp-config", cfgPath,
+		"--disallowedTools", claudeNativeQuestionTool,
+		// Unattended: the agent runs in an isolated worktree, so it must not stall
+		// on permission prompts (which in headless mode are auto-denied, leaving the
+		// agent unable to run Bash/tests). This is the autonomous-orchestrator mode.
+		"--permission-mode", "bypassPermissions",
+		// Survive a momentarily overloaded primary model instead of failing the task.
+		"--fallback-model", "sonnet",
+	}
 }
 
 // tailBuffer keeps only the last max bytes written to it — enough to explain a
