@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,6 +55,7 @@ var migrations = []string{
 	portSchema,         // migration 4: tasks.port
 	humanContextSchema, // migration 5: human_requests added/removed/files/shots
 	resumeSchema,       // migration 6: tasks.resume
+	runsSchema,         // migration 7: runs (multi-step flow progress)
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -175,6 +177,135 @@ ALTER TABLE human_requests ADD COLUMN shots   TEXT NOT NULL DEFAULT '[]';
 // and the human "Retry" action on the normal cold-start path.
 const resumeSchema = `ALTER TABLE tasks ADD COLUMN resume INTEGER NOT NULL DEFAULT 0;`
 
+// runsSchema (migration 7) records a task's progress through a multi-step flow:
+// which flow it walks, the step it's currently on (cursor), the steps it has
+// completed (JSON list, for the board's stepper), and a transient turn_done flag
+// the orchestrator flips when a step's agent ends its turn. One row per task and
+// only for multi-step flows — a solo task has no run — so a row's mere existence
+// marks a task as flow-driven. Persisting the cursor is what lets a restart resume
+// mid-flow (see RecoverInFlight / RunsForTasks).
+const runsSchema = `
+CREATE TABLE IF NOT EXISTS runs (
+  task_id    TEXT PRIMARY KEY,
+  flow       TEXT NOT NULL,
+  cursor     TEXT NOT NULL DEFAULT '',
+  completed  TEXT NOT NULL DEFAULT '[]',
+  turn_done  INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMP NOT NULL
+);
+`
+
+// --- runs (multi-step flow progress) ---
+
+// CreateRun starts (or resets) a task's flow run at the given cursor. It upserts,
+// so a re-created run for the same task overwrites the old cursor rather than
+// erroring — a retry of a flow task restarts its walk cleanly.
+func (s *Store) CreateRun(taskID, flow, cursor string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO runs (task_id,flow,cursor,completed,turn_done,updated_at)
+		 VALUES (?,?,?,'[]',0,?)
+		 ON CONFLICT(task_id) DO UPDATE SET flow=excluded.flow, cursor=excluded.cursor,
+		   completed='[]', turn_done=0, updated_at=excluded.updated_at`,
+		taskID, flow, cursor, time.Now())
+	return err
+}
+
+// GetRun returns a task's flow run and whether it has one (solo tasks don't).
+func (s *Store) GetRun(taskID string) (model.Run, bool, error) {
+	var r model.Run
+	var completed string
+	var turnDone int
+	err := s.db.QueryRow(
+		`SELECT task_id,flow,cursor,completed,turn_done,updated_at FROM runs WHERE task_id=?`, taskID,
+	).Scan(&r.TaskID, &r.Flow, &r.Cursor, &completed, &turnDone, &r.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return model.Run{}, false, nil
+	}
+	if err != nil {
+		return model.Run{}, false, err
+	}
+	_ = json.Unmarshal([]byte(completed), &r.Completed)
+	r.TurnDone = turnDone != 0
+	return r, true, nil
+}
+
+// AdvanceRun moves a run's cursor to the next step, appends the step just left to
+// the completed list (deduped so a loop-back doesn't record it twice), and clears
+// the per-step turn_done flag for the new step.
+func (s *Store) AdvanceRun(taskID, completedStep, next string) error {
+	r, ok, err := s.GetRun(taskID)
+	if err != nil || !ok {
+		return err
+	}
+	if completedStep != "" && !slices.Contains(r.Completed, completedStep) {
+		r.Completed = append(r.Completed, completedStep)
+	}
+	blob, _ := json.Marshal(r.Completed)
+	_, err = s.db.Exec(
+		`UPDATE runs SET cursor=?, completed=?, turn_done=0, updated_at=? WHERE task_id=?`,
+		next, string(blob), time.Now(), taskID)
+	return err
+}
+
+// SetRunCursor moves the cursor without recording a completion — used when the
+// orchestrator (re)enters a step, e.g. resuming after a restart or routing a gate.
+func (s *Store) SetRunCursor(taskID, cursor string) error {
+	_, err := s.db.Exec(`UPDATE runs SET cursor=?, turn_done=0, updated_at=? WHERE task_id=?`,
+		cursor, time.Now(), taskID)
+	return err
+}
+
+// SetRunTurnDone flips the transient flag the orchestrator reads after a step's
+// agent exits: true means the agent ended its turn on purpose (finish_task or an
+// idle turn-end) so the flow should advance; false is the fresh-step default.
+func (s *Store) SetRunTurnDone(taskID string, done bool) error {
+	v := 0
+	if done {
+		v = 1
+	}
+	_, err := s.db.Exec(`UPDATE runs SET turn_done=?, updated_at=? WHERE task_id=?`, v, time.Now(), taskID)
+	return err
+}
+
+// DeleteRun removes a task's run row (called when the task is deleted, so no
+// orphan progress lingers).
+func (s *Store) DeleteRun(taskID string) error {
+	_, err := s.db.Exec(`DELETE FROM runs WHERE task_id=?`, taskID)
+	return err
+}
+
+// RunsForTasks returns the runs for the given task ids as a map, for the board
+// snapshot (one query instead of N). An empty id list returns an empty map.
+func (s *Store) RunsForTasks(ids []string) (map[string]model.Run, error) {
+	out := make(map[string]model.Run)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	q := `SELECT task_id,flow,cursor,completed,turn_done,updated_at FROM runs WHERE task_id IN (?` +
+		strings.Repeat(",?", len(ids)-1) + `)`
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r model.Run
+		var completed string
+		var turnDone int
+		if err := rows.Scan(&r.TaskID, &r.Flow, &r.Cursor, &completed, &turnDone, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(completed), &r.Completed)
+		r.TurnDone = turnDone != 0
+		out[r.TaskID] = r
+	}
+	return out, rows.Err()
+}
+
 // --- tasks ---
 
 func (s *Store) CreateTask(t model.Task) error {
@@ -231,6 +362,7 @@ func (s *Store) DeleteTask(id string) error {
 	for _, q := range []string{
 		`DELETE FROM events WHERE task_id=?`,
 		`DELETE FROM human_requests WHERE task_id=?`,
+		`DELETE FROM runs WHERE task_id=?`,
 		`DELETE FROM tasks WHERE id=?`,
 	} {
 		if _, err := tx.Exec(q, id); err != nil {
@@ -334,6 +466,11 @@ func (s *Store) SetResume(id string, v bool) error {
 // Move them back to backlog to be picked up fresh, and cancel their now-orphaned
 // pending human requests (the agent that would consume the answer is gone).
 // Returns how many tasks were requeued.
+//
+// A multi-step flow task's run row is deliberately LEFT intact: its persisted
+// cursor is what makes the re-pickup resume at the step it was on (or re-open the
+// gate it was parked at) rather than walking the flow again from step one. The
+// orchestrator's flow runner reads the cursor on start (see startFlow).
 func (s *Store) RecoverInFlight() (int64, error) {
 	if _, err := s.db.Exec(
 		`UPDATE human_requests SET status='cancelled' WHERE status='pending'`); err != nil {

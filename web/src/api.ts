@@ -66,6 +66,20 @@ export interface TaskEvent {
   createdAt: string;
 }
 
+// RunProgress is a multi-step task's LIVE position in its flow, derived
+// server-side from the run cursor plus the flow graph. The card's stepper uses
+// `index` to light the active step and `caption` for the one-line "what's now /
+// what's next" summary. Solo tasks have no run, so they're absent from the map.
+export interface RunProgress {
+  flow: string;
+  step: string; // current step id ("" when the flow is complete)
+  index: number; // 0-based position in the flow's step order (-1 = none)
+  total: number;
+  agent: string; // the current step's sub-agent
+  gate: boolean; // the current step is a human gate
+  caption: string; // e.g. "Build · step 2 of 4 · critic + your gate next"
+}
+
 export interface BoardSnapshot {
   tasks: Task[];
   requests: HumanRequest[];
@@ -74,6 +88,8 @@ export interface BoardSnapshot {
   // board lift a "merge_failed" event into the attention rail.
   activityKind: Record<string, string>;
   projects: Project[];
+  // live flow progress per multi-step task, keyed by task id.
+  runs: Record<string, RunProgress>;
 }
 
 export interface Settings {

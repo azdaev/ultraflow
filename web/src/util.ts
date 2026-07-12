@@ -77,12 +77,12 @@ export interface FlowDef {
 
 export const FLOWS: Record<string, FlowDef> = {
   solo: { key: "solo", label: "Solo", steps: ["build"], available: true },
-  "plan-build": { key: "plan-build", label: "Plan → Build", steps: ["plan", "build"], available: false },
+  "plan-build": { key: "plan-build", label: "Plan → Build", steps: ["plan", "build"], available: true },
   "plan-build-critic-gate": {
     key: "plan-build-critic-gate",
     label: "Plan → Build → Critic → Gate",
     steps: ["plan", "build", "critic", "gate"],
-    available: false,
+    available: true,
   },
   tdd: {
     key: "tdd",

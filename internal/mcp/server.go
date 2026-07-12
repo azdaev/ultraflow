@@ -117,26 +117,22 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 			"and you can embed them inline in the report with Markdown image syntax `![caption](shot.png)` " +
 			"(reference the bare filename; it resolves to the saved screenshot).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, a finishArgs) (*mcp.CallToolResult, any, error) {
-		summary := a.Summary
-		if summary == "" {
-			summary = "agent reported the task complete"
+		// CompleteTurn records the report + one-line summary and decides the task's
+		// next state: a solo task (no run) does the guarded finish to review, while a
+		// step of a multi-step flow just marks its turn done so the orchestrator
+		// advances the graph — the card doesn't flash to review between steps. Report
+		// is appended first inside CompleteTurn so the summary stays the latest
+		// non-empty event (what the card's activity strip shows).
+		if err := svc.CompleteTurn(a.TaskID, a.Summary, a.Report); err != nil {
+			return nil, nil, err
 		}
-		// Report first so the one-line summary stays the task's latest non-empty
-		// event — that's what the board card's activity strip shows, and a full
-		// Markdown report there would swamp it.
-		if a.Report != "" {
-			svc.AppendTaskEvent(a.TaskID, "report", a.Report)
-		}
-		svc.AppendTaskEvent(a.TaskID, "result", summary)
-		if !svc.FinishForReview(a.TaskID) {
-			return nil, nil, fmt.Errorf("task is no longer running")
-		}
-		// End the live session so the slot frees. Close asynchronously: closing kills
+		// End the live session so the slot frees (and, mid-flow, so the runner's
+		// wait unblocks to launch the next step). Close asynchronously: closing kills
 		// this agent's own process, and we want this tool call to return first.
 		if sess, ok := term.Get(a.TaskID); ok {
 			go sess.Close()
 		}
-		return text("Recorded complete and sent to review. Your session is ending — you can stop now."), nil, nil
+		return text("Recorded complete. Your session is ending — you can stop now."), nil, nil
 	})
 
 	return s
