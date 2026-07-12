@@ -328,6 +328,108 @@ func (s *Service) FinishReview(id string) error {
 	return nil
 }
 
+// cancellableStatuses are the live/pending states a task can be STOPPED from — it
+// has (or is about to have) a running agent. A guarded swap out of one of these
+// into `cancelled` is what makes stop race-safe against the agent finishing or
+// dying at the same instant. Merging is deliberately excluded: it's a short git
+// op we don't interrupt mid-way.
+var cancellableStatuses = []model.TaskStatus{
+	model.StatusQueued, model.StatusPlanning, model.StatusRunning, model.StatusNeedsHuman,
+}
+
+// deletableStatuses are the states a task can be REMOVED from outright: not-yet-
+// started (backlog) or terminal (done, failed, cancelled). A live or in-review
+// task must be stopped or finished first — its agent and worktree are still in
+// play — so those states are absent here.
+var deletableStatuses = map[model.TaskStatus]bool{
+	model.StatusBacklog:   true,
+	model.StatusDone:      true,
+	model.StatusFailed:    true,
+	model.StatusCancelled: true,
+}
+
+// CancelTask stops a running (or queued/parked) task at the human's request. It
+// flips the card to `cancelled` with a guarded swap — so it can't clobber a task
+// that finished or died in the same instant — retires any pending checkpoint, and
+// frees the task's dev-server runtime. It does NOT kill the agent process itself;
+// the caller (which owns the terminal manager) closes the live session after this
+// returns. Returns whether the task actually transitioned (false → it wasn't in a
+// stoppable state, with an explanatory error). The orchestrator's self-heal loop
+// reads the `cancelled` status this sets and stands down instead of retrying, so
+// closing the session can't be misread as a crash to auto-fix.
+func (s *Service) CancelTask(id string) (bool, error) {
+	t, err := s.store.GetTask(id)
+	if err != nil {
+		return false, err
+	}
+	if !s.SwapStatus(id, cancellableStatuses, model.StatusCancelled) {
+		return false, fmt.Errorf("this task isn't running, so there's nothing to stop (it's %s)", t.Status)
+	}
+	s.AbandonRequests(id)
+	s.releaseRuntime(t)
+	s.appendEvent(id, "status", "stopped by you")
+	return true, nil
+}
+
+// DeleteTask removes a task from the board for good: it tears down any leftover
+// git worktree, frees any runtime it still held, and deletes the task with its
+// events and checkpoints. Only a not-live task can be removed (see
+// deletableStatuses) so we never yank a worktree out from under a working agent —
+// a running/parked/review task must be stopped or finished first.
+func (s *Service) DeleteTask(id string) error {
+	t, err := s.store.GetTask(id)
+	if err != nil {
+		return err
+	}
+	if !deletableStatuses[t.Status] {
+		return fmt.Errorf("a %s task can't be removed — stop or finish it first", t.Status)
+	}
+	s.teardownWorktree(t)
+	s.releaseRuntime(t)
+	if err := s.store.DeleteTask(id); err != nil {
+		return err
+	}
+	s.publish("task_deleted", map[string]any{"id": id})
+	return nil
+}
+
+// teardownWorktree removes a task's leftover git worktree, best-effort. A merged
+// task's checkout is already gone (Merge tore it down) and an in-place task never
+// had one; this cleans up the rest — e.g. a cancelled task whose worktree we kept
+// for inspection. Silent on failure: a missing worktree is not an error here.
+func (s *Service) teardownWorktree(t model.Task) {
+	if s.wt == nil || t.Worktree == "" {
+		return
+	}
+	p, err := s.store.ProjectByName(t.Project)
+	if err != nil || p.RepoPath == "" {
+		return
+	}
+	_ = s.wt.Remove(p.RepoPath, t.ID)
+}
+
+// ArchiveClosed removes every closed (done or cancelled) task in one sweep — the
+// board's "Clear" affordance, so the Done column doesn't grow without bound over
+// a week of use. Returns how many were removed.
+func (s *Service) ArchiveClosed() (int, error) {
+	tasks, err := s.store.ListTasks()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, t := range tasks {
+		if t.Status != model.StatusDone && t.Status != model.StatusCancelled {
+			continue
+		}
+		if err := s.DeleteTask(t.ID); err != nil {
+			log.Printf("archive: delete task %s: %v", t.ID, err)
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
 // AppendTaskEvent records an agent-produced event and fans it out live.
 func (s *Service) AppendTaskEvent(taskID, kind, text string) { s.appendEvent(taskID, kind, text) }
 

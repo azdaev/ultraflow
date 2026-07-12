@@ -35,7 +35,7 @@ export function Topbar({
         <span className="text-muted/70">+</span>
         <span className="flex-1">Add a task…</span>
         <kbd className="rounded border border-hairline px-1.5 py-0.5 font-mono text-[11px] text-muted">
-          ⌘N
+          N
         </kbd>
       </button>
 

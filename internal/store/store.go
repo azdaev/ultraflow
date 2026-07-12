@@ -207,6 +207,28 @@ func (s *Store) ListTasks() ([]model.Task, error) {
 	return s.queryTasks(`ORDER BY created_at DESC`)
 }
 
+// DeleteTask removes a task with its dependent rows (events and human requests)
+// in one transaction, so the board's Remove/Archive actions leave no orphaned
+// thread or checkpoint behind. Idempotent: an unknown id affects no rows. Any git
+// worktree is torn down by the caller (the store doesn't know the repo path).
+func (s *Store) DeleteTask(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`DELETE FROM events WHERE task_id=?`,
+		`DELETE FROM human_requests WHERE task_id=?`,
+		`DELETE FROM tasks WHERE id=?`,
+	} {
+		if _, err := tx.Exec(q, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) BacklogTasks() ([]model.Task, error) {
 	return s.queryTasks(`WHERE status='backlog' ORDER BY created_at ASC`)
 }

@@ -18,7 +18,7 @@ export function App() {
   const [layout, setLayout] = useLayout();
   const now = useNow(1000);
   // The composer carries an optional draft: the inline "+ Add task" hands off its
-  // typed title and column project via "More…"; ⌘N and the Topbar open it blank.
+  // typed title and column project via "More…"; the "n" key and the Topbar open it blank.
   const [composer, setComposer] = useState({ open: false, title: "", project: "" });
   const openComposer = (title = "", project = "") =>
     setComposer({ open: true, title, project });
@@ -26,13 +26,24 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
-  // ⌘N / Ctrl+N opens the composer.
+  // Pressing "n" opens the composer (Linear/GitHub style). ⌘N is a browser-chrome
+  // shortcut (new window) that the page can never intercept, so we use a plain key
+  // and skip it while the user is typing in a field.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
-        e.preventDefault();
-        openComposer();
-      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key.toLowerCase() !== "n") return;
+      const el = e.target as HTMLElement | null;
+      if (
+        el &&
+        (el.isContentEditable ||
+          el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.tagName === "SELECT")
+      )
+        return;
+      e.preventDefault();
+      openComposer();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

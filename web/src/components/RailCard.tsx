@@ -31,6 +31,11 @@ export function RailCard({ item, now, onOpen }: Props) {
   }
   items.push({ separator: true });
   items.push({ label: "Copy task ID", onSelect: () => copyText(taskId) });
+  if (item.type === "failed") {
+    // A gave-up task lingers in the rail; let the human dismiss it for good.
+    items.push({ separator: true });
+    items.push({ label: "Remove task", danger: true, onSelect: () => api.remove(taskId).catch(() => {}) });
+  }
 
   return (
     <motion.div

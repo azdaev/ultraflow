@@ -54,6 +54,9 @@ func main() {
 	port(rv2, 41839)
 	svc.SetWorktree(rv2.ID, "/Users/you/Code/ultraflow/.ultraflow/worktrees/"+rv2.ID)
 	mk("Draft the flows YAML schema", "", "ultraflow", "claude", "solo", model.StatusDone, "")
+	// A task the human Stopped mid-run: it sits in the Done column as a muted
+	// "Stopped" card (see groupColumns/TaskCard) and can be Removed or cleared.
+	mk("Try a second empty-state layout", "", "worktrees", "claude", "solo", model.StatusCancelled, "stopped by you")
 	mk("Migrate answer store to WAL", "", "ultraflow", "claude", "solo", model.StatusFailed, "go build ./... : undefined: foo")
 	mk("Add keyboard shortcuts help", "", "worktrees", "claude", "solo", model.StatusQueued, "")
 

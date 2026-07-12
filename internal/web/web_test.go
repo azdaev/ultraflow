@@ -260,6 +260,84 @@ func TestReviewEndpoints(t *testing.T) {
 	}
 }
 
+// TestCancelDeleteArchive covers the everyday task-management routes: remove a
+// not-started task, refuse to remove a live one, stop (cancel) a live one, and
+// clear closed tasks in bulk.
+func TestCancelDeleteArchive(t *testing.T) {
+	ts, svc := newTestServer(t)
+	defer ts.Close()
+
+	// A backlog task can be removed outright.
+	t1, _ := svc.CreateTask("remove me", "", "")
+	if code := deleteTask(t, ts.URL, t1.ID); code != http.StatusOK {
+		t.Fatalf("delete backlog task: got %d, want 200", code)
+	}
+	if _, err := svc.GetTask(t1.ID); err == nil {
+		t.Fatal("deleted task should be gone from the store")
+	}
+
+	// A live task can't be removed — it must be stopped first.
+	t2, _ := svc.CreateTask("running one", "", "")
+	svc.UpdateStatus(t2.ID, model.StatusRunning)
+	if code := deleteTask(t, ts.URL, t2.ID); code != http.StatusConflict {
+		t.Fatalf("delete of a running task should 409, got %d", code)
+	}
+
+	// Stopping it moves it to cancelled (no live terminal here, so it's a no-op kill).
+	res, err := http.Post(ts.URL+"/api/tasks/"+t2.ID+"/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatalf("cancel post: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("cancel a running task: got %d, want 200", res.StatusCode)
+	}
+	if got, _ := svc.GetTask(t2.ID); got.Status != model.StatusCancelled {
+		t.Fatalf("stopped task status = %s, want cancelled", got.Status)
+	}
+
+	// Cancelling a task that isn't live → 409.
+	res, _ = http.Post(ts.URL+"/api/tasks/"+t2.ID+"/cancel", "application/json", nil)
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("cancel of a non-live task should 409, got %d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	// A done task plus the cancelled one are both cleared by archive_closed.
+	t3, _ := svc.CreateTask("finished", "", "")
+	svc.UpdateStatus(t3.ID, model.StatusDone)
+	res, err = http.Post(ts.URL+"/api/archive_closed", "application/json", nil)
+	if err != nil {
+		t.Fatalf("archive post: %v", err)
+	}
+	var out struct {
+		Removed int `json:"removed"`
+	}
+	json.NewDecoder(res.Body).Decode(&out)
+	res.Body.Close()
+	if out.Removed != 2 {
+		t.Fatalf("archive_closed removed %d, want 2 (the done + cancelled tasks)", out.Removed)
+	}
+	if _, err := svc.GetTask(t2.ID); err == nil {
+		t.Fatal("archived cancelled task should be gone")
+	}
+	if _, err := svc.GetTask(t3.ID); err == nil {
+		t.Fatal("archived done task should be gone")
+	}
+}
+
+// deleteTask issues DELETE /api/tasks/{id} and returns the status code.
+func deleteTask(t *testing.T, base, id string) int {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodDelete, base+"/api/tasks/"+id, nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete %s: %v", id, err)
+	}
+	res.Body.Close()
+	return res.StatusCode
+}
+
 func getJSON(t *testing.T, url string, v any) {
 	t.Helper()
 	res, err := http.Get(url)

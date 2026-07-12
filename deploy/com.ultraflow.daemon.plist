@@ -18,14 +18,16 @@
     <string>7787</string>
   </array>
 
-  <!-- launchd starts with a bare PATH; the daemon shells out to `claude` and
-       `git`, so make both reachable. ~/.local/bin holds the real `claude`
-       binary (the ~/.superset/bin one is a wrapper that delegates to it), so
-       both dirs must be present or agents die with exit 127. -->
+  <!-- launchd starts with a bare PATH. Agents now resolve the user's real
+       login-shell PATH at spawn time (internal/agent/env.go, the way Superset
+       and Orca do it), so this list is only a FALLBACK for when that probe
+       times out. It still needs the agent-CLI dirs: ~/.local/bin (real
+       `claude`), the nvm bin dir (real `codex`/`node` — its absence here was
+       the original `exit 127`), homebrew, and `git`. Adjust for your machine. -->
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/Users/amady/.superset/bin:/Users/amady/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/Users/amady/.superset/bin:/Users/amady/.local/bin:/Users/amady/.nvm/versions/node/v24.13.0/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
 
   <key>WorkingDirectory</key>

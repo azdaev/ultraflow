@@ -53,7 +53,7 @@ export function PipelineBoard({
       <Column title="Backlog" tasks={cols.backlog} activity={activity} activityKind={activityKind} now={now} onOpen={onOpen} accent="muted" projectsByName={byName} showChip={showChip} onAdd={addTask} onExpand={onExpand} />
       <Column title="Running" tasks={cols.running} activity={activity} activityKind={activityKind} now={now} onOpen={onOpen} accent="steel" projectsByName={byName} showChip={showChip} />
       <Column title="Review" tasks={cols.review} activity={activity} activityKind={activityKind} now={now} onOpen={onOpen} accent="moss" projectsByName={byName} showChip={showChip} />
-      <Column title="Done" tasks={cols.done} activity={activity} activityKind={activityKind} now={now} onOpen={onOpen} accent="moss" projectsByName={byName} showChip={showChip} />
+      <Column title="Done" tasks={cols.done} activity={activity} activityKind={activityKind} now={now} onOpen={onOpen} accent="moss" projectsByName={byName} showChip={showChip} onClear={() => api.archiveClosed().catch(() => {})} />
     </div>
   );
 }

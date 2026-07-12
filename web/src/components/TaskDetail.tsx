@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, type HumanRequest, type Task, type TaskEvent } from "../api";
 import { agentColor, agentLabel, ago, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { AnswerBox } from "./AnswerBox";
 import { CheckpointContext } from "./CheckpointContext";
-import { AgentTerminal } from "./AgentTerminal";
+import { AgentTerminal, type AgentTerminalHandle } from "./AgentTerminal";
 import { ReviewPanel } from "./ReviewPanel";
 import { ReviseBox } from "./ReviseBox";
 
@@ -22,6 +22,7 @@ interface Props {
 // task details and the decision panel in a side rail.
 export function TaskDetail({ task, request, activitySig, now, onClose }: Props) {
   const [events, setEvents] = useState<TaskEvent[]>([]);
+  const termRef = useRef<AgentTerminalHandle>(null);
   const taskId = task?.id;
   const live = task?.status === "running" || task?.status === "needs_human";
   // Send-back is available whenever the agent has parked the task for a decision.
@@ -103,17 +104,36 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
               <div className="flex min-w-0 flex-1 flex-col p-4">
                 {live ? (
                   <>
-                    <div className="mb-2 flex items-center gap-2">
-                      <span className="relative flex h-1.5 w-1.5">
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-moss opacity-60" />
-                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-moss" />
-                      </span>
-                      <h3 className="eyebrow text-muted">
-                        Terminal · live — watch progress, Ctrl-C to interrupt
-                      </h3>
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <span className="relative flex h-1.5 w-1.5">
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-moss opacity-60" />
+                          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-moss" />
+                        </span>
+                        <h3 className="eyebrow text-muted">Terminal · live</h3>
+                      </div>
+                      <div className="flex items-center gap-2.5">
+                        {/* Interrupt sends Esc to the agent (a soft "stop the
+                            current turn"), the discoverable equivalent of pressing
+                            Esc while the terminal is focused — so you never need to
+                            guess which key does what. */}
+                        <button
+                          onClick={() => termRef.current?.interrupt()}
+                          title="Send Esc to the agent to stop what it's doing"
+                          className="rounded-lg border border-hairline bg-surface px-2.5 py-1 text-[12px] font-medium text-ink transition hover:border-accent-line hover:text-accent"
+                        >
+                          Interrupt
+                        </button>
+                        <span className="text-[11px] leading-tight text-muted/70">
+                          click in → Esc / Ctrl-C interrupt · Close to exit
+                        </span>
+                      </div>
                     </div>
-                    <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-hairline bg-[#17171A] p-2">
-                      <AgentTerminal taskId={task.id} />
+                    {/* focus-within ring: when the terminal has focus your keys go
+                        to the agent (Esc interrupts); click outside it and Esc
+                        closes the card instead. The ring makes that state visible. */}
+                    <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-hairline bg-[#17171A] p-2 transition-colors focus-within:border-accent">
+                      <AgentTerminal ref={termRef} taskId={task.id} />
                     </div>
                   </>
                 ) : showReview ? (

@@ -15,6 +15,16 @@ const DEV_LINK_STATUSES = new Set<Task["status"]>([
   "review",
 ]);
 
+// A task with a live (or about-to-be-live) agent can be Stopped; a not-live task
+// (backlog, or terminal) can be Removed. Kept in sync with the daemon's
+// cancellableStatuses / deletableStatuses (internal/core/service.go).
+const CANCELLABLE = new Set<Task["status"]>(["queued", "running", "needs_human", "planning"]);
+const DELETABLE = new Set<Task["status"]>(["backlog", "done", "failed", "cancelled"]);
+
+// A closed card (done or cancelled) reads as muted — its work is finished, so it
+// recedes rather than competing with live cards for attention.
+const CLOSED = new Set<Task["status"]>(["done", "cancelled"]);
+
 interface Props {
   task: Task;
   activity?: string;
@@ -49,10 +59,17 @@ export function TaskCard({ task, activity, activityKind, now, onOpen, project, s
   if (task.status === "failed") {
     items.push({ label: "Retry", onSelect: () => api.retry(task.id).catch(() => {}) });
   }
+  if (CANCELLABLE.has(task.status)) {
+    items.push({ label: "Stop task", danger: true, onSelect: () => api.cancel(task.id).catch(() => {}) });
+  }
   items.push({ separator: true });
   items.push({ label: "Copy task ID", onSelect: () => copyText(task.id) });
   if (task.worktree) {
     items.push({ label: "Copy worktree path", onSelect: () => copyText(task.worktree) });
+  }
+  if (DELETABLE.has(task.status)) {
+    items.push({ separator: true });
+    items.push({ label: "Remove task", danger: true, onSelect: () => api.remove(task.id).catch(() => {}) });
   }
 
   return (
@@ -72,13 +89,13 @@ export function TaskCard({ task, activity, activityKind, now, onOpen, project, s
       <div className="flex items-center justify-between">
         <StatusLabel task={task} now={now} />
         <span className="font-mono text-[11px] text-muted">
-          {task.status === "done" ? ago(task.updatedAt, now) : elapsed(task.updatedAt, now)}
+          {CLOSED.has(task.status) ? ago(task.updatedAt, now) : elapsed(task.updatedAt, now)}
         </span>
       </div>
 
       <h3
         className={`mt-2 text-[15px] font-semibold leading-snug ${
-          task.status === "done" ? "text-muted" : "text-ink"
+          CLOSED.has(task.status) ? "text-muted" : "text-ink"
         }`}
       >
         {task.title}
@@ -328,6 +345,12 @@ function StatusLabel({ task, now }: { task: Task; now: number }) {
       return (
         <Label dot="bg-rust" text="text-rust">
           Failed
+        </Label>
+      );
+    case "cancelled":
+      return (
+        <Label dot="bg-muted" text="text-muted">
+          Stopped
         </Label>
       );
     default:

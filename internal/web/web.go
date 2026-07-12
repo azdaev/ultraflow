@@ -88,7 +88,10 @@ func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.
 	r.DELETE("/api/projects/:id", s.deleteProject)
 	r.GET("/api/tasks", s.listTasks)
 	r.POST("/api/tasks", s.createTask)
+	r.POST("/api/archive_closed", s.archiveClosed)
 	r.GET("/api/tasks/:id", s.getTask)
+	r.DELETE("/api/tasks/:id", s.deleteTask)
+	r.POST("/api/tasks/:id/cancel", s.cancelTask)
 	r.GET("/api/tasks/:id/events", s.taskEvents)
 	r.GET("/api/tasks/:id/diff", s.diff)
 	r.POST("/api/tasks/:id/revise", s.revise)
@@ -348,6 +351,49 @@ func (s *server) retryTask(c *gin.Context) {
 		return
 	}
 	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// cancelTask stops a running/queued/parked task: the service flips it to
+// `cancelled` (guarded, so it can't clobber a task that just finished) and frees
+// its runtime, then we kill the live agent's process group here — this handler
+// owns the terminal manager. 409 if the task isn't in a stoppable state.
+func (s *server) cancelTask(c *gin.Context) {
+	id := c.Param("id")
+	stopped, err := s.svc.CancelTask(id)
+	if err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusConflict)
+		return
+	}
+	// Kill the agent AFTER the status is `cancelled`, so the orchestrator's self-heal
+	// loop reads that state on the resulting exit and stands down instead of retrying.
+	if stopped && s.term != nil {
+		if sess, ok := s.term.Get(id); ok {
+			sess.Close()
+		}
+	}
+	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// deleteTask removes a not-live task (backlog or a terminal done/failed/cancelled)
+// for good, tearing down any leftover worktree. 409 if the task is still live or
+// in review — it must be stopped or finished first.
+func (s *server) deleteTask(c *gin.Context) {
+	if err := s.svc.DeleteTask(c.Param("id")); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// archiveClosed removes every closed (done or cancelled) task in one sweep — the
+// board's "Clear" affordance so the Done column doesn't grow without bound.
+func (s *server) archiveClosed(c *gin.Context) {
+	n, err := s.svc.ArchiveClosed()
+	if err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(c, http.StatusOK, map[string]any{"removed": n})
 }
 
 // mergeTask lands a reviewed task's worktree branch into the project repo and

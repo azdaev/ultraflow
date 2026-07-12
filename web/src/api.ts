@@ -135,6 +135,29 @@ export const api = {
       json<{ status: string }>(r),
     ),
 
+  // cancel stops a running/queued/parked task: the daemon flips it to `cancelled`
+  // and kills the live agent. Rejects (409) if the task isn't in a stoppable
+  // state (already finished, in review, etc.).
+  cancel: (taskId: string) =>
+    fetch(`/api/tasks/${taskId}/cancel`, { method: "POST" }).then((r) =>
+      json<{ status: string }>(r),
+    ),
+
+  // remove deletes a not-live task (backlog, or a terminal done/failed/cancelled)
+  // for good, tearing down any leftover worktree. Rejects (409) if the task is
+  // still live or in review — stop or finish it first.
+  remove: (taskId: string) =>
+    fetch(`/api/tasks/${taskId}`, { method: "DELETE" }).then((r) =>
+      json<{ status: string }>(r),
+    ),
+
+  // archiveClosed clears every closed (done or cancelled) task in one sweep, so
+  // the Done column doesn't grow without bound. Returns how many were removed.
+  archiveClosed: () =>
+    fetch(`/api/archive_closed`, { method: "POST" }).then((r) =>
+      json<{ removed: number }>(r),
+    ),
+
   // merge lands a reviewed task's worktree branch into the project repo and
   // finishes it. Rejects (409) with the git explanation if it can't complete.
   merge: (taskId: string) =>

@@ -30,9 +30,12 @@ export function groupColumns(tasks: Task[]): Columns {
         cols.review.push(t);
         break;
       case "done":
+      case "cancelled":
+        // A cancelled task is closed, like done — park it in the Done column so it
+        // stays visible (and archivable) rather than vanishing off the board.
         cols.done.push(t);
         break;
-      // failed / cancelled: surfaced in the attention rail, not a column.
+      // failed: surfaced in the attention rail, not a column.
     }
   }
   return cols;

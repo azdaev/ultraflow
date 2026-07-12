@@ -156,6 +156,13 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		o.acquire()
 		defer o.release()
 
+		// The task may have been Stopped (→ cancelled) while it sat queued waiting for
+		// a slot — a wait that can last minutes. If it's no longer queued, don't spin
+		// an agent up on it; that would revive a task the human deliberately stopped.
+		if cur, err := o.svc.GetTask(t.ID); err != nil || cur.Status != model.StatusQueued {
+			return
+		}
+
 		// Give the task its own isolated checkout so parallel agents don't collide.
 		// Falls back to the shared workdir when the task has no registered git repo.
 		// The worktree is intentionally kept after the run so the human can review
@@ -224,10 +231,12 @@ func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, dir st
 			return // daemon shutting down — startup recovery requeues it next boot
 		}
 		// An intentional end, not a crash: finish_task and the idle-watcher both send
-		// the task to `review` and then Close the session (SIGKILL), so the exit here
-		// looks like a non-nil crash error. If the task already reached review, the
-		// agent was ended on purpose — resolve, don't self-heal into a spurious retry.
-		if cur, _ := o.svc.GetTask(t.ID); cur.Status == model.StatusReview {
+		// the task to `review` and then Close the session (SIGKILL), and a human Stop
+		// sets `cancelled` and then Closes it — so the exit here looks like a non-nil
+		// crash error. If the task already reached one of those externally-set states,
+		// the agent was ended on purpose — resolve, don't self-heal into a spurious
+		// retry that would revive a stopped task.
+		if cur, _ := o.svc.GetTask(t.ID); cur.Status == model.StatusReview || cur.Status == model.StatusCancelled {
 			return
 		}
 		if werr == nil {

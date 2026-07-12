@@ -19,6 +19,9 @@ interface Props {
   // "More…" hands the current draft off to the full composer (project · flow ·
   // agent · body), carrying whatever title has been typed so far.
   onExpand?: (title: string) => void;
+  // When provided, a "Clear" action renders in the header (once there are cards)
+  // — used on the Done column to archive closed tasks so it can't grow unbounded.
+  onClear?: () => void;
 }
 
 const dotColor: Record<string, string> = {
@@ -41,6 +44,7 @@ export function Column({
   showChip,
   onAdd,
   onExpand,
+  onClear,
 }: Props) {
   return (
     <div className="flex min-w-0 flex-1 basis-0 flex-col">
@@ -48,6 +52,15 @@ export function Column({
         <span className={`h-2 w-2 rounded-full ${dotColor[accent]}`} />
         <h2 className="eyebrow text-ink">{title}</h2>
         <span className="font-mono text-[11px] text-muted">{tasks.length}</span>
+        {onClear && tasks.length > 0 && (
+          <button
+            onClick={onClear}
+            title="Remove all closed (done & cancelled) tasks"
+            className="ml-auto rounded px-1.5 py-0.5 text-[11px] font-medium text-muted transition hover:text-rust"
+          >
+            Clear
+          </button>
+        )}
       </div>
 
       <div className="flex flex-col gap-2.5">

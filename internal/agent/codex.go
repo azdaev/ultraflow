@@ -62,8 +62,10 @@ func (c *Codex) Command(ctx context.Context, dir, prompt string) (*exec.Cmd, fun
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	// A PTY needs a TERM so codex's TUI renders (colors, cursor moves).
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	// The user's real login-shell PATH (nvm's codex/node live there — the reason
+	// codex died with exit 127 under launchd's bare PATH) plus a TERM for the
+	// PTY's TUI rendering. See agentEnv.
+	cmd.Env = agentEnv()
 	return cmd, func() {}, nil
 }
 
@@ -94,6 +96,8 @@ func (c *Codex) Run(ctx context.Context, dir, prompt string, out chan<- Event) e
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	// Real login-shell PATH so nvm's codex/node resolve under launchd. See agentEnv.
+	cmd.Env = agentEnv()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

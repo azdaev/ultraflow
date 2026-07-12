@@ -112,6 +112,14 @@ function applyEvent(
       );
       break;
     }
+    case "task_deleted": {
+      // A Removed/Archived task: drop it and any pending checkpoint it still had,
+      // so the card and its rail entry leave the board together.
+      const d = env.data as { id: string };
+      setTasks((prev) => prev.filter((t) => t.id !== d.id));
+      setRequests((prev) => prev.filter((r) => r.taskId !== d.id));
+      break;
+    }
     case "project_created": {
       const p = env.data as Project;
       setProjects((prev) =>

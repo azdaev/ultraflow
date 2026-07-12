@@ -43,8 +43,9 @@ func (c *Claude) Command(ctx context.Context, dir, prompt string) (*exec.Cmd, fu
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	// A PTY needs a TERM so claude's TUI renders (colors, cursor moves).
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	// The user's real login-shell PATH (so nvm/homebrew/~/.local binaries
+	// resolve) plus a TERM for the PTY's TUI rendering. See agentEnv.
+	cmd.Env = agentEnv()
 	return cmd, cleanup, nil
 }
 
@@ -70,7 +71,7 @@ func (c *Claude) ResumeCommand(ctx context.Context, dir, prompt string) (*exec.C
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = agentEnv()
 	return cmd, cleanup, nil
 }
 
@@ -133,6 +134,9 @@ func (c *Claude) Run(ctx context.Context, dir, prompt string, out chan<- Event) 
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	// Resolve the user's real login-shell PATH so the CLI is found under launchd's
+	// bare PATH (else `exit 127`). See agentEnv.
+	cmd.Env = agentEnv()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

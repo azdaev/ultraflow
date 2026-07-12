@@ -1,69 +1,171 @@
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
+// The imperative handle a parent uses to drive the terminal without owning its
+// WebSocket: `interrupt` sends a bare Esc to the agent (the soft "stop what you're
+// doing" a Claude/Codex TUI understands), `focus` puts the cursor in it.
+export interface AgentTerminalHandle {
+  interrupt: () => void;
+  focus: () => void;
+}
+
 // AgentTerminal is a real, interactive terminal bound to the task's live agent
 // PTY over a WebSocket: it renders the actual CLI output and sends keystrokes
-// back (including Ctrl-C). xterm.js is the emulator; the Go daemon bridges the
-// PTY (see internal/terminal + the /api/tasks/{id}/terminal WS endpoint).
-export function AgentTerminal({ taskId }: { taskId: string }) {
-  const ref = useRef<HTMLDivElement>(null);
+// back (including Esc and Ctrl-C). xterm.js is the emulator; the Go daemon bridges
+// the PTY (see internal/terminal + the /api/tasks/{id}/terminal WS endpoint).
+export const AgentTerminal = forwardRef<AgentTerminalHandle, { taskId: string }>(
+  function AgentTerminal({ taskId }, ref) {
+    const elRef = useRef<HTMLDivElement>(null);
+    // Kept in refs so the imperative handle can reach the live socket/terminal
+    // without re-running the setup effect.
+    const wsRef = useRef<WebSocket | null>(null);
+    const termRef = useRef<Terminal | null>(null);
+    const encRef = useRef(new TextEncoder());
 
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-
-    const term = new Terminal({
-      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-      fontSize: 12,
-      lineHeight: 1.2,
-      cursorBlink: true,
-      theme: { background: "#17171A", foreground: "#ECECEA", cursor: "#F5501E" },
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(el);
-    fit.fit();
-
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/api/tasks/${taskId}/terminal`);
-    ws.binaryType = "arraybuffer";
-    const enc = new TextEncoder();
-
-    const sendResize = () => {
-      try {
-        fit.fit();
-      } catch {
-        return;
-      }
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ resize: { rows: term.rows, cols: term.cols } }));
-      }
+    // send writes raw bytes to the PTY if the socket is up (no-op otherwise).
+    const send = (data: string) => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(encRef.current.encode(data));
     };
 
-    ws.onopen = sendResize;
-    ws.onmessage = (e) => {
-      if (typeof e.data === "string") term.write(e.data);
-      else term.write(new Uint8Array(e.data));
-    };
-    ws.onclose = () => term.write("\r\n\x1b[2m— session ended —\x1b[0m\r\n");
-    ws.onerror = () => term.write("\r\n\x1b[31m— couldn't connect to the agent terminal —\x1b[0m\r\n");
+    useImperativeHandle(ref, () => ({
+      // \x1b is Esc — the agent's interrupt. Refocus after so the user can keep
+      // typing into the terminal without a second click.
+      interrupt: () => {
+        send("\x1b");
+        termRef.current?.focus();
+      },
+      focus: () => termRef.current?.focus(),
+    }));
 
-    const data = term.onData((d) => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(enc.encode(d));
-    });
+    useEffect(() => {
+      const el = elRef.current;
+      if (!el) return;
 
-    const ro = new ResizeObserver(() => sendResize());
-    ro.observe(el);
+      const term = new Terminal({
+        fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+        fontSize: 12,
+        lineHeight: 1.2,
+        cursorBlink: true,
+        theme: { background: "#17171A", foreground: "#ECECEA", cursor: "#F5501E" },
+      });
+      termRef.current = term;
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(el);
+      fit.fit();
 
-    return () => {
-      ro.disconnect();
-      data.dispose();
-      ws.close();
-      term.dispose();
-    };
-  }, [taskId]);
+      // This handler runs ONLY while the terminal is focused (xterm listens on its
+      // own textarea), so "focused" is implicit here — that's what makes Esc
+      // routing correct: when you're typing in the terminal, its keys are yours.
+      //   • Esc — you're in the terminal, so it's the agent's interrupt: forward it
+      //     to the PTY (a Claude/Codex TUI reads Esc as "stop the current turn").
+      //     stopPropagation keeps it from ALSO reaching the card's window-level Esc
+      //     handler, so interrupting doesn't slam the card shut at the same time.
+      //     (When the terminal is NOT focused this handler never runs, the keydown
+      //     bubbles to the window, and Esc closes the card as one would expect.)
+      //   • Ctrl/Cmd-C with a selection — you're copying output, not asking to
+      //     SIGINT the agent. Copy it and stay out of the PTY. With no selection,
+      //     Ctrl-C falls through as a real interrupt (as the header advertises).
+      term.attachCustomKeyEventHandler((e) => {
+        if (e.type !== "keydown") return true;
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          return true;
+        }
+        const copyCombo = (e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C");
+        if (copyCombo && term.hasSelection() && navigator.clipboard) {
+          navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+          return false;
+        }
+        return true;
+      });
 
-  return <div ref={ref} className="h-full w-full" />;
-}
+      const enc = encRef.current;
+      let ws: WebSocket | null = null;
+      let disposed = false;
+      let attempts = 0;
+      let reconnectTimer: number | undefined;
+
+      const sendResize = () => {
+        try {
+          fit.fit();
+        } catch {
+          return;
+        }
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ resize: { rows: term.rows, cols: term.cols } }));
+        }
+      };
+
+      const connect = () => {
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        const sock = new WebSocket(`${proto}://${location.host}/api/tasks/${taskId}/terminal`);
+        sock.binaryType = "arraybuffer";
+        ws = sock;
+        wsRef.current = sock;
+
+        sock.onopen = () => {
+          // A reconnect re-attaches from scratch and the daemon replays the whole
+          // scrollback — clear first so it repaints instead of doubling up.
+          if (attempts > 0) {
+            term.reset();
+            term.write("\x1b[2m— reconnected —\x1b[0m\r\n");
+          }
+          attempts = 0;
+          sendResize();
+        };
+        sock.onmessage = (e) => {
+          if (typeof e.data === "string") term.write(e.data);
+          else term.write(new Uint8Array(e.data));
+        };
+        sock.onclose = (e) => {
+          if (disposed) return;
+          // A clean close (code 1000) is the agent's session actually ending — final.
+          // Anything else is a transient drop while the agent is still running, so
+          // reconnect and replay rather than falsely declaring the session over.
+          if (e.code === 1000) {
+            term.write("\r\n\x1b[2m— session ended —\x1b[0m\r\n");
+            return;
+          }
+          if (attempts >= 5) {
+            term.write("\r\n\x1b[31m— lost the agent terminal —\x1b[0m\r\n");
+            return;
+          }
+          const delay = Math.min(1000 * 2 ** attempts, 8000);
+          attempts++;
+          term.write("\r\n\x1b[2m— connection dropped, reconnecting… —\x1b[0m\r\n");
+          reconnectTimer = window.setTimeout(connect, delay);
+        };
+        // onerror is always followed by onclose, which owns the reconnect decision.
+      };
+
+      connect();
+
+      const data = term.onData((d) => {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(enc.encode(d));
+      });
+
+      const ro = new ResizeObserver(() => sendResize());
+      ro.observe(el);
+
+      return () => {
+        disposed = true;
+        if (reconnectTimer) window.clearTimeout(reconnectTimer);
+        ro.disconnect();
+        data.dispose();
+        if (ws) {
+          ws.onclose = null; // don't let teardown look like a drop and reconnect
+          ws.close();
+        }
+        wsRef.current = null;
+        termRef.current = null;
+        term.dispose();
+      };
+    }, [taskId]);
+
+    return <div ref={elRef} className="h-full w-full" />;
+  },
+);
