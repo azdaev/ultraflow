@@ -600,6 +600,13 @@ func (s *server) createTask(c *gin.Context) {
 		http.Error(c.Writer, "title is required", http.StatusBadRequest)
 		return
 	}
+	// A project is mandatory: a task with no project runs in the shared workdir
+	// and its code is stranded uncommitted on main. The composer enforces this in
+	// the UI; guard the endpoint too so no path can create a project-less task.
+	if strings.TrimSpace(body.Project) == "" {
+		http.Error(c.Writer, "project is required", http.StatusBadRequest)
+		return
+	}
 	t, err := s.svc.CreateTaskFull(body.Title, body.Body, body.Project, body.Agent, body.Flow)
 	if err != nil {
 		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)

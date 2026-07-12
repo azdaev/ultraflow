@@ -62,7 +62,7 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
   }, [open, title, body, project, flow, agent]);
 
   async function submit() {
-    if (!title.trim() || busy) return;
+    if (!title.trim() || !project || busy) return;
     setBusy(true);
     setErr(null);
     try {
@@ -105,7 +105,11 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label="Project">
             <Select value={project} onChange={setProject}>
-              <option value="">No project</option>
+              {/* A project is required — the placeholder can't be submitted, so a
+                  task never lands with no project (stranded on main). */}
+              <option value="" disabled>
+                {projects.length ? "Select a project…" : "No projects — add one in Settings"}
+              </option>
               {projects.map((p) => (
                 <option key={p.id} value={p.name}>
                   {p.name}
@@ -143,7 +147,7 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
           <span className="text-[12px] text-muted">Runs in a fresh worktree · starts when a slot frees</span>
           <button
             onClick={submit}
-            disabled={busy || !title.trim()}
+            disabled={busy || !title.trim() || !project}
             className="rounded-lg bg-accent px-4 py-2.5 text-[14px] font-semibold text-white transition hover:brightness-105 disabled:opacity-50"
           >
             {busy ? "Adding…" : "Add task ⌘↵"}
