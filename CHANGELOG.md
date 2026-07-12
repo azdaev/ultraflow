@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.6 — 2026-07-12
+
+- Ultraflow: мы в paper переделали дизайн. вот он https://app.paper.design/file/01KX9P6V1FN11E1WEGHH3N9J07/1-0/3Q2-0. реализуй его. пожалуйста с нуля состаьв страницу в фронтенде, не пытайся исрпавить существующую. обычно плохо кончатеся. сразу грамтно сделай. используя скилл для реакта наш. и анимации через framer. /make-interfaces... /ux-ui-pro-max... компоненты, разделение, разбиение итд
+- Ultraflow: soetimes after approving gate, task goes into plan mode again
+
 ## v0.10.5 — 2026-07-12
 
 - Ultraflow: Audit multi-step task lifecycle
