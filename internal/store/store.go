@@ -38,6 +38,15 @@ func (s *Store) migrate() error {
 	return err
 }
 
+// Close checkpoints the WAL back into the main database file (so it doesn't grow
+// unbounded across runs) and closes the underlying connection pool.
+func (s *Store) Close() error {
+	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE);`); err != nil {
+		return err
+	}
+	return s.db.Close()
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS tasks (
   id         TEXT PRIMARY KEY,
