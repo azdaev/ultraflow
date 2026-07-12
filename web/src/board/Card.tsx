@@ -273,7 +273,7 @@ function AgentFooter({ agent, flow, closed }: { agent: string; flow: string; clo
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="flex items-center gap-1.75">
-        <AgentMark size={closed ? 12 : 13} color={closed ? "#C99180" : agentColor(agent)} />
+        <AgentMark size={closed ? 12 : 13} color={closed ? "#C99180" : agentColor(agent)} agent={agent} />
         <span className={`text-xs leading-4 ${closed ? "text-faint" : "text-muted"}`}>{agentLabel(agent)}</span>
       </span>
       <span className={`font-mono text-[10px] leading-3 tracking-[0.04em] ${closed ? "text-[#B0B0AA]" : "text-faint"}`}>
