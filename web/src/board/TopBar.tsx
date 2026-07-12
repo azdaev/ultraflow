@@ -1,4 +1,4 @@
-import { GearIcon, SearchIcon } from "./icons";
+import { GearIcon, SearchIcon, SparkIcon } from "./icons";
 
 interface Props {
   running: number;
@@ -14,17 +14,14 @@ interface Props {
 export function TopBar({ running, queued, onNewTask, onOpenSettings, onOpenChangelog }: Props) {
   return (
     <header className="sticky top-0 z-30 flex w-full items-center gap-4 border-b-[0.75px] border-hairline bg-board/95 px-5 py-2.75 backdrop-blur-sm">
-      {/* Brand — clicking the wordmark opens "What's new" (changelog). */}
-      <button
-        onClick={onOpenChangelog}
-        title="What's new"
-        className="flex grow basis-0 items-center gap-2.25 text-left"
-      >
+      {/* Brand wordmark (not interactive — "What's new" lives in its own button on
+          the right, so the logo doesn't hijack clicks). */}
+      <div className="flex grow basis-0 items-center gap-2.25">
         <span className="grid size-6 shrink-0 place-items-center rounded-[7px] bg-accent">
           <span className="size-2 rounded-[3px] bg-white" />
         </span>
         <span className="text-[15px] font-bold leading-[18px] tracking-[-0.3px] text-ink">Ultraflow</span>
-      </button>
+      </div>
 
       {/* Search / new-task field — a button so clicking it opens the composer. */}
       <button
@@ -44,6 +41,13 @@ export function TopBar({ running, queued, onNewTask, onOpenSettings, onOpenChang
           <span className="font-mono text-[11px] font-medium leading-[14px] text-ink">{running} running</span>
           <span className="font-mono text-[11px] leading-[14px] text-faint">· {queued} queued</span>
         </div>
+        <button
+          onClick={onOpenChangelog}
+          title="What's new"
+          className="grid size-8 shrink-0 place-items-center rounded-[9px] border-[0.75px] border-hairline bg-surface text-muted transition hover:border-ink/25 hover:text-ink"
+        >
+          <SparkIcon />
+        </button>
         <button
           onClick={onOpenSettings}
           title="Settings"

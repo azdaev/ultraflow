@@ -46,6 +46,22 @@ export function GearIcon({ size = 16, className }: IconProps) {
   );
 }
 
+// SparkIcon — the "What's new" / changelog glyph (a sparkle burst).
+export function SparkIcon({ size = 16, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={className} style={{ flexShrink: 0 }} aria-hidden>
+      <path
+        d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 // CheckIcon — plain checkmark (attention pill, "Approve & close").
 export function CheckIcon({ size = 13, className }: IconProps) {
   return (
