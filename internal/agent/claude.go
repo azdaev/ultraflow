@@ -35,8 +35,9 @@ func (c *Claude) Command(ctx context.Context, dir, prompt string) (*exec.Cmd, fu
 
 	cmd := exec.CommandContext(ctx, "claude",
 		prompt, // positional prompt: seed the task, then stay interactive
+		// Add Ultraflow's ask_human server on top of the user's own MCP servers
+		// (no --strict-mcp-config), so agents keep access to the human's full MCP set.
 		"--mcp-config", cfgPath,
-		"--strict-mcp-config",
 		"--permission-mode", "bypassPermissions",
 	)
 	if dir != "" {
@@ -62,8 +63,8 @@ func (c *Claude) ResumeCommand(ctx context.Context, dir, prompt string) (*exec.C
 
 	cmd := exec.CommandContext(ctx, "claude",
 		"--continue", prompt, // resume this worktree's conversation, send the feedback
+		// Same as Command: keep the human's full MCP set alongside ask_human.
 		"--mcp-config", cfgPath,
-		"--strict-mcp-config",
 		"--permission-mode", "bypassPermissions",
 	)
 	if dir != "" {
@@ -119,10 +120,9 @@ func (c *Claude) Run(ctx context.Context, dir, prompt string, out chan<- Event) 
 		"-p", prompt,
 		"--output-format", "stream-json",
 		"--verbose",
+		// Add Ultraflow's ask_human server on top of the user's own MCP servers
+		// (no --strict-mcp-config), so agents keep access to the human's full MCP set.
 		"--mcp-config", f.Name(),
-		// Only the Ultraflow MCP server — not the user's whole personal MCP set
-		// (which would otherwise all load for every task, slow and failure-prone).
-		"--strict-mcp-config",
 		// Unattended: the agent runs in an isolated worktree, so it must not stall
 		// on permission prompts (which in headless mode are auto-denied, leaving the
 		// agent unable to run Bash/tests). This is the autonomous-orchestrator mode.
