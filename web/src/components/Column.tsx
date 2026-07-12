@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import { AnimatePresence } from "motion/react";
 import type { Project, Task } from "../api";
 import { TaskCard } from "./TaskCard";
@@ -11,6 +12,9 @@ interface Props {
   accent?: "steel" | "moss" | "muted";
   projectsByName?: Map<string, Project>;
   showChip?: boolean;
+  // When provided, an inline "+ Add task" affordance renders under the cards
+  // (Trello-style). Resolves once the task is created.
+  onAdd?: (title: string) => Promise<void>;
 }
 
 const dotColor: Record<string, string> = {
@@ -30,6 +34,7 @@ export function Column({
   accent = "muted",
   projectsByName,
   showChip,
+  onAdd,
 }: Props) {
   return (
     <div className="flex min-w-0 flex-1 basis-0 flex-col">
@@ -53,12 +58,86 @@ export function Column({
             />
           ))}
         </AnimatePresence>
-        {tasks.length === 0 && (
+        {tasks.length === 0 && !onAdd && (
           <div className="rounded-xl border border-dashed border-hairline px-3 py-6 text-center text-[12px] text-muted/70">
             Nothing here
           </div>
         )}
+        {onAdd && <AddTask onAdd={onAdd} />}
       </div>
+    </div>
+  );
+}
+
+// AddTask is the inline "+ Add task" affordance: a subtle button that expands
+// into a title input. Enter creates (reusing api.createTask via onAdd), Esc or
+// blur cancels, and after a successful create the input stays focused so
+// several can be added in a row.
+function AddTask({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function cancel() {
+    setEditing(false);
+    setTitle("");
+    setErr(null);
+  }
+
+  async function submit() {
+    const t = title.trim();
+    if (!t || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await onAdd(t);
+      setTitle("");
+      inputRef.current?.focus();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed to add task");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="flex items-center gap-1.5 rounded-xl border border-dashed border-hairline px-3 py-2 text-left text-[13px] text-muted/80 transition hover:border-ink/25 hover:text-ink"
+      >
+        <span className="text-[15px] leading-none">+</span> Add task
+      </button>
+    );
+  }
+
+  return (
+    <div>
+      <input
+        ref={inputRef}
+        autoFocus
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            submit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        }}
+        // Blur cancels (a click elsewhere dismisses), but not mid-create — an
+        // in-flight submit keeps the input so it can refocus for the next one.
+        onBlur={() => {
+          if (!busy) cancel();
+        }}
+        placeholder="Task title…"
+        className="w-full rounded-xl border border-hairline bg-surface px-3 py-2 text-[13px] outline-none placeholder:text-muted/50 focus:border-ink/40"
+      />
+      {err && <p className="mt-1 px-1 text-[11px] text-rust">{err}</p>}
     </div>
   );
 }

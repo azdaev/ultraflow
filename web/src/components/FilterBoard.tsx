@@ -55,6 +55,7 @@ export function FilterBoard({ tasks, activity, now, onOpen, projects }: Props) {
         onOpen={onOpen}
         projects={projects}
         showChip
+        addProject={effective === "all" ? "" : effective}
       />
     </div>
   );

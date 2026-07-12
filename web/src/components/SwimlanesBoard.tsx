@@ -30,6 +30,7 @@ export function SwimlanesBoard({ tasks, activity, now, onOpen, projects }: Props
           now={now}
           onOpen={onOpen}
           projects={projects}
+          addProject={p.name}
         />
       ))}
       {orphans.length > 0 && (
@@ -42,6 +43,7 @@ export function SwimlanesBoard({ tasks, activity, now, onOpen, projects }: Props
           now={now}
           onOpen={onOpen}
           projects={projects}
+          addProject=""
         />
       )}
       {projects.length === 0 && orphans.length === 0 && (
@@ -60,6 +62,7 @@ function Lane({
   now,
   onOpen,
   projects,
+  addProject,
 }: {
   swatch: string;
   name: string;
@@ -69,6 +72,7 @@ function Lane({
   now: number;
   onOpen: (taskId: string) => void;
   projects: Project[];
+  addProject: string;
 }) {
   return (
     <section>
@@ -90,6 +94,7 @@ function Lane({
         onOpen={onOpen}
         projects={projects}
         compact
+        addProject={addProject}
       />
     </section>
   );
