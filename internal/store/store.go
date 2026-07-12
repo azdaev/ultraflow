@@ -271,6 +271,18 @@ func (s *Store) SwapStatusFrom(id string, from []model.TaskStatus, to model.Task
 	return n > 0, err
 }
 
+// UpdateTaskTitleBody rewrites a task's title (and body) and returns the new
+// updated_at so the caller can broadcast it. Used by the agent's rename_task:
+// the raw one-liner the human dumped in becomes a short label, with the original
+// preserved into body so later prompts still carry the full instructions.
+func (s *Store) UpdateTaskTitleBody(id, title, body string) (time.Time, error) {
+	now := time.Now()
+	if _, err := s.db.Exec(`UPDATE tasks SET title=?, body=?, updated_at=? WHERE id=?`, title, body, now, id); err != nil {
+		return time.Time{}, err
+	}
+	return now, nil
+}
+
 func (s *Store) SetWorktree(id, wt string) error {
 	_, err := s.db.Exec(`UPDATE tasks SET worktree=?, updated_at=? WHERE id=?`, wt, time.Now(), id)
 	return err

@@ -62,6 +62,24 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 		return text(string(b)), nil, nil
 	})
 
+	type renameArgs struct {
+		TaskID string `json:"task_id" jsonschema:"the id of the task you are working on (given at start)"`
+		Title  string `json:"title" jsonschema:"a short, clear task title (a handful of words) — a label for the board card"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "rename_task",
+		Description: "Give this task a short, clear title for the board. The human usually types the whole " +
+			"request into the title, leaving a long, messy card — call this once at the START of the task to " +
+			"replace it with a concise label (a handful of words). Your full original instructions are kept; " +
+			"only the card's label changes.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a renameArgs) (*mcp.CallToolResult, any, error) {
+		t, err := svc.RenameTask(a.TaskID, a.Title)
+		if err != nil {
+			return nil, nil, err
+		}
+		return text("Renamed task to: " + t.Title), nil, nil
+	})
+
 	type askArgs struct {
 		TaskID   string   `json:"task_id" jsonschema:"the id of the task you are working on (given at start)"`
 		Question string   `json:"question" jsonschema:"a clear, specific question for the human"`

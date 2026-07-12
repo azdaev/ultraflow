@@ -12,7 +12,7 @@ export const emptyBoardProjection: BoardProjection = {
   tasks: [], requests: [], activity: {}, activityKind: {}, projects: [],
 };
 
-type TaskPatch = { taskId: string } & Partial<Pick<Task, "status" | "updatedAt" | "worktree" | "attempt" | "port">>;
+type TaskPatch = { taskId: string } & Partial<Pick<Task, "status" | "updatedAt" | "worktree" | "attempt" | "port" | "title" | "body">>;
 
 export type BoardEvent =
   | { kind: "snapshot"; data: BoardSnapshot }

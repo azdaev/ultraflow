@@ -146,6 +146,59 @@ func TestCreateTaskDefaults(t *testing.T) {
 	}
 }
 
+// TestRenameTaskPreservesBrainDump covers the agent's rename_task: with an empty
+// body (the usual case — the human dumps the whole request into the title), the
+// original long title must be moved into the body so the re-stated self-heal/revise
+// prompts still carry the full instructions; only the card label shortens.
+func TestRenameTaskPreservesBrainDump(t *testing.T) {
+	svc := newTestService(t)
+	longTitle := "add a settings page with dark mode toggle and persist the choice in local storage"
+	task, err := svc.CreateTask(longTitle, "", "proj")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	renamed, err := svc.RenameTask(task.ID, "Settings page")
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if renamed.Title != "Settings page" {
+		t.Fatalf("title not updated: %q", renamed.Title)
+	}
+	if renamed.Body != longTitle {
+		t.Fatalf("original title not preserved into body: %q", renamed.Body)
+	}
+
+	got, err := svc.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Title != "Settings page" || got.Body != longTitle {
+		t.Fatalf("not persisted: title=%q body=%q", got.Title, got.Body)
+	}
+}
+
+// TestRenameTaskKeepsExistingBody verifies that when the human DID fill the body,
+// rename_task leaves it untouched (no clobbering the real description with the
+// short label) and an empty title is rejected.
+func TestRenameTaskKeepsExistingBody(t *testing.T) {
+	svc := newTestService(t)
+	task, err := svc.CreateTask("some long messy title", "real acceptance criteria", "proj")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	renamed, err := svc.RenameTask(task.ID, "Short label")
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if renamed.Body != "real acceptance criteria" {
+		t.Fatalf("existing body clobbered: %q", renamed.Body)
+	}
+	if _, err := svc.RenameTask(task.ID, "   "); err == nil {
+		t.Fatalf("expected error for blank title")
+	}
+}
+
 // TestCreateTaskNormalizesUnimplemented verifies a not-yet-wired agent/flow is
 // collapsed to what the orchestrator actually runs, so a card can never claim a
 // task used an adapter or multi-step flow that doesn't exist yet.

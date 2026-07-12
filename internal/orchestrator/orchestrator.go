@@ -741,6 +741,11 @@ func buildPrompt(t model.Task, prt int) string {
 Task ID: %s
 Title: %s
 
+FIRST, before doing anything else: this title is a raw one-liner — call the MCP
+tool "rename_task" with task_id="%s" and a short, clear title (a handful of words)
+so the board card reads cleanly. Your full instructions are preserved; only the
+card's label changes.
+
 %s
 
 %sIMPORTANT: You have an MCP tool "ask_human". When a decision is irreversible,
@@ -755,7 +760,7 @@ delivered to you as your next input, and you continue from there.
 WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-
 line summary. That sends your work to review and ends this session — do not sit
 idle at the prompt waiting; call finish_task and stop.`,
-		t.ID, t.Title, t.Body, portInstruction(prt), t.ID, screenshotInstruction, t.ID)
+		t.ID, t.Title, t.ID, t.Body, portInstruction(prt), t.ID, screenshotInstruction, t.ID)
 }
 
 // buildRevisePrompt is the message seeded when the human sends a reviewed task

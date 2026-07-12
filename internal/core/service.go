@@ -177,6 +177,35 @@ func (s *Service) ListTasks() ([]model.Task, error)      { return s.store.ListTa
 func (s *Service) BacklogTasks() ([]model.Task, error)   { return s.store.BacklogTasks() }
 func (s *Service) GetTask(id string) (model.Task, error) { return s.store.GetTask(id) }
 
+// RenameTask gives a task a short, clean title — called by the agent's rename_task
+// as its first action, since the human usually dumps the whole request into the
+// title and leaves the body empty. To keep the full request from being lost (the
+// re-stated self-heal/revise prompts read t.Title as the source of truth), when the
+// body is empty the original long title is moved into the body before the short
+// title replaces it. The live agent's current prompt already embedded the original,
+// so this only affects the card label and any later prompts.
+func (s *Service) RenameTask(id, title string) (model.Task, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return model.Task{}, errors.New("title is required")
+	}
+	t, err := s.store.GetTask(id)
+	if err != nil {
+		return model.Task{}, err
+	}
+	body := t.Body
+	if strings.TrimSpace(body) == "" {
+		body = t.Title
+	}
+	updatedAt, err := s.store.UpdateTaskTitleBody(id, title, body)
+	if err != nil {
+		return model.Task{}, err
+	}
+	t.Title, t.Body, t.UpdatedAt = title, body, updatedAt
+	s.publish("task_updated", map[string]any{"taskId": id, "title": title, "body": body, "updatedAt": updatedAt})
+	return t, nil
+}
+
 // UpdateStatus persists a task's new status and broadcasts it. It returns the
 // store error so callers whose correctness depends on the write (e.g. the
 // orchestrator's backlog→queued flip that prevents a re-pick) can react; the
