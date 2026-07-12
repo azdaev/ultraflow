@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.10.11 — 2026-07-13
+
+- Ultraflow: Skip workflow after rebase
+- Ultraflow: pause all agents — global hold toggle in the TopBar
+- Ultraflow: надо указывать не claude code/ codex а название модели агента. типа opus 4.8 итд
+
 ## v0.10.10 — 2026-07-12
 
 - Ultraflow: stop wiping a resumed task's work — reuse its branch, don't re-create from main
