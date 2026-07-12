@@ -53,12 +53,23 @@ type rebaser interface {
 	Rebase(taskID string) error
 }
 
+// pauser holds or releases ALL agents (the "pause all" action): pausing both blocks
+// new starts and freezes running agents, resuming brings them back. The orchestrator
+// implements it; recovered from conc by type assertion like reviser/rebaser so New's
+// signature is untouched. nil in API-only/test setups, in which case the pause
+// endpoint reports unavailable and `paused` reads false.
+type pauser interface {
+	Paused() bool
+	SetPaused(bool)
+}
+
 type server struct {
 	svc       *core.Service
 	term      *terminal.Manager
 	conc      concurrencyController
 	reviser   reviser
 	rebaser   rebaser
+	pauser    pauser
 	attachDir string
 }
 
@@ -80,6 +91,9 @@ func New(svc *core.Service, term *terminal.Manager, staticDir, attachDir string,
 	if r, ok := conc.(rebaser); ok {
 		s.rebaser = r
 	}
+	if p, ok := conc.(pauser); ok {
+		s.pauser = p
+	}
 	// Release mode silences gin's debug banner/route dump; the daemon was previously
 	// silent on startup and we keep it that way.
 	gin.SetMode(gin.ReleaseMode)
@@ -89,6 +103,7 @@ func New(svc *core.Service, term *terminal.Manager, staticDir, attachDir string,
 	r.GET("/api/settings", s.getSettings)
 	r.POST("/api/settings/concurrency", s.setConcurrencyHandler)
 	r.POST("/api/settings/context-cap", s.setContextCapHandler)
+	r.POST("/api/settings/pause", s.setPauseHandler)
 	r.POST("/api/settings/telegram", s.setTelegramHandler)
 	r.GET("/api/projects", s.listProjects)
 	r.POST("/api/projects", s.createProject)
@@ -195,7 +210,16 @@ func (s *server) board(c *gin.Context) {
 		// "claude-opus-4-8"), for the card's agent footer. Live updates arrive as
 		// "model" SSE events. Absent until the agent's first transcript line.
 		"models": s.svc.Models(),
+		// Whether all agents are currently held, so a fresh load / SSE reconnect
+		// snapshot carries the pause state (live toggles arrive as "paused" events).
+		"paused": s.paused(),
 	})
+}
+
+// paused reports whether all agents are currently held. False when there's no live
+// orchestrator (API-only/tests) — pause is a transient runtime state, not persisted.
+func (s *server) paused() bool {
+	return s.pauser != nil && s.pauser.Paused()
 }
 
 // currentConcurrency reports the limit the orchestrator is actually running
@@ -231,6 +255,8 @@ func (s *server) getSettings(c *gin.Context) {
 		"telegram": map[string]any{
 			"enabled": tg.Enabled, "hasToken": tg.Token != "", "userId": tg.UserID, "chatId": tg.ChatID,
 		},
+		// Whether all agents are currently held (the "pause all" toggle).
+		"paused": s.paused(),
 	})
 }
 
@@ -305,6 +331,26 @@ func (s *server) setContextCapHandler(c *gin.Context) {
 		return
 	}
 	writeJSON(c, http.StatusOK, map[string]any{"contextCap": n})
+}
+
+// setPauseHandler holds or releases ALL agents (the "pause all" toggle): pausing
+// blocks new starts and freezes running agents, resuming brings them back. The
+// orchestrator broadcasts the new state over SSE so every open board syncs. 503s
+// when there's no live orchestrator (API-only), where pause has no meaning.
+func (s *server) setPauseHandler(c *gin.Context) {
+	if s.pauser == nil {
+		http.Error(c.Writer, "pausing agents isn't available", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		Paused bool `json:"paused"`
+	}
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.pauser.SetPaused(body.Paused)
+	writeJSON(c, http.StatusOK, map[string]any{"paused": body.Paused})
 }
 
 func (s *server) listProjects(c *gin.Context) {

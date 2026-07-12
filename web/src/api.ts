@@ -96,6 +96,9 @@ export interface BoardSnapshot {
   // latest model name (e.g. "claude-opus-4-8") per task, for the card's agent
   // footer. Live updates arrive as "model" events; absent until the first poll.
   models: Record<string, string>;
+  // whether ALL agents are currently held (the "pause all" toggle). Live toggles
+  // arrive as "paused" events.
+  paused?: boolean;
 }
 
 export interface Settings {
@@ -326,6 +329,16 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
     }).then((r) => json<{ contextCap: number }>(r)),
+
+  // setPaused holds or releases ALL agents (the "pause all" toggle): pausing blocks
+  // new starts and freezes running agents, resuming brings them back. The board's
+  // pause state also arrives live over SSE as "paused" events.
+  setPaused: (paused: boolean) =>
+    fetch("/api/settings/pause", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused }),
+    }).then((r) => json<{ paused: boolean }>(r)),
 
   setTelegram: (value: { enabled: boolean; token: string; userId: number; chatId: number }) =>
 	fetch("/api/settings/telegram", {

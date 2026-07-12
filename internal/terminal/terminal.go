@@ -42,6 +42,11 @@ type Session struct {
 	// a spinner/output continuously, so silence means the turn has ended. Input
 	// counts too, so a just-answered agent isn't judged idle before it can respond.
 	lastActivity time.Time
+	// suspended is true between Suspend (SIGSTOP) and Resume (SIGCONT): a "pause all"
+	// froze this agent's whole process group. While it holds, the session produces no
+	// output by design, so IdleFor reports 0 to stop the idle watcher from mistaking a
+	// deliberate freeze for a stalled turn and KILLing the paused agent.
+	suspended bool
 }
 
 // Manager owns the live sessions, keyed by task id.
@@ -101,6 +106,36 @@ func (m *Manager) CloseAll() {
 	m.mu.Unlock()
 	for _, s := range sessions {
 		s.Close()
+	}
+}
+
+// SuspendAll freezes every live session (SIGSTOP their process groups) — the
+// "pause all agents" action. It snapshots the sessions under the manager lock
+// (exactly like CloseAll) before signalling, so a session ending mid-sweep can't
+// deadlock against remove.
+func (m *Manager) SuspendAll() {
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	m.mu.Unlock()
+	for _, s := range sessions {
+		s.Suspend()
+	}
+}
+
+// ResumeAll lifts a SuspendAll: SIGCONT every live session so paused agents pick up
+// where they froze. Same snapshot-then-signal shape as SuspendAll.
+func (m *Manager) ResumeAll() {
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	m.mu.Unlock()
+	for _, s := range sessions {
+		s.Resume()
 	}
 }
 
@@ -181,11 +216,47 @@ func (s *Session) Write(p []byte) error {
 
 // IdleFor reports how long the session has produced no output and received no
 // input. The orchestrator uses it to detect an agent that ended its turn and is
-// idling at its prompt without having called finish_task.
+// idling at its prompt without having called finish_task. A suspended session is
+// SIGSTOP'd, so it can't emit output — report 0 so the idle watcher never trips on
+// a deliberately-frozen (paused) agent and kills it.
 func (s *Session) IdleFor() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.suspended {
+		return 0
+	}
 	return time.Since(s.lastActivity)
+}
+
+// Suspend freezes the agent's whole process group with SIGSTOP — the running
+// agent, plus any bash/test-runner it spawned, stop mid-instruction and hold their
+// state. It targets -pid (the group) exactly like Close's SIGKILL, since agents run
+// detached in their own group (Setsid, via pty.Start), so grandchildren freeze too.
+func (s *Session) Suspend() {
+	s.mu.Lock()
+	s.suspended = true
+	s.mu.Unlock()
+	if p := s.cmd.Process; p != nil {
+		_ = syscall.Kill(-p.Pid, syscall.SIGSTOP)
+	}
+}
+
+// Resume lifts Suspend with SIGCONT, so the agent (and its group) continue from
+// exactly where they froze.
+func (s *Session) Resume() {
+	s.mu.Lock()
+	s.suspended = false
+	s.mu.Unlock()
+	if p := s.cmd.Process; p != nil {
+		_ = syscall.Kill(-p.Pid, syscall.SIGCONT)
+	}
+}
+
+// Suspended reports whether the session is currently frozen by a pause.
+func (s *Session) Suspended() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.suspended
 }
 
 // Done is closed when the session ends (process exit or Close), so watchers can

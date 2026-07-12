@@ -11,6 +11,8 @@ export interface BoardState {
   context: Record<string, number>;
   // latest model name per task, keyed by task id.
   models: Record<string, string>;
+  // whether ALL agents are currently held (the "pause all" toggle).
+  paused: boolean;
   connected: boolean; reload: () => void;
 }
 

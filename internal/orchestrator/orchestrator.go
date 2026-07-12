@@ -54,6 +54,11 @@ type Orchestrator struct {
 	active int
 	limit  int
 
+	// paused, when true, holds ALL agents: acquire blocks every new/queued/out-of-band
+	// start on it, and SetPaused SIGSTOPs the live sessions so running agents freeze too.
+	// Transient (in-memory only) — a restart re-runs in-flight tasks unpaused.
+	paused bool
+
 	// healing tracks tasks with a live self-heal loop (a runWithSelfHeal goroutine
 	// mid-flight). It's how an answer-driven re-engage knows NOT to launch a second
 	// agent: if a loop is still running for the task, it owns the crash resolution.
@@ -157,11 +162,39 @@ func (o *Orchestrator) Limit() int {
 	return o.limit
 }
 
-// acquire blocks until a concurrency slot is free under the current limit, then
-// reserves it. release must be called (deferred) when the agent is done.
+// SetPaused holds or releases ALL agents. Pausing sets the flag (so acquire blocks
+// every future start — fresh backlog, queued, and out-of-band Revise/Reengage/Rebase
+// alike, since they all pass through acquire) AND SIGSTOPs the live sessions so the
+// agents already running freeze in place. Resuming SIGCONTs them back to where they
+// left off and broadcasts so queued acquirers re-check and start. Either way it
+// publishes so open boards sync instantly. Idempotent: setting the same state again
+// just re-signals (harmless) and re-broadcasts.
+func (o *Orchestrator) SetPaused(p bool) {
+	o.mu.Lock()
+	o.paused = p
+	o.mu.Unlock()
+	if p {
+		o.term.SuspendAll()
+	} else {
+		o.term.ResumeAll()
+	}
+	o.cond.Broadcast()
+	o.svc.PublishPaused(p)
+}
+
+// Paused reports whether all agents are currently held.
+func (o *Orchestrator) Paused() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.paused
+}
+
+// acquire blocks until a concurrency slot is free under the current limit and the
+// orchestrator isn't paused, then reserves it. release must be called (deferred)
+// when the agent is done.
 func (o *Orchestrator) acquire() {
 	o.mu.Lock()
-	for o.active >= o.limit {
+	for o.active >= o.limit || o.paused {
 		o.cond.Wait()
 	}
 	o.active++

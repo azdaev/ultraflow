@@ -1,8 +1,10 @@
-import { GearIcon, SearchIcon, SparkIcon } from "./icons";
+import { GearIcon, PauseIcon, PlayIcon, SearchIcon, SparkIcon } from "./icons";
 
 interface Props {
   running: number;
   queued: number;
+  paused: boolean;
+  onTogglePause: () => void;
   onNewTask: () => void;
   onOpenSettings: () => void;
   onOpenChangelog: () => void;
@@ -10,8 +12,9 @@ interface Props {
 
 // TopBar is the sticky board header: the wordmark, a search field that doubles as
 // the "new task" entry point (⌘/`n` open the composer), the live running/queued
-// counter, and the settings gear. Values wire straight to board state — no chrome.
-export function TopBar({ running, queued, onNewTask, onOpenSettings, onOpenChangelog }: Props) {
+// counter, a global pause-all toggle, and the settings gear. Values wire straight
+// to board state — no chrome.
+export function TopBar({ running, queued, paused, onTogglePause, onNewTask, onOpenSettings, onOpenChangelog }: Props) {
   return (
     <header className="sticky top-0 z-30 flex w-full items-center gap-4 border-b-[0.75px] border-hairline bg-board/95 px-5 py-2.75 backdrop-blur-sm">
       {/* Brand wordmark (not interactive — "What's new" lives in its own button on
@@ -35,10 +38,27 @@ export function TopBar({ running, queued, onNewTask, onOpenSettings, onOpenChang
 
       <div className="flex grow basis-0 items-center justify-end gap-2.5">
         <div className="flex items-center gap-1.75 rounded-full border-[0.75px] border-hairline bg-surface px-2.75 py-1.25">
-          <span className="size-1.5 shrink-0 rounded-full bg-steel" />
-          <span className="font-mono text-[11px] font-medium leading-[14px] text-ink">{running} running</span>
-          <span className="font-mono text-[11px] leading-[14px] text-faint">· {queued} queued</span>
+          <span className={`size-1.5 shrink-0 rounded-full ${paused ? "bg-amber-500" : "bg-steel"}`} />
+          {paused ? (
+            <span className="font-mono text-[11px] font-medium leading-[14px] text-amber-600">paused</span>
+          ) : (
+            <>
+              <span className="font-mono text-[11px] font-medium leading-[14px] text-ink">{running} running</span>
+              <span className="font-mono text-[11px] leading-[14px] text-faint">· {queued} queued</span>
+            </>
+          )}
         </div>
+        <button
+          onClick={onTogglePause}
+          title={paused ? "Resume all agents" : "Pause all agents"}
+          className={`grid size-8 shrink-0 place-items-center rounded-[9px] border-[0.75px] transition ${
+            paused
+              ? "border-amber-500/40 bg-amber-500/15 text-amber-600 hover:bg-amber-500/25"
+              : "border-hairline bg-surface text-muted hover:border-ink/25 hover:text-ink"
+          }`}
+        >
+          {paused ? <PlayIcon /> : <PauseIcon />}
+        </button>
         <button
           onClick={onOpenChangelog}
           title="What's new"

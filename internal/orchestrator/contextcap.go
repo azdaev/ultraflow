@@ -56,6 +56,13 @@ func (o *Orchestrator) watchContext(sess *terminal.Session, taskID, dir string) 
 		case <-sess.Done():
 			return
 		case <-ticker.C:
+			// A paused (SIGSTOP'd) agent is frozen: it can't grow its transcript and
+			// must not be touched. Skip it wholesale — otherwise IdleFor's 0 (which
+			// suppresses the idle watcher during a pause) would read as "actively
+			// working" here and inject a "/compact" that fires into the PTY on resume.
+			if sess.Suspended() {
+				continue
+			}
 			tokens, ok := claudeContextTokens(dir)
 			if !ok {
 				continue // transcript not found yet, or unreadable — try again next tick

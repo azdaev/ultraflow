@@ -16,6 +16,8 @@ interface Props {
   now: number;
   running: number;
   queued: number;
+  paused: boolean;
+  onTogglePause: () => void;
   onOpenTask: (taskId: string) => void;
   onNewTask: (title?: string, project?: string) => void;
   onOpenSettings: () => void;
@@ -35,6 +37,8 @@ export function BoardPage({
   now,
   running,
   queued,
+  paused,
+  onTogglePause,
   onOpenTask,
   onNewTask,
   onOpenSettings,
@@ -62,6 +66,8 @@ export function BoardPage({
       <TopBar
         running={running}
         queued={queued}
+        paused={paused}
+        onTogglePause={onTogglePause}
         onNewTask={() => onNewTask()}
         onOpenSettings={onOpenSettings}
         onOpenChangelog={onOpenChangelog}

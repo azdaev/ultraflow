@@ -195,6 +195,14 @@ func (s *Service) publish(kind string, payload any) {
 	s.Broker.Publish(msg)
 }
 
+// PublishPaused broadcasts a global pause/resume to every open board so the "pause
+// all" toggle and the run pill sync instantly. Pause is a transient in-memory state
+// the orchestrator owns; this is the one-line bridge that lets it reach the UI over
+// the same SSE stream as task/project events.
+func (s *Service) PublishPaused(paused bool) {
+	s.publish("paused", map[string]any{"paused": paused})
+}
+
 func (s *Service) appendEvent(taskID, kind, data string) {
 	e := model.Event{TaskID: taskID, Kind: kind, Data: data, CreatedAt: time.Now()}
 	if id, err := s.store.AppendEvent(e); err == nil {

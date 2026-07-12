@@ -58,6 +58,25 @@ export function GearIcon({ size = 16, className }: IconProps) {
   );
 }
 
+// PauseIcon — two bars, the "pause all agents" action.
+export function PauseIcon({ size = 15, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={className} style={{ flexShrink: 0 }} aria-hidden>
+      <rect x="6.5" y="5" width="3.4" height="14" rx="1.2" fill="currentColor" />
+      <rect x="14.1" y="5" width="3.4" height="14" rx="1.2" fill="currentColor" />
+    </svg>
+  );
+}
+
+// PlayIcon — a triangle, the "resume all agents" action (shown while paused).
+export function PlayIcon({ size = 15, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={className} style={{ flexShrink: 0 }} aria-hidden>
+      <path d="M7 4.5v15l13-7.5z" fill="currentColor" />
+    </svg>
+  );
+}
+
 // SparkIcon — the "What's new" / changelog glyph (a sparkle burst).
 export function SparkIcon({ size = 16, className }: IconProps) {
   return (

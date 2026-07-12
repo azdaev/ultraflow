@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useBoard, useNow } from "./useBoard";
 import { useAttentionNotifications } from "./useNotifications";
-import type { Task } from "./api";
+import { api, type Task } from "./api";
 import { Composer } from "./components/Composer";
 import { Settings } from "./components/Settings";
 import { Changelog } from "./components/Changelog";
@@ -12,7 +12,7 @@ import { BoardPage } from "./board/BoardPage";
 import { installClickJournal, logUI } from "./journal";
 
 export function App() {
-  const { tasks, requests, activity, activityKind, projects, runs, context, models } = useBoard();
+  const { tasks, requests, activity, activityKind, projects, runs, context, models, paused } = useBoard();
   const now = useNow(1000);
   // The composer carries an optional draft: the inline "+ Add task" hands off its
   // typed title and column project via "More…"; the "n" key and the Topbar open it blank.
@@ -104,6 +104,11 @@ export function App() {
         now={now}
         running={running}
         queued={queued}
+        paused={paused}
+        onTogglePause={() => {
+          logUI("toggle_pause", { paused: !paused });
+          void api.setPaused(!paused).catch(() => {});
+        }}
         onOpenTask={(id) => {
           logUI("open_task", { task: id });
           setOpenTaskId(id);

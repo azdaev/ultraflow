@@ -256,6 +256,42 @@ func TestSemaphoreLowerDoesNotEvict(t *testing.T) {
 	}
 }
 
+// TestPauseBlocksNewStartsUntilResume verifies the "pause all" gate on acquire:
+// while paused, a fresh acquire blocks even with slots free (limit 2, 0 active),
+// and resuming wakes it immediately. This is the whole "no new agent starts"
+// guarantee; the running-agent freeze is the SIGSTOP path, exercised separately.
+func TestPauseBlocksNewStartsUntilResume(t *testing.T) {
+	o := newTestOrch(t, 2)
+
+	o.SetPaused(true)
+	if !o.Paused() {
+		t.Fatal("Paused() should report true after SetPaused(true)")
+	}
+
+	started := make(chan struct{})
+	go func() {
+		o.acquire() // must block on o.paused despite a free slot
+		close(started)
+	}()
+
+	select {
+	case <-started:
+		t.Fatal("acquire should block while paused, even with a slot free")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	o.SetPaused(false) // resuming must wake the blocked acquirer
+	if o.Paused() {
+		t.Fatal("Paused() should report false after SetPaused(false)")
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("resuming should let the queued acquirer proceed immediately")
+	}
+}
+
 // TestSetLimitClamps guards the floor: SetLimit never drops below 1.
 func TestSetLimitClamps(t *testing.T) {
 	o := newTestOrch(t, 3)
