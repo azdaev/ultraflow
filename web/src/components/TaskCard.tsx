@@ -6,6 +6,15 @@ import { FlowStepper } from "./FlowStepper";
 import { ProjectChip } from "./ProjectChip";
 import { ContextMenu, useContextMenu, type MenuItem } from "./ContextMenu";
 
+// DEV_LINK_STATUSES are the stages where a task still holds its reserved dev
+// port and the server may be up (the port is freed on merge/mark-done/failure).
+const DEV_LINK_STATUSES = new Set<Task["status"]>([
+  "running",
+  "needs_human",
+  "merging",
+  "review",
+]);
+
 interface Props {
   task: Task;
   activity?: string;
@@ -94,6 +103,12 @@ export function TaskCard({ task, activity, now, onOpen, project, showChip }: Pro
           </span>
           <span className="truncate font-mono text-[11px] text-steel">{activity}</span>
         </div>
+      )}
+
+      {/* dev-server link: while a task is live or in review it holds a reserved
+          port, so offer a one-click open of its running app (localhost:PORT). */}
+      {task.port > 0 && DEV_LINK_STATUSES.has(task.status) && (
+        <DevServerLink port={task.port} />
       )}
 
       {/* review → finish. With a worktree, land the branch (merge). Without one
@@ -207,6 +222,35 @@ function MarkDoneAction({ taskId }: { taskId: string }) {
         {busy ? "Finishing…" : "Mark done"}
       </span>
       {err && <p className="mt-1.5 line-clamp-2 text-[12px] text-rust">{err}</p>}
+    </div>
+  );
+}
+
+// DevServerLink opens the task's live dev server (http://localhost:PORT) in a new
+// tab. It lives inside the card's <button>, so — like MergeAction — it renders as
+// a role="link" span (a nested <a>/<button> is invalid) and stops click
+// propagation so opening the server doesn't also open the task drawer.
+function DevServerLink({ port }: { port: number }) {
+  const url = `http://localhost:${port}`;
+  const open = (e: React.MouseEvent | React.KeyboardEvent) => {
+    e.stopPropagation();
+    window.open(url, "_blank", "noopener");
+  };
+  return (
+    <div className="mt-2.5">
+      <span
+        role="link"
+        tabIndex={0}
+        onClick={open}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") open(e);
+        }}
+        title={`Open this task's dev server (${url})`}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-hairline bg-board px-2.5 py-1 font-mono text-[11px] text-steel transition hover:border-steel/40 hover:text-ink"
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-steel" />
+        localhost:{port} ↗
+      </span>
     </div>
   );
 }

@@ -96,6 +96,7 @@ function applyEvent(
         updatedAt?: string;
         worktree?: string;
         attempt?: number;
+        port?: number;
       };
       setTasks((prev) =>
         prev.map((t) => {
@@ -105,6 +106,7 @@ function applyEvent(
           if (d.updatedAt !== undefined) next.updatedAt = d.updatedAt;
           if (d.worktree !== undefined) next.worktree = d.worktree;
           if (d.attempt !== undefined) next.attempt = d.attempt;
+          if (d.port !== undefined) next.port = d.port;
           return next;
         }),
       );

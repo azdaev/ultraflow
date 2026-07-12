@@ -17,7 +17,9 @@ import (
 
 	"ultraflow/internal/agent"
 	"ultraflow/internal/core"
+	"ultraflow/internal/devserver"
 	"ultraflow/internal/model"
+	"ultraflow/internal/port"
 	"ultraflow/internal/terminal"
 	"ultraflow/internal/worktree"
 )
@@ -36,7 +38,9 @@ type Orchestrator struct {
 	workdir string
 	wt      *worktree.Manager
 	term    *terminal.Manager
-	baseCtx context.Context // daemon lifetime; used by out-of-band launches (Revise)
+	ports   *port.Allocator    // reserves a distinct dev-server port per task
+	dev     *devserver.Manager // runs the per-project dev-server hook, detached
+	baseCtx context.Context    // daemon lifetime; used by out-of-band launches (Revise)
 
 	// Resizable concurrency limit. A plain buffered-channel semaphore is fixed at
 	// creation; this mutex+cond version lets SetLimit change the ceiling at runtime
@@ -54,7 +58,7 @@ type Orchestrator struct {
 	healing map[string]bool
 }
 
-func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal.Manager, mcpURL string, maxConcurrent int) *Orchestrator {
+func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal.Manager, ports *port.Allocator, dev *devserver.Manager, mcpURL string, maxConcurrent int) *Orchestrator {
 	if maxConcurrent < 1 {
 		maxConcurrent = 1
 	}
@@ -67,6 +71,8 @@ func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal
 		workdir: workdir,
 		wt:      wt,
 		term:    term,
+		ports:   ports,
+		dev:     dev,
 		limit:   maxConcurrent,
 		healing: map[string]bool{},
 	}
@@ -157,6 +163,11 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		// what reclaims the branch (Create prunes it before re-adding).
 		dir := o.prepareWorkdir(t)
 
+		// Reserve a distinct dev-server port for this task and, if the project ships a
+		// dev-server hook, boot it — so parallel tasks never collide and the human can
+		// open the task's live app from its card.
+		prt := o.setupPort(t, dir)
+
 		// t.Agent is already normalized to an implemented adapter at creation time
 		// (core.CreateTaskFull), so this lookup resolves; the nil guard is a belt-
 		// and-braces fallback rather than a silent substitution of a real choice.
@@ -170,11 +181,12 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 			return
 		}
 
-		cmd, cleanup, err := ia.Command(ctx, dir, buildPrompt(t))
+		cmd, cleanup, err := ia.Command(ctx, dir, buildPrompt(t, prt))
 		if err != nil {
 			o.fail(t.ID, "couldn't build the agent command: "+err.Error())
 			return
 		}
+		injectPort(cmd, prt)
 		o.runWithSelfHeal(ctx, t, dir, ia, cmd, cleanup, "running — open the card to watch progress (Ctrl-C to interrupt)")
 	}()
 }
@@ -440,14 +452,22 @@ func (o *Orchestrator) Revise(taskID, feedback string) error {
 	}
 	o.svc.AppendTaskEvent(taskID, "human_answer", feedback)
 
+	// Reuse the port reserved on the first run (its dev server has stayed up through
+	// review); reserve one now if the earlier run never got one.
+	prt := t.Port
+	if prt == 0 {
+		prt = o.setupPort(t, dir)
+	}
+
 	go func() {
 		o.acquire()
 		defer o.release()
-		cmd, cleanup, err := ia.ResumeCommand(o.ctx(), dir, buildRevisePrompt(t, feedback))
+		cmd, cleanup, err := ia.ResumeCommand(o.ctx(), dir, buildRevisePrompt(t, feedback, prt))
 		if err != nil {
 			o.fail(taskID, "couldn't build the agent command: "+err.Error())
 			return
 		}
+		injectPort(cmd, prt)
 		o.runWithSelfHeal(o.ctx(), t, dir, ia, cmd, cleanup, "reworking on your feedback (Ctrl-C to interrupt)")
 	}()
 	return nil
@@ -490,6 +510,7 @@ func (o *Orchestrator) Reengage(taskID, guidance string) error {
 			o.fail(taskID, "couldn't relaunch the agent: "+err.Error())
 			return
 		}
+		injectPort(cmd, t.Port) // reuse the port reserved on the first run (no-op if none)
 		o.runWithSelfHeal(o.ctx(), t, dir, ia, cmd, cleanup, "back on it with your guidance (Ctrl-C to interrupt)")
 	}()
 	return nil
@@ -552,6 +573,72 @@ func (o *Orchestrator) prepareWorkdir(t model.Task) string {
 	return w.Path
 }
 
+// setupPort reserves a distinct dev-server port for the task, records it on the
+// card, and boots the project's dev-server hook (if any) bound to that port. The
+// port is also injected into the agent's env by injectPort. Returns 0 when no
+// allocator is wired or a port couldn't be obtained (the task still runs, just
+// without a reserved port).
+func (o *Orchestrator) setupPort(t model.Task, dir string) int {
+	if o.ports == nil {
+		return 0
+	}
+	p, err := o.ports.Allocate()
+	if err != nil {
+		o.svc.AppendTaskEvent(t.ID, "status", "couldn't allocate a dev-server port: "+err.Error())
+		return 0
+	}
+	o.svc.SetPort(t.ID, p)
+	o.svc.AppendTaskEvent(t.ID, "status", fmt.Sprintf("dev-server port %d reserved → http://localhost:%d", p, p))
+	o.startDevServer(t, dir, p)
+	return p
+}
+
+// startDevServer runs the project's .ultraflow/dev.sh hook (if present) as a
+// detached background dev server bound to p, so it stays up after the agent
+// finishes and the human can open the app from the Review card. No hook is a
+// no-op — the agent can still start its own server on the injected PORT.
+func (o *Orchestrator) startDevServer(t model.Task, dir string, p int) {
+	if o.dev == nil {
+		return
+	}
+	repo := o.repoPath(t)
+	if repo == "" {
+		return
+	}
+	hook, ok := devserver.HookPath(repo)
+	if !ok {
+		return
+	}
+	if err := o.dev.Start(t.ID, dir, hook, p); err != nil {
+		o.svc.AppendTaskEvent(t.ID, "status", "dev-server hook failed to start: "+err.Error())
+		return
+	}
+	o.svc.AppendTaskEvent(t.ID, "status", "started dev server via .ultraflow/dev.sh")
+}
+
+// repoPath returns the registered repo path for a task's project, or "" when the
+// task has no project (runs in the shared workdir).
+func (o *Orchestrator) repoPath(t model.Task) string {
+	if t.Project == "" {
+		return ""
+	}
+	p, err := o.svc.ProjectByName(t.Project)
+	if err != nil {
+		return ""
+	}
+	return p.RepoPath
+}
+
+// injectPort exports the reserved dev-server port to the agent process as PORT
+// and ULTRAFLOW_PORT, so a dev server the agent starts binds the task's own port.
+// Appends to cmd.Env (already seeded with TERM by the adapter).
+func injectPort(cmd *exec.Cmd, p int) {
+	if cmd == nil || p <= 0 {
+		return
+	}
+	cmd.Env = append(cmd.Env, fmt.Sprintf("PORT=%d", p), fmt.Sprintf("ULTRAFLOW_PORT=%d", p))
+}
+
 // screenshotInstruction tells the agent to leave visual evidence for the review
 // screen. Screenshots saved here are served and shown in the task's review, so
 // the human can see a visual change without checking the branch out and running
@@ -561,7 +648,19 @@ const screenshotInstruction = `If you changed anything VISUAL (UI, frontend, lay
 	`under .ultraflow/shots/ in your working directory. The board shows them on the ` +
 	`review screen, so the human can see the change without running it.`
 
-func buildPrompt(t model.Task) string {
+// portInstruction tells the agent about its reserved dev-server port. Empty when
+// no port was allocated. Shared by the initial and send-back prompts.
+func portInstruction(p int) string {
+	if p <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(`A dev-server port is reserved for this task: PORT=%d (also `+
+		`ULTRAFLOW_PORT). If you start a dev server, bind it to $PORT so the human can `+
+		`open http://localhost:%d from the board. If this project has a `+
+		`.ultraflow/dev.sh hook, Ultraflow already started it on that port for you.`+"\n\n", p, p)
+}
+
+func buildPrompt(t model.Task, prt int) string {
 	return fmt.Sprintf(`You are working on an Ultraflow task.
 
 Task ID: %s
@@ -569,7 +668,7 @@ Title: %s
 
 %s
 
-IMPORTANT: You have an MCP tool "ask_human". When a decision is irreversible,
+%sIMPORTANT: You have an MCP tool "ask_human". When a decision is irreversible,
 visual, or architectural — or you need the human to review something — do NOT
 guess. Call ask_human with task_id="%s", a clear question, suggested options,
 and helpful context (a diff, a plan, or a screenshot description). After you call
@@ -581,7 +680,7 @@ delivered to you as your next input, and you continue from there.
 WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-
 line summary. That sends your work to review and ends this session — do not sit
 idle at the prompt waiting; call finish_task and stop.`,
-		t.ID, t.Title, t.Body, t.ID, screenshotInstruction, t.ID)
+		t.ID, t.Title, t.Body, portInstruction(prt), t.ID, screenshotInstruction, t.ID)
 }
 
 // buildRevisePrompt is the message seeded when the human sends a reviewed task
@@ -589,7 +688,7 @@ idle at the prompt waiting; call finish_task and stop.`,
 // --continue, in its conversation memory), so this re-states the feedback and the
 // finish contract. It's self-contained enough to be useful even if the prior
 // conversation couldn't be restored.
-func buildRevisePrompt(t model.Task, feedback string) string {
+func buildRevisePrompt(t model.Task, feedback string, prt int) string {
 	return fmt.Sprintf(`The human reviewed your work on this Ultraflow task and is sending it back for changes.
 
 Task ID: %s
@@ -601,9 +700,9 @@ Their feedback:
 Your earlier changes are still here in this working directory — review them, then
 address the feedback. %s
 
-WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-
+%sWHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-
 line summary to send it back to review.`,
-		t.ID, t.Title, feedback, screenshotInstruction, t.ID)
+		t.ID, t.Title, feedback, screenshotInstruction, portInstruction(prt), t.ID)
 }
 
 // buildSelfHealPrompt is seeded when the agent's previous run ended in an ERROR and

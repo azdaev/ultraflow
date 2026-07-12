@@ -34,6 +34,7 @@ export interface Task {
   // card), maxAttempts is the retry budget before it escalates to the human.
   attempt: number;
   maxAttempts: number;
+  port: number; // dev-server port reserved for this task (0 = none)
   createdAt: string;
   updatedAt: string;
 }

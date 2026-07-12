@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"ultraflow/internal/devserver"
 	"ultraflow/internal/model"
+	"ultraflow/internal/port"
 	"ultraflow/internal/store"
 	"ultraflow/internal/worktree"
 )
@@ -46,9 +48,11 @@ const DefaultMaxAttempts = 3
 type Service struct {
 	store    *store.Store
 	Broker   *Broker
-	wt       *worktree.Manager // set via UseWorktrees; nil = merge/teardown disabled
-	term     termInput         // set via UseTerminal; nil = answers aren't delivered
-	reengage reengager         // set via UseReengager; nil = escalation answers aren't re-run
+	wt       *worktree.Manager  // set via UseWorktrees; nil = merge/teardown disabled
+	term     termInput          // set via UseTerminal; nil = answers aren't delivered
+	reengage reengager          // set via UseReengager; nil = escalation answers aren't re-run
+	ports    *port.Allocator    // set via UsePorts; nil = no port release
+	dev      *devserver.Manager // set via UseDevServer; nil = no dev-server teardown
 }
 
 // UseWorktrees gives the service the worktree manager it needs to merge a task's
@@ -64,6 +68,24 @@ func (s *Service) UseTerminal(t termInput) { s.term = t }
 // needs_human checkpoint whose agent has already stopped) re-launches the agent
 // with the human's guidance instead of stranding the task in `running`.
 func (s *Service) UseReengager(r reengager) { s.reengage = r }
+
+// UsePorts / UseDevServer share the orchestrator's port allocator and dev-server
+// manager, so the service can free a task's port and stop its dev server when the
+// task reaches a terminal state (merged, marked done, or failed).
+func (s *Service) UsePorts(p *port.Allocator)        { s.ports = p }
+func (s *Service) UseDevServer(d *devserver.Manager) { s.dev = d }
+
+// releaseRuntime frees a finished task's dev-server port and stops its dev
+// server. Called only at terminal states — NOT when a task enters review, where
+// the port and dev server stay up so the human can open the live app.
+func (s *Service) releaseRuntime(t model.Task) {
+	if s.dev != nil {
+		s.dev.Stop(t.ID)
+	}
+	if s.ports != nil && t.Port > 0 {
+		s.ports.Release(t.Port)
+	}
+}
 
 func NewService(st *store.Store) *Service {
 	return &Service{
@@ -195,6 +217,15 @@ func (s *Service) SetAttempt(id string, attempt int) {
 	s.publish("task_updated", map[string]any{"taskId": id, "attempt": attempt, "updatedAt": updatedAt})
 }
 
+// SetPort records (and broadcasts) the dev-server port reserved for a task, so
+// the board can show a clickable http://localhost:PORT link on the card.
+func (s *Service) SetPort(id string, port int) {
+	if err := s.store.SetPort(id, port); err != nil {
+		return
+	}
+	s.publish("task_updated", map[string]any{"taskId": id, "port": port})
+}
+
 // RetryTask re-queues a task by moving it back to the backlog; the orchestrator
 // picks it up on its next tick. Used by the board's "Retry" action on a task the
 // agent gave up on (self-heal exhausted). See spec.md "Failure self-heals".
@@ -241,6 +272,7 @@ func (s *Service) MergeTask(id string) error {
 	}
 
 	_ = s.wt.Remove(p.RepoPath, id)
+	s.releaseRuntime(t) // stop the dev server and free its port now the task is landing
 	if err := s.UpdateStatus(id, model.StatusDone); err != nil {
 		return err
 	}
@@ -259,6 +291,7 @@ func (s *Service) FinishReview(id string) error {
 	if t.Status != model.StatusReview {
 		return fmt.Errorf("only a task in review can be marked done (this one is %s)", t.Status)
 	}
+	s.releaseRuntime(t) // stop the dev server and free its port now the task is done
 	if err := s.UpdateStatus(id, model.StatusDone); err != nil {
 		return err
 	}
@@ -491,6 +524,7 @@ func (s *Service) ResolveAgentExit(taskID string, crashed bool, detail string) {
 	if crashed {
 		if s.SwapStatus(taskID, []model.TaskStatus{model.StatusQueued, model.StatusRunning, model.StatusNeedsHuman}, model.StatusFailed) {
 			s.AbandonRequests(taskID)
+			s.releaseRuntimeByID(taskID) // agent's gone; its dev server (if any) is dead — free the port
 			reason := "agent exited before reporting completion"
 			if detail != "" {
 				reason += ": " + detail
@@ -509,7 +543,16 @@ func (s *Service) ResolveAgentExit(taskID string, crashed bool, detail string) {
 	// to close the answer-in-the-gap race) and retire the orphaned checkpoint.
 	if s.SwapStatus(taskID, []model.TaskStatus{model.StatusNeedsHuman, model.StatusRunning}, model.StatusFailed) {
 		s.AbandonRequests(taskID)
+		s.releaseRuntimeByID(taskID)
 		s.appendEvent(taskID, "error", "agent stopped while awaiting your answer")
+	}
+}
+
+// releaseRuntimeByID looks up a task and frees its runtime (dev server + port).
+// A convenience for the agent-exit paths, which only have the task id.
+func (s *Service) releaseRuntimeByID(taskID string) {
+	if t, err := s.store.GetTask(taskID); err == nil {
+		s.releaseRuntime(t)
 	}
 }
 

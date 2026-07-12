@@ -48,6 +48,7 @@ type Task struct {
 	// destination (see spec.md "Failure self-heals").
 	Attempt     int       `json:"attempt"`
 	MaxAttempts int       `json:"maxAttempts"`
+	Port        int       `json:"port"` // dev-server port reserved for this task (0 = none)
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 }

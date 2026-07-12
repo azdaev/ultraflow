@@ -50,7 +50,8 @@ func Open(path string) (*Store, error) {
 var migrations = []string{
 	schema,
 	settingsSchema,
-	selfHealSchema,
+	selfHealSchema, // migration 3: tasks.attempt, tasks.max_attempts
+	portSchema,     // migration 4: tasks.port
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -148,22 +149,27 @@ ALTER TABLE tasks ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3;
 `
 
+// portSchema (migration 4) records the dev-server port reserved for a task, so
+// the board can show a clickable http://localhost:PORT link and the daemon can
+// re-reserve it after a restart. 0 means no port.
+const portSchema = `ALTER TABLE tasks ADD COLUMN port INTEGER NOT NULL DEFAULT 0;`
+
 // --- tasks ---
 
 func (s *Store) CreateTask(t model.Task) error {
 	_, err := s.db.Exec(
-		`INSERT INTO tasks (id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,created_at,updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.Title, t.Body, t.Project, t.Agent, t.Flow, string(t.Status), t.Worktree, t.Attempt, t.MaxAttempts, t.CreatedAt, t.UpdatedAt)
+		`INSERT INTO tasks (id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,port,created_at,updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.Title, t.Body, t.Project, t.Agent, t.Flow, string(t.Status), t.Worktree, t.Attempt, t.MaxAttempts, t.Port, t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
-const taskCols = `id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,created_at,updated_at`
+const taskCols = `id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,port,created_at,updated_at`
 
 func scanTask(sc interface{ Scan(...any) error }) (model.Task, error) {
 	var t model.Task
 	var status string
-	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Attempt, &t.MaxAttempts, &t.CreatedAt, &t.UpdatedAt)
+	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Attempt, &t.MaxAttempts, &t.Port, &t.CreatedAt, &t.UpdatedAt)
 	t.Status = model.TaskStatus(status)
 	return t, err
 }
@@ -244,6 +250,12 @@ func (s *Store) SetTaskAttempt(id string, attempt int) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return now, nil
+}
+
+// SetPort records the dev-server port reserved for a task (0 to clear it).
+func (s *Store) SetPort(id string, port int) error {
+	_, err := s.db.Exec(`UPDATE tasks SET port=?, updated_at=? WHERE id=?`, port, time.Now(), id)
+	return err
 }
 
 // RecoverInFlight cleans up work stranded by a previous daemon exit. A restart

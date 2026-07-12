@@ -36,13 +36,23 @@ func main() {
 		}
 		return t
 	}
+	// port sets a demo dev-server port on a task so the card's localhost:PORT link
+	// renders (distinct ports mirror the M1 per-worktree allocation).
+	port := func(t model.Task, p int) { svc.SetPort(t.ID, p) }
 
 	// Only claude/solo are implemented, and CreateTaskFull normalizes anything
 	// else to them — so the seed uses claude/solo directly rather than varied
 	// literals that would render as uniform cards anyway.
-	mk("Add rate-limit meter to the topbar", "Show N run · M queued.", "ultraflow", "claude", "solo", model.StatusRunning, "Edit internal/web/web.go")
-	mk("Wire SSE reconnect backoff", "", "ultraflow", "claude", "solo", model.StatusRunning, "Bash go test ./...")
-	mk("Port allocation for dev servers", "", "worktrees", "claude", "solo", model.StatusReview, "")
+	port(mk("Add rate-limit meter to the topbar", "Show N run · M queued.", "ultraflow", "claude", "solo", model.StatusRunning, "Edit internal/web/web.go"), 41207)
+	// Two tasks in review, each with a DISTINCT reserved dev-server port and a
+	// worktree — mirrors two parallel worktrees landing, so the board shows both
+	// localhost:PORT links side by side (the M1 acceptance, visualized).
+	rv1 := mk("Port allocation for dev servers", "", "worktrees", "claude", "solo", model.StatusReview, "")
+	port(rv1, 41562)
+	svc.SetWorktree(rv1.ID, "/Users/you/Code/worktrees/.ultraflow/worktrees/"+rv1.ID)
+	rv2 := mk("Wire SSE reconnect backoff", "", "ultraflow", "claude", "solo", model.StatusReview, "")
+	port(rv2, 41839)
+	svc.SetWorktree(rv2.ID, "/Users/you/Code/ultraflow/.ultraflow/worktrees/"+rv2.ID)
 	mk("Draft the flows YAML schema", "", "ultraflow", "claude", "solo", model.StatusDone, "")
 	mk("Migrate answer store to WAL", "", "ultraflow", "claude", "solo", model.StatusFailed, "go build ./... : undefined: foo")
 	mk("Add keyboard shortcuts help", "", "worktrees", "claude", "solo", model.StatusQueued, "")

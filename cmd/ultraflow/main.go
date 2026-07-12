@@ -18,8 +18,11 @@ import (
 	webassets "ultraflow/web"
 
 	"ultraflow/internal/core"
+	"ultraflow/internal/devserver"
 	mcpserver "ultraflow/internal/mcp"
+	"ultraflow/internal/model"
 	"ultraflow/internal/orchestrator"
+	portpkg "ultraflow/internal/port"
 	"ultraflow/internal/store"
 	"ultraflow/internal/terminal"
 	"ultraflow/internal/web"
@@ -66,7 +69,29 @@ func main() {
 	// the service merges and tears them down (same root, so they agree on paths).
 	wt := worktree.New(*wtRoot)
 	svc.UseWorktrees(wt)
-	orch := orchestrator.New(svc, *workdir, wt, term, mcpURL, *maxConc)
+
+	// Per-task dev-server ports and their detached dev servers. The orchestrator
+	// reserves/starts them; the service frees/stops them at terminal states — shared
+	// instances so both agree on what's live.
+	ports := portpkg.NewAllocator()
+	dev := devserver.NewManager()
+	svc.UsePorts(ports)
+	svc.UseDevServer(dev)
+
+	// Re-reserve ports still held across the restart. RecoverInFlight leaves `review`
+	// tasks alone — their dev servers were detached and stay up so the human can open
+	// the live app — so their port column is still live. Without this the fresh
+	// allocator's used-set is empty and a newly-started task could Allocate a port an
+	// in-review task is still serving on. (Setup is idempotent: re-reserving is safe.)
+	if tasks, err := svc.ListTasks(); err == nil {
+		for _, t := range tasks {
+			if t.Port > 0 && t.Status == model.StatusReview {
+				ports.Reserve(t.Port)
+			}
+		}
+	}
+
+	orch := orchestrator.New(svc, *workdir, wt, term, ports, dev, mcpURL, *maxConc)
 	// So an answer to a self-heal escalation (a needs_human checkpoint whose agent
 	// has already stopped) re-launches the agent with the human's guidance.
 	svc.UseReengager(orch)
@@ -101,6 +126,7 @@ func main() {
 	go func() {
 		<-ctx.Done()
 		term.CloseAll() // don't leak agent processes past the daemon
+		dev.StopAll()   // nor the detached dev servers
 		_ = srv.Close()
 	}()
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

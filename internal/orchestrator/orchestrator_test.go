@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"ultraflow/internal/core"
+	"ultraflow/internal/devserver"
 	"ultraflow/internal/model"
+	"ultraflow/internal/port"
 	"ultraflow/internal/store"
 	"ultraflow/internal/terminal"
 	"ultraflow/internal/worktree"
@@ -44,7 +46,7 @@ func TestSelfHealRetriesThenEscalates(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	svc := newTestSvc(t)
-	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), "http://mcp", 2)
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", 2)
 	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
 
 	ia := &crashingAgent{}
@@ -79,7 +81,7 @@ func TestSelfHealSucceedsMidRetry(t *testing.T) {
 		t.Skip("sh not available")
 	}
 	svc := newTestSvc(t)
-	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), "http://mcp", 2)
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", 2)
 	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
 
 	ia := &flakyAgent{}
@@ -137,7 +139,7 @@ func gitRepo(t *testing.T) string {
 func newTestOrch(t *testing.T, limit int) *Orchestrator {
 	t.Helper()
 	return New(newTestSvc(t), "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")),
-		terminal.NewManager(), "http://mcp", limit)
+		terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", limit)
 }
 
 // TestSemaphoreRaiseWakesQueued verifies the core resizable-semaphore contract:
@@ -232,7 +234,7 @@ func waitFor(t *testing.T, why string, cond func() bool) {
 // session killed, so the slot frees — the whole point of this change.
 func TestWatchIdleClosesFinishedTurn(t *testing.T) {
 	svc := newTestSvc(t)
-	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), "http://mcp", 1)
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", 1)
 
 	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
 	if err := svc.UpdateStatus(task.ID, model.StatusRunning); err != nil {
@@ -267,7 +269,7 @@ func TestWatchIdleClosesFinishedTurn(t *testing.T) {
 // not touch it — status stays needs_human and the session stays alive.
 func TestWatchIdleLeavesAskHumanParked(t *testing.T) {
 	svc := newTestSvc(t)
-	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), "http://mcp", 1)
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", 1)
 
 	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
 	// AskHuman moves the task to needs_human — the parked state the watcher excludes.
@@ -306,7 +308,7 @@ func TestPrepareWorkdirCreatesWorktree(t *testing.T) {
 	task, _ := svc.CreateTaskFull("t", "", "proj", "claude", "solo")
 
 	wtRoot := filepath.Join(t.TempDir(), "worktrees")
-	o := New(svc, "/shared", worktree.New(wtRoot), terminal.NewManager(), "http://mcp", 2)
+	o := New(svc, "/shared", worktree.New(wtRoot), terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", 2)
 
 	dir := o.prepareWorkdir(task)
 	if filepath.Dir(dir) != wtRoot {
@@ -326,7 +328,7 @@ func TestPrepareWorkdirCreatesWorktree(t *testing.T) {
 // workdir; a non-git project folder → that folder directly (no worktree).
 func TestPrepareWorkdirFallsBack(t *testing.T) {
 	svc := newTestSvc(t)
-	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), "http://mcp", 2)
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", 2)
 
 	noProj, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
 	if dir := o.prepareWorkdir(noProj); dir != "/shared" {

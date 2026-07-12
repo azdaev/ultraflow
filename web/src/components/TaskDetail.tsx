@@ -202,6 +202,18 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                       {task.worktree || "shared workdir (M0)"}
                     </span>
                   </Detail>
+                  {task.port > 0 && (
+                    <Detail label="Dev server" full>
+                      <a
+                        href={`http://localhost:${task.port}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-[12px] text-steel underline-offset-2 hover:underline"
+                      >
+                        http://localhost:{task.port} ↗
+                      </a>
+                    </Detail>
+                  )}
                 </dl>
                 {task.body && (
                   <p className="mt-3 border-t border-hairline pt-3 text-[13px] leading-relaxed text-muted">
