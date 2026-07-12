@@ -80,12 +80,15 @@ func main() {
 
 	// Re-reserve ports still held across the restart. RecoverInFlight leaves `review`
 	// tasks alone — their dev servers were detached and stay up so the human can open
-	// the live app — so their port column is still live. Without this the fresh
-	// allocator's used-set is empty and a newly-started task could Allocate a port an
-	// in-review task is still serving on. (Setup is idempotent: re-reserving is safe.)
+	// the live app — so their port column is still live. It also flags tasks it will
+	// resume in place (Resume) — their reserved port must be held so nothing else
+	// Allocates it before the orchestrator restarts that task's dev server on it.
+	// Without this the fresh allocator's used-set is empty and a newly-started task
+	// could grab a port one of these is still (or about to be) serving on. (Setup is
+	// idempotent: re-reserving is safe.)
 	if tasks, err := svc.ListTasks(); err == nil {
 		for _, t := range tasks {
-			if t.Port > 0 && t.Status == model.StatusReview {
+			if t.Port > 0 && (t.Status == model.StatusReview || t.Resume) {
 				ports.Reserve(t.Port)
 			}
 		}

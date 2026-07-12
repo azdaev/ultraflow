@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -212,8 +213,33 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		// The task may have been Stopped (→ cancelled) while it sat queued waiting for
 		// a slot — a wait that can last minutes. If it's no longer queued, don't spin
 		// an agent up on it; that would revive a task the human deliberately stopped.
-		if cur, err := o.svc.GetTask(t.ID); err != nil || cur.Status != model.StatusQueued {
+		// Re-read here so we also see the fresh resume marker RecoverInFlight may have set.
+		cur, err := o.svc.GetTask(t.ID)
+		if err != nil || cur.Status != model.StatusQueued {
 			return
+		}
+
+		// t.Agent is already normalized to an implemented adapter at creation time
+		// (core.CreateTaskFull), so this resolves; interactiveAgent applies the
+		// belt-and-braces claude fallback.
+		ia, err := o.interactiveAgent(cur)
+		if err != nil {
+			o.fail(cur.ID, err.Error())
+			return
+		}
+
+		// A daemon restart interrupted this task mid-run. Resume it IN PLACE — same
+		// worktree (its uncommitted work intact, no prune) and, for claude, the same
+		// conversation via --continue — instead of wiping the checkout and starting
+		// the task over from the top. The marker is one-shot: clear it now so a later
+		// clean run of the same id doesn't accidentally resume. If the worktree is
+		// somehow gone, fall through to a normal fresh start.
+		if cur.Resume {
+			o.svc.SetResume(cur.ID, false)
+			if cur.Worktree != "" && isDir(cur.Worktree) {
+				o.resumeAfterRestart(ctx, cur, ia)
+				return
+			}
 		}
 
 		// Give the task its own isolated checkout so parallel agents don't collide.
@@ -221,25 +247,46 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		// The worktree is intentionally kept after the run so the human can review
 		// the diff; there is no merge flow yet, so a retry of the same task id is
 		// what reclaims the branch (Create prunes it before re-adding).
-		dir := o.prepareWorkdir(t)
+		dir := o.prepareWorkdir(cur)
 
 		// Reserve a distinct dev-server port for this task and, if the project ships a
 		// dev-server hook, boot it — so parallel tasks never collide and the human can
 		// open the task's live app from its card.
-		prt := o.setupPort(t, dir)
+		prt := o.setupPort(cur, dir)
 
-		// t.Agent is already normalized to an implemented adapter at creation time
-		// (core.CreateTaskFull), so this lookup resolves; the nil guard is a belt-
-		// and-braces fallback rather than a silent substitution of a real choice.
-		ia, err := o.interactiveAgent(t)
-		if err != nil {
-			o.fail(t.ID, err.Error())
-			return
-		}
-
-		o.execute(ctx, launchIntent{task: t, dir: dir, agent: ia, prompt: buildPrompt(t, prt), port: prt, fresh: true,
+		o.execute(ctx, launchIntent{task: cur, dir: dir, agent: ia, prompt: buildPrompt(cur, prt), port: prt, fresh: true,
 			runningMsg: "running — open the card to watch progress (Ctrl-C to interrupt)", buildErr: "couldn't build the agent command: "})
 	}()
+}
+
+// resumeAfterRestart re-launches a task whose live session a daemon restart cut
+// short (marked by store.RecoverInFlight). It reuses the EXISTING worktree — no
+// prune, so every uncommitted edit the agent made survives — and resumes via
+// ResumeCommand, which for claude reconnects the prior conversation (`--continue`)
+// so the agent keeps its memory of what it was doing. This is the whole point of
+// the fix: a restart continues the task instead of silently starting it over.
+//
+// The dev server the task had was killed on shutdown, so bring it back up on the
+// SAME reserved port (main.go re-reserved it at startup so nothing else took it).
+// Runs under the ordinary self-heal loop, exactly like a fresh start.
+func (o *Orchestrator) resumeAfterRestart(ctx context.Context, t model.Task, ia interactiveAgent) {
+	o.svc.AppendTaskEvent(t.ID, "status",
+		"resuming after an Ultraflow restart — same worktree, picking up where it left off")
+
+	// Restart the dev server on the port already reserved for this task (recovery
+	// killed it); reserve a fresh one only if the task never had a port.
+	prt := t.Port
+	if prt > 0 {
+		if o.ports != nil {
+			o.ports.Reserve(prt) // idempotent with main.go's startup re-reservation
+		}
+		o.startDevServer(t, t.Worktree, prt)
+	} else {
+		prt = o.setupPort(t, t.Worktree)
+	}
+
+	o.execute(ctx, launchIntent{task: t, dir: t.Worktree, agent: ia, prompt: buildResumePrompt(t, prt), port: prt, fresh: false,
+		runningMsg: "resuming after restart (Ctrl-C to interrupt)", buildErr: "couldn't relaunch the agent to resume: "})
 }
 
 // runWithSelfHeal runs a task's agent and, on an unexpected error, AUTO-DIAGNOSES
@@ -371,6 +418,13 @@ func (o *Orchestrator) isHealing(id string) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.healing[id]
+}
+
+// isDir reports whether p exists and is a directory — used to confirm a task's
+// worktree survived a restart before resuming into it.
+func isDir(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
 }
 
 // stoppedByHuman reports whether an agent exit was a deliberate interrupt (the
@@ -761,6 +815,26 @@ WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-
 line summary. That sends your work to review and ends this session — do not sit
 idle at the prompt waiting; call finish_task and stop.`,
 		t.ID, t.Title, t.ID, t.Body, portInstruction(prt), t.ID, screenshotInstruction, t.ID)
+}
+
+// buildResumePrompt is seeded when a daemon restart interrupted the task mid-run
+// and the orchestrator resumes it in place. For claude the prior conversation is
+// restored (`--continue`), so this is a nudge to carry on; for codex the resume
+// starts a fresh session, so it re-states the task self-containedly. Either way
+// the earlier work is still in the worktree. A restart also cancelled any open
+// ask_human, so it tells the agent to re-ask if it was mid-question.
+func buildResumePrompt(t model.Task, prt int) string {
+	return fmt.Sprintf(`Ultraflow was restarted while you were in the middle of this task, so your live session was interrupted. You are being resumed in the SAME working directory — everything you had already done is still here.
+
+Task ID: %s
+Title: %s
+
+%s
+
+Pick up where you left off: first check what you have already changed in this working directory, then carry on and finish the task — don't start over from scratch. If you were waiting on a human answer when the restart happened, that question was cancelled; re-ask via ask_human (task_id="%s") if you still need it.
+
+%s%sWHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-line summary.`,
+		t.ID, t.Title, t.Body, t.ID, portInstruction(prt), screenshotInstruction+"\n\n", t.ID)
 }
 
 // buildRevisePrompt is the message seeded when the human sends a reviewed task

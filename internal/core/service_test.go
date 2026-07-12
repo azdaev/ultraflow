@@ -231,11 +231,18 @@ func TestCreateTaskKeepsImplementedAgent(t *testing.T) {
 // and their orphaned pending human requests are retired, so nothing is stranded.
 func TestRecoverInFlight(t *testing.T) {
 	svc := newTestService(t)
+	// A running task WITH a live worktree: resumable in place after the restart.
 	running, _ := svc.CreateTask("running", "", "")
+	svc.SetWorktree(running.ID, t.TempDir())
 	svc.UpdateStatus(running.ID, model.StatusRunning)
+	// A running task that never got a worktree (raced the crash before setup): no
+	// state to resume, so it must cold-start, not resume.
+	bare, _ := svc.CreateTask("bare", "", "")
+	svc.UpdateStatus(bare.ID, model.StatusRunning)
 	queued, _ := svc.CreateTask("queued", "", "")
 	svc.UpdateStatus(queued.ID, model.StatusQueued)
 	parked, _ := svc.CreateTask("parked", "", "")
+	svc.SetWorktree(parked.ID, t.TempDir())
 	svc.UpdateStatus(parked.ID, model.StatusNeedsHuman)
 	// A pending request whose asking agent is (conceptually) already dead.
 	svc.store.CreateHumanRequest(model.HumanRequest{
@@ -243,17 +250,38 @@ func TestRecoverInFlight(t *testing.T) {
 	})
 	done, _ := svc.CreateTask("done", "", "")
 	svc.UpdateStatus(done.ID, model.StatusDone)
+	// A failed task the human already sent back via "Retry" sits in backlog with its
+	// old worktree. Recovery must not touch it — Retry wants a clean cold restart,
+	// not a resume — so it must stay unmarked.
+	retried, _ := svc.CreateTask("retried", "", "")
+	svc.SetWorktree(retried.ID, t.TempDir())
+	svc.UpdateStatus(retried.ID, model.StatusBacklog)
 
 	n, err := svc.RecoverInFlight()
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	if n != 3 {
-		t.Fatalf("expected 3 in-flight tasks requeued, got %d", n)
+	if n != 4 {
+		t.Fatalf("expected 4 in-flight tasks requeued, got %d", n)
 	}
-	for _, id := range []string{running.ID, queued.ID, parked.ID} {
+	if got, _ := svc.GetTask(retried.ID); got.Resume {
+		t.Fatalf("a backlog (retried) task must not be marked resume")
+	}
+	for _, id := range []string{running.ID, bare.ID, queued.ID, parked.ID} {
 		if got, _ := svc.GetTask(id); got.Status != model.StatusBacklog {
 			t.Fatalf("task %s should be requeued to backlog, got %s", id, got.Status)
+		}
+	}
+	// Only the tasks that had a worktree are marked to resume in place; the ones
+	// with nothing to resume cold-start like any fresh backlog task.
+	for _, id := range []string{running.ID, parked.ID} {
+		if got, _ := svc.GetTask(id); !got.Resume {
+			t.Fatalf("task %s had a worktree and should be marked resume, got resume=false", id)
+		}
+	}
+	for _, id := range []string{bare.ID, queued.ID} {
+		if got, _ := svc.GetTask(id); got.Resume {
+			t.Fatalf("task %s had no worktree and must not be marked resume", id)
 		}
 	}
 	// A terminal task is left alone.

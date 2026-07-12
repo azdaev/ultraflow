@@ -49,6 +49,12 @@ type Task struct {
 	Attempt     int       `json:"attempt"`
 	MaxAttempts int       `json:"maxAttempts"`
 	Port        int       `json:"port"` // dev-server port reserved for this task (0 = none)
+	// Resume marks a task a daemon restart interrupted mid-run: the orchestrator
+	// picks it back up IN PLACE (same worktree, and for claude the same
+	// conversation via --continue) instead of pruning and starting it over. Set by
+	// store.RecoverInFlight at startup, cleared when the resume launches. A one-shot
+	// recovery signal, not a lifecycle state.
+	Resume      bool      `json:"resume"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
