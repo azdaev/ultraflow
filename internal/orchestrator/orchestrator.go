@@ -58,12 +58,65 @@ type Orchestrator struct {
 	healing map[string]bool
 }
 
+// launchIntent is the small interface into task execution. Callers describe why
+// an agent is being launched; the implementation below owns the shared ordering
+// of concurrency, command construction, port injection, and self-heal.
+type launchIntent struct {
+	task       model.Task
+	dir        string
+	agent      interactiveAgent
+	prompt     string
+	port       int
+	fresh      bool
+	runningMsg string
+	buildErr   string
+}
+
+func (o *Orchestrator) interactiveAgent(t model.Task) (interactiveAgent, error) {
+	ag := o.agents[t.Agent]
+	if ag == nil {
+		ag = o.agents["claude"]
+	}
+	ia, ok := ag.(interactiveAgent)
+	if !ok {
+		return nil, fmt.Errorf("agent %s can't run interactively", ag.Name())
+	}
+	return ia, nil
+}
+
+// launch is the deep task-execution module: one implementation pays for every
+// fresh run, revision, human re-engagement, and rebase repair.
+func (o *Orchestrator) launch(intent launchIntent) {
+	go func() {
+		o.acquire()
+		defer o.release()
+		o.execute(o.ctx(), intent)
+	}()
+}
+
+func (o *Orchestrator) execute(ctx context.Context, intent launchIntent) {
+	var cmd *exec.Cmd
+	var cleanup func()
+	var err error
+	if intent.fresh {
+		cmd, cleanup, err = intent.agent.Command(ctx, intent.dir, intent.prompt)
+	} else {
+		cmd, cleanup, err = intent.agent.ResumeCommand(ctx, intent.dir, intent.prompt)
+	}
+	if err != nil {
+		o.fail(intent.task.ID, intent.buildErr+err.Error())
+		return
+	}
+	injectPort(cmd, intent.port)
+	o.runWithSelfHeal(ctx, intent.task, intent.dir, intent.agent, cmd, cleanup, intent.runningMsg)
+}
+
 func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal.Manager, ports *port.Allocator, dev *devserver.Manager, mcpURL string, maxConcurrent int) *Orchestrator {
 	if maxConcurrent < 1 {
 		maxConcurrent = 1
 	}
 	o := &Orchestrator{
-		svc:     svc,
+		svc: svc,
 		agents: map[string]agent.Agent{
 			"claude": agent.NewClaude(mcpURL),
 			"codex":  agent.NewCodex(mcpURL),
@@ -147,8 +200,8 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 	// If this write fails the task stays in backlog; bail so we don't spawn a
 	// goroutine for a task the next tick will (correctly) pick up again — that
 	// would double-run it.
-	if err := o.svc.UpdateStatus(t.ID, model.StatusQueued); err != nil {
-		log.Printf("task %s: could not queue (%v); will retry next tick", t.ID, err)
+	if !o.svc.ClaimTask(t.ID) {
+		log.Printf("task %s: could not claim backlog state; will retry next tick", t.ID)
 		return
 	}
 
@@ -178,23 +231,14 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		// t.Agent is already normalized to an implemented adapter at creation time
 		// (core.CreateTaskFull), so this lookup resolves; the nil guard is a belt-
 		// and-braces fallback rather than a silent substitution of a real choice.
-		ag := o.agents[t.Agent]
-		if ag == nil {
-			ag = o.agents["claude"]
-		}
-		ia, ok := ag.(interactiveAgent)
-		if !ok {
-			o.fail(t.ID, "agent "+ag.Name()+" can't run as an interactive terminal")
+		ia, err := o.interactiveAgent(t)
+		if err != nil {
+			o.fail(t.ID, err.Error())
 			return
 		}
 
-		cmd, cleanup, err := ia.Command(ctx, dir, buildPrompt(t, prt))
-		if err != nil {
-			o.fail(t.ID, "couldn't build the agent command: "+err.Error())
-			return
-		}
-		injectPort(cmd, prt)
-		o.runWithSelfHeal(ctx, t, dir, ia, cmd, cleanup, "running — open the card to watch progress (Ctrl-C to interrupt)")
+		o.execute(ctx, launchIntent{task: t, dir: dir, agent: ia, prompt: buildPrompt(t, prt), port: prt, fresh: true,
+			runningMsg: "running — open the card to watch progress (Ctrl-C to interrupt)", buildErr: "couldn't build the agent command: "})
 	}()
 }
 
@@ -290,7 +334,7 @@ func (o *Orchestrator) runAgent(taskID string, cmd *exec.Cmd, cleanup func(), ru
 		o.fail(taskID, "couldn't start the agent terminal: "+err.Error())
 		return nil, false
 	}
-	o.svc.UpdateStatus(taskID, model.StatusRunning)
+	o.svc.AgentStarted(taskID)
 	o.svc.AppendTaskEvent(taskID, "status", runningMsg)
 
 	// Free the slot when the agent ends its turn without finish_task: an interactive
@@ -407,7 +451,7 @@ func (o *Orchestrator) watchIdle(sess *terminal.Session, taskID string, timeout,
 			if sess.IdleFor() < timeout {
 				continue
 			}
-			if o.svc.SwapStatus(taskID, []model.TaskStatus{model.StatusRunning}, model.StatusReview) {
+			if o.svc.FinishForReview(taskID) {
 				o.svc.AppendTaskEvent(taskID, "status",
 					"agent went idle without calling finish_task — sent to review and freed the slot")
 				sess.Close()
@@ -441,13 +485,9 @@ func (o *Orchestrator) Revise(taskID, feedback string) error {
 		return fmt.Errorf("this task already has a live session — type into its terminal instead")
 	}
 
-	ag := o.agents[t.Agent]
-	if ag == nil {
-		ag = o.agents["claude"]
-	}
-	ia, ok := ag.(interactiveAgent)
-	if !ok {
-		return fmt.Errorf("agent %s can't run interactively", ag.Name())
+	ia, err := o.interactiveAgent(t)
+	if err != nil {
+		return err
 	}
 	dir := t.Worktree
 	if dir == "" {
@@ -456,8 +496,8 @@ func (o *Orchestrator) Revise(taskID, feedback string) error {
 
 	// Flip out of review synchronously so the board reflects the send-back at once
 	// and a double-click can't launch two agents on the same worktree.
-	if err := o.svc.UpdateStatus(taskID, model.StatusQueued); err != nil {
-		return err
+	if !o.svc.QueueRevision(taskID) {
+		return fmt.Errorf("task status changed before it could be queued")
 	}
 	o.svc.AppendTaskEvent(taskID, "human_answer", feedback)
 
@@ -468,17 +508,8 @@ func (o *Orchestrator) Revise(taskID, feedback string) error {
 		prt = o.setupPort(t, dir)
 	}
 
-	go func() {
-		o.acquire()
-		defer o.release()
-		cmd, cleanup, err := ia.ResumeCommand(o.ctx(), dir, buildRevisePrompt(t, feedback, prt))
-		if err != nil {
-			o.fail(taskID, "couldn't build the agent command: "+err.Error())
-			return
-		}
-		injectPort(cmd, prt)
-		o.runWithSelfHeal(o.ctx(), t, dir, ia, cmd, cleanup, "reworking on your feedback (Ctrl-C to interrupt)")
-	}()
+	o.launch(launchIntent{task: t, dir: dir, agent: ia, prompt: buildRevisePrompt(t, feedback, prt), port: prt,
+		runningMsg: "reworking on your feedback (Ctrl-C to interrupt)", buildErr: "couldn't build the agent command: "})
 	return nil
 }
 
@@ -498,30 +529,17 @@ func (o *Orchestrator) Reengage(taskID, guidance string) error {
 	if err != nil {
 		return err
 	}
-	ag := o.agents[t.Agent]
-	if ag == nil {
-		ag = o.agents["claude"]
-	}
-	ia, ok := ag.(interactiveAgent)
-	if !ok {
-		return fmt.Errorf("agent %s can't run interactively", ag.Name())
+	ia, err := o.interactiveAgent(t)
+	if err != nil {
+		return err
 	}
 	dir := t.Worktree
 	if dir == "" {
 		dir = o.workdir // ran in place (non-git / shared-workdir project)
 	}
 
-	go func() {
-		o.acquire()
-		defer o.release()
-		cmd, cleanup, err := ia.ResumeCommand(o.ctx(), dir, buildReengagePrompt(t, guidance))
-		if err != nil {
-			o.fail(taskID, "couldn't relaunch the agent: "+err.Error())
-			return
-		}
-		injectPort(cmd, t.Port) // reuse the port reserved on the first run (no-op if none)
-		o.runWithSelfHeal(o.ctx(), t, dir, ia, cmd, cleanup, "back on it with your guidance (Ctrl-C to interrupt)")
-	}()
+	o.launch(launchIntent{task: t, dir: dir, agent: ia, prompt: buildReengagePrompt(t, guidance), port: t.Port,
+		runningMsg: "back on it with your guidance (Ctrl-C to interrupt)", buildErr: "couldn't relaunch the agent: "})
 	return nil
 }
 
@@ -548,13 +566,9 @@ func (o *Orchestrator) Rebase(taskID string) error {
 		return fmt.Errorf("this task already has a live session — type into its terminal instead")
 	}
 
-	ag := o.agents[t.Agent]
-	if ag == nil {
-		ag = o.agents["claude"]
-	}
-	ia, ok := ag.(interactiveAgent)
-	if !ok {
-		return fmt.Errorf("agent %s can't run interactively", ag.Name())
+	ia, err := o.interactiveAgent(t)
+	if err != nil {
+		return err
 	}
 
 	// Best-effort freshness figure for the prompt; the agent doesn't strictly need
@@ -571,25 +585,13 @@ func (o *Orchestrator) Rebase(taskID string) error {
 
 	// Flip out of review synchronously so the board reflects the self-heal at once
 	// and a double-click can't launch two agents on the same worktree.
-	if err := o.svc.UpdateStatus(taskID, model.StatusQueued); err != nil {
-		return err
+	if !o.svc.QueueRebase(taskID) {
+		return fmt.Errorf("task status changed before it could be queued")
 	}
 	o.svc.AppendTaskEvent(taskID, "status", "auto-rebasing onto "+base+" — resolving conflicts")
 
-	go func() {
-		o.acquire()
-		defer o.release()
-		cmd, cleanup, err := ia.ResumeCommand(o.ctx(), t.Worktree, buildRebasePrompt(t, base, behind))
-		if err != nil {
-			o.fail(taskID, "couldn't build the agent command: "+err.Error())
-			return
-		}
-		injectPort(cmd, t.Port) // reuse the port reserved on the first run (no-op if none)
-		// Run under the same self-heal loop as a fresh start: the agent resolves what
-		// it can, retries on a stumble, and escalates a truly stuck conflict as a
-		// needs_human checkpoint — never a silent abort back to review.
-		o.runWithSelfHeal(o.ctx(), t, t.Worktree, ia, cmd, cleanup, "rebasing onto "+base+" — resolving conflicts (Ctrl-C to interrupt)")
-	}()
+	o.launch(launchIntent{task: t, dir: t.Worktree, agent: ia, prompt: buildRebasePrompt(t, base, behind), port: t.Port,
+		runningMsg: "rebasing onto " + base + " — resolving conflicts (Ctrl-C to interrupt)", buildErr: "couldn't build the agent command: "})
 	return nil
 }
 
@@ -607,18 +609,14 @@ func (o *Orchestrator) ctx() context.Context {
 // dead-ends (couldn't build/start the agent at all) — an agent that ran and errored
 // self-heals instead. `failed` is terminal: gave-up or you-said-stop.
 func (o *Orchestrator) fail(taskID, reason string) {
-	o.svc.AppendTaskEvent(taskID, "error", reason)
-	o.svc.UpdateStatus(taskID, model.StatusFailed)
+	o.svc.FailExecution(taskID, reason)
 }
 
 // gaveUp marks a task terminally failed because the human stopped it (Ctrl-C). The
 // guarded swap retires any parked checkpoint and won't clobber a task an answer has
 // already moved on, mirroring the crash resolver's race-safety.
 func (o *Orchestrator) gaveUp(taskID, reason string) {
-	if o.svc.SwapStatus(taskID, []model.TaskStatus{model.StatusRunning, model.StatusQueued, model.StatusNeedsHuman}, model.StatusFailed) {
-		o.svc.AbandonRequests(taskID)
-		o.svc.AppendTaskEvent(taskID, "error", reason)
-	}
+	o.svc.FailExecution(taskID, reason)
 }
 
 // prepareWorkdir resolves where a task's agent should run. In order of
