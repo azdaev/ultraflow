@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.9 — 2026-07-12
+
+- Ultraflow: надо резолвить такие места как-то. то есть клод задает несколько вопросов, но это в терминале. то есть не отобразилось как needs my attention. комплексно подумай как чище всего решить эту проблему
+
 ## v0.10.8 — 2026-07-12
 
 - docs: activity-journal — the signal:killed diagnosis + how to analyse the journal
