@@ -189,6 +189,12 @@ func (o *Orchestrator) launch(taskID string, cmd *exec.Cmd, cleanup func(), runn
 	o.svc.UpdateStatus(taskID, model.StatusRunning)
 	o.svc.AppendTaskEvent(taskID, "status", runningMsg)
 
+	// Free the slot when the agent ends its turn without finish_task: an interactive
+	// TUI never exits on its own, so without this it would idle at its prompt holding
+	// the slot forever. Runs for the session's whole life so it also catches a second
+	// idle after an ask_human answer resumes the agent.
+	go o.watchIdle(sess, taskID, idleTimeout, idlePoll)
+
 	werr := sess.Wait()
 	detail := ""
 	if werr != nil {
@@ -196,6 +202,51 @@ func (o *Orchestrator) launch(taskID string, cmd *exec.Cmd, cleanup func(), runn
 		log.Printf("task %s: agent exited before finishing: %v", taskID, werr)
 	}
 	o.svc.ResolveAgentExit(taskID, werr != nil, detail)
+}
+
+// Idle-watcher tuning. A working Claude TUI streams a spinner/elapsed-timer
+// continuously, so a stretch of pure silence means the turn has ended and the agent
+// is parked at its prompt. The two error costs are asymmetric: waiting too long only
+// delays freeing a slot by seconds (cheap — a human-in-the-loop board), while acting
+// too soon SIGKILLs a genuinely-working agent mid-task and ships partial work. So
+// idleTimeout is deliberately generous — comfortably longer than any silent gap a
+// working agent produces (a slow model turn or a quiet long tool run both keep the
+// timer animating) — biasing hard against a false positive. idlePoll is the cadence.
+const (
+	idleTimeout = 90 * time.Second
+	idlePoll    = 5 * time.Second
+)
+
+// watchIdle ends a session whose agent went idle at its prompt without calling
+// finish_task, so a bare turn-end frees the concurrency slot instead of pinning it
+// forever. It sends the task to review and kills the session (the freed slot then
+// starts a queued task). It runs until the session ends.
+//
+// It must NOT disturb the intentional ask_human durable wait: an agent parked on an
+// open human request is SUPPOSED to idle at its prompt. That case is excluded by the
+// guarded swap — ask_human moved the task to needs_human, so running→review fails
+// and we keep watching (a later answer returns it to running, where a fresh idle can
+// be caught). The swap is also the atomic arbiter against an ask_human/answer racing
+// in at the moment we act.
+func (o *Orchestrator) watchIdle(sess *terminal.Session, taskID string, timeout, poll time.Duration) {
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-sess.Done():
+			return
+		case <-ticker.C:
+			if sess.IdleFor() < timeout {
+				continue
+			}
+			if o.svc.SwapStatus(taskID, []model.TaskStatus{model.StatusRunning}, model.StatusReview) {
+				o.svc.AppendTaskEvent(taskID, "status",
+					"agent went idle without calling finish_task — sent to review and freed the slot")
+				sess.Close()
+				return
+			}
+		}
+	}
 }
 
 // Revise re-engages a task's agent after it has gone to review (or failed): it

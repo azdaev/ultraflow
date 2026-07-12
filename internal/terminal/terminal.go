@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 )
@@ -35,6 +36,12 @@ type Session struct {
 	subs       map[chan []byte]struct{}
 	closed     bool
 	done       chan struct{}
+	// lastActivity is the last time the session produced output or received input.
+	// The orchestrator's idle watcher reads it (via IdleFor) to tell an agent that
+	// went quiet at its prompt from one still working — a working Claude TUI streams
+	// a spinner/output continuously, so silence means the turn has ended. Input
+	// counts too, so a just-answered agent isn't judged idle before it can respond.
+	lastActivity time.Time
 }
 
 // Manager owns the live sessions, keyed by task id.
@@ -53,7 +60,7 @@ func (m *Manager) Start(taskID string, cmd *exec.Cmd) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{pty: f, cmd: cmd, subs: make(map[chan []byte]struct{}), done: make(chan struct{})}
+	s := &Session{pty: f, cmd: cmd, subs: make(map[chan []byte]struct{}), done: make(chan struct{}), lastActivity: time.Now()}
 
 	m.mu.Lock()
 	if old := m.sessions[taskID]; old != nil {
@@ -120,6 +127,7 @@ func (s *Session) broadcast(p []byte) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastActivity = time.Now()
 	s.scrollback = append(s.scrollback, chunk...)
 	if len(s.scrollback) > scrollbackCap {
 		s.scrollback = s.scrollback[len(s.scrollback)-scrollbackCap:]
@@ -160,11 +168,29 @@ func (s *Session) Attach() (scrollback []byte, out <-chan []byte, detach func())
 	}
 }
 
-// Write sends keystrokes to the PTY (stdin of the agent).
+// Write sends keystrokes to the PTY (stdin of the agent). It counts as activity:
+// a human typing — or an answer being delivered — means the agent isn't idle, and
+// gives it room to start responding before the idle watcher could judge it stalled.
 func (s *Session) Write(p []byte) error {
+	s.mu.Lock()
+	s.lastActivity = time.Now()
+	s.mu.Unlock()
 	_, err := s.pty.Write(p)
 	return err
 }
+
+// IdleFor reports how long the session has produced no output and received no
+// input. The orchestrator uses it to detect an agent that ended its turn and is
+// idling at its prompt without having called finish_task.
+func (s *Session) IdleFor() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Since(s.lastActivity)
+}
+
+// Done is closed when the session ends (process exit or Close), so watchers can
+// stop without polling.
+func (s *Session) Done() <-chan struct{} { return s.done }
 
 // WriteTo delivers p to the stdin of task id's live session, exactly as if the
 // human had typed it into the terminal. It reports whether a live session

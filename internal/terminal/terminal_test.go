@@ -91,6 +91,49 @@ func TestCloseReapsGrandchildren(t *testing.T) {
 
 func readFile(p string) string { b, _ := os.ReadFile(p); return string(b) }
 
+// TestIdleForTracksActivity: IdleFor grows while the session is silent, and both
+// output and input reset it. The orchestrator relies on this to tell a finished
+// agent (silent) from a working or just-answered one.
+func TestIdleForTracksActivity(t *testing.T) {
+	m := NewManager()
+	sess, err := m.Start("idle", exec.Command("cat")) // stays alive, silent
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer sess.Close()
+
+	// Attach before writing so the PTY's echo of our input lands on the channel.
+	_, out, detach := sess.Attach()
+	defer detach()
+
+	time.Sleep(30 * time.Millisecond)
+	if sess.IdleFor() < 20*time.Millisecond {
+		t.Fatalf("idle time should accrue while silent, got %v", sess.IdleFor())
+	}
+
+	// Input counts as activity — a just-answered agent must not read as idle.
+	if err := sess.Write([]byte("x\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if sess.IdleFor() > 20*time.Millisecond {
+		t.Fatalf("input should reset the idle clock, got %v", sess.IdleFor())
+	}
+
+	// `cat` echoes the input back — output also resets the clock. Wait for it.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case <-out:
+			if sess.IdleFor() > 20*time.Millisecond {
+				t.Fatalf("output should reset the idle clock, got %v", sess.IdleFor())
+			}
+			return
+		case <-deadline:
+			t.Fatal("never saw echoed output")
+		}
+	}
+}
+
 // TestSessionInput: keystrokes written to the session reach the process (a PTY
 // echoes them), proving the terminal is interactive, not read-only.
 func TestSessionInput(t *testing.T) {

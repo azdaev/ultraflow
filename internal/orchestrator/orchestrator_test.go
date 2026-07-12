@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ultraflow/internal/core"
+	"ultraflow/internal/model"
 	"ultraflow/internal/store"
 	"ultraflow/internal/terminal"
 	"ultraflow/internal/worktree"
@@ -113,6 +114,90 @@ func TestSetLimitClamps(t *testing.T) {
 	o.SetLimit(0)
 	if o.Limit() != 1 {
 		t.Fatalf("SetLimit(0) should clamp to 1, got %d", o.Limit())
+	}
+}
+
+// waitFor polls cond until it holds or the deadline passes.
+func waitFor(t *testing.T, why string, cond func() bool) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if cond() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", why)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// TestWatchIdleClosesFinishedTurn: an agent that ends its turn at its prompt
+// without finish_task (a silent, still-alive process) is sent to review and its
+// session killed, so the slot frees — the whole point of this change.
+func TestWatchIdleClosesFinishedTurn(t *testing.T) {
+	svc := newTestSvc(t)
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), "http://mcp", 1)
+
+	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
+	if err := svc.UpdateStatus(task.ID, model.StatusRunning); err != nil {
+		t.Fatalf("to running: %v", err)
+	}
+
+	// `cat` stays alive and silent — a stand-in for a TUI idling at its prompt.
+	sess, err := terminal.NewManager().Start(task.ID, exec.Command("cat"))
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	defer sess.Close()
+
+	go o.watchIdle(sess, task.ID, 30*time.Millisecond, 5*time.Millisecond)
+
+	waitFor(t, "task to land in review", func() bool {
+		got, _ := svc.GetTask(task.ID)
+		return got.Status == model.StatusReview
+	})
+	waitFor(t, "the idle session to be closed", func() bool {
+		select {
+		case <-sess.Done():
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+// TestWatchIdleLeavesAskHumanParked: a task parked on an open human request is
+// SUPPOSED to idle at its prompt (the durable ask_human wait). The watcher must
+// not touch it — status stays needs_human and the session stays alive.
+func TestWatchIdleLeavesAskHumanParked(t *testing.T) {
+	svc := newTestSvc(t)
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), "http://mcp", 1)
+
+	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
+	// AskHuman moves the task to needs_human — the parked state the watcher excludes.
+	if _, err := svc.AskHuman(task.ID, "which way?", nil, ""); err != nil {
+		t.Fatalf("ask_human: %v", err)
+	}
+
+	sess, err := terminal.NewManager().Start(task.ID, exec.Command("cat"))
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	defer sess.Close()
+
+	go o.watchIdle(sess, task.ID, 30*time.Millisecond, 5*time.Millisecond)
+
+	// Give the watcher well past its timeout to (wrongly) act, then assert it didn't.
+	time.Sleep(200 * time.Millisecond)
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusNeedsHuman {
+		t.Fatalf("parked task should stay needs_human, got %s", got.Status)
+	}
+	select {
+	case <-sess.Done():
+		t.Fatal("watcher killed a session parked on ask_human")
+	default:
 	}
 }
 
