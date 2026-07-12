@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 
 	"github.com/creack/pty"
 )
@@ -181,8 +182,16 @@ func (s *Session) Wait() error {
 
 // Close terminates the process and tears the session down.
 func (s *Session) Close() {
-	if s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
+	if p := s.cmd.Process; p != nil {
+		// Agents run detached in their own session/process group (Setsid, via
+		// pty.Start), so grandchildren (bash, test runners) don't share our group
+		// and would survive a bare Process.Kill of the leader. The leader's PID is
+		// the group id, so signalling -pid SIGKILLs the whole group — reaping the
+		// grandchildren too. Fall back to a single-PID kill if that fails (e.g. the
+		// group is already gone).
+		if err := syscall.Kill(-p.Pid, syscall.SIGKILL); err != nil {
+			_ = p.Kill()
+		}
 	}
 	s.markClosed()
 }
