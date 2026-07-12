@@ -36,6 +36,7 @@ func main() {
 		staticDir = flag.String("static", "web/dist", "static frontend build dir")
 		workdir   = flag.String("workdir", ".", "fallback working dir for tasks with no registered git project")
 		wtRoot    = flag.String("worktrees", ".ultraflow/worktrees", "root dir for per-task git worktrees")
+		attachDir = flag.String("attachments", ".ultraflow/attachments", "dir for images uploaded from a composer")
 		maxConc   = flag.Int("max-concurrent", 3, "max concurrent agents (subscription rate-limit guard)")
 	)
 	flag.Parse()
@@ -115,7 +116,7 @@ func main() {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpSrv }, nil)
 	// staticDir (the -static flag) wins for dev; otherwise a release binary built
 	// with `-tags embed` serves the frontend it baked in; otherwise API-only.
-	webMux := web.New(svc, term, resolveStatic(*staticDir), webassets.Assets(), orch)
+	webMux := web.New(svc, term, resolveStatic(*staticDir), *attachDir, webassets.Assets(), orch)
 
 	root := http.NewServeMux()
 	root.Handle("/mcp", mcpHandler)

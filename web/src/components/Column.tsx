@@ -3,6 +3,7 @@ import { AnimatePresence } from "motion/react";
 import { errMsg } from "../api";
 import type { Project, Task } from "../api";
 import { TaskCard } from "./TaskCard";
+import { ImageAttachStrip, useImageAttach, withAttachments } from "./ImageAttach";
 
 interface Props {
   title: string;
@@ -18,7 +19,7 @@ interface Props {
   // (Trello-style) and quick-creates in this column's project. Absent when the
   // board has no concrete project (the "All" filter / "Unassigned" lane): the
   // add then routes through onExpand so a project gets chosen first.
-  onAdd?: (title: string) => Promise<void>;
+  onAdd?: (title: string, body?: string) => Promise<void>;
   // Hands the current draft off to the full composer (project · flow · agent ·
   // body), carrying whatever title has been typed so far. It's the "More…"
   // affordance when quick-add exists, and the primary action when it doesn't.
@@ -105,7 +106,7 @@ function AddTask({
   onAdd,
   onExpand,
 }: {
-  onAdd?: (title: string) => Promise<void>;
+  onAdd?: (title: string, body?: string) => Promise<void>;
   onExpand?: (title: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -113,16 +114,19 @@ function AddTask({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const attach = useImageAttach();
 
   function cancel() {
     setEditing(false);
     setTitle("");
+    attach.clear();
     setErr(null);
   }
 
   async function submit() {
     const t = title.trim();
-    if (!t || busy) return;
+    // attach.busy: an image is still uploading — block so its path isn't dropped.
+    if (!t || busy || attach.busy) return;
     // No quick-create here (no project to attach): hand the draft to the
     // composer so a project is chosen before the task is created.
     if (!onAdd) {
@@ -132,8 +136,11 @@ function AddTask({
     setBusy(true);
     setErr(null);
     try {
-      await onAdd(t);
+      // Attachments ride along as the task body (their on-disk paths), so an
+      // image dropped into the quick-add reaches the agent's Read tool.
+      await onAdd(t, withAttachments("", attach.attachments));
       setTitle("");
+      attach.clear();
       inputRef.current?.focus();
     } catch (e) {
       setErr(errMsg(e, "failed to add task"));
@@ -165,7 +172,7 @@ function AddTask({
     <div
       className="rounded-xl border border-hairline bg-surface p-2 shadow-[0_1px_2px_rgba(23,23,26,0.04)] transition focus-within:border-ink/30"
       onBlur={(e) => {
-        if (busy) return;
+        if (busy || attach.busy) return;
         if (e.currentTarget.contains(e.relatedTarget as Node)) return;
         cancel();
       }}
@@ -175,6 +182,7 @@ function AddTask({
         autoFocus
         value={title}
         onChange={(e) => setTitle(e.target.value)}
+        {...attach.pasteProps}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
@@ -187,6 +195,13 @@ function AddTask({
         placeholder="What should the agent do?"
         className="w-full rounded-lg bg-transparent px-1.5 py-1 text-[13px] outline-none placeholder:text-muted/50"
       />
+      {/* Inline image attach only when there's a project to attach to (onAdd);
+          without one the card hands off to the composer, which has its own. */}
+      {onAdd && (
+        <div className="px-1.5">
+          <ImageAttachStrip attach={attach} compact />
+        </div>
+      )}
       {err && <p className="mt-1 px-1.5 text-[11px] text-rust">{err}</p>}
       <div className="mt-1.5 flex items-center justify-between gap-2 border-t border-hairline pt-2">
         {/* "More…" only when quick-add exists; without it the primary button is
@@ -205,7 +220,7 @@ function AddTask({
         <button
           onMouseDown={(e) => e.preventDefault()}
           onClick={submit}
-          disabled={busy || !title.trim()}
+          disabled={busy || attach.busy || !title.trim()}
           className="rounded-lg bg-ink px-3 py-1 text-[12px] font-semibold text-white transition hover:brightness-110 disabled:opacity-40"
         >
           {busy ? "Adding…" : onAdd ? "Add" : "Add…"}

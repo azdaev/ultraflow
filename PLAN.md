@@ -1,107 +1,111 @@
-# PLAN — Fix broken editing hotkeys in the agent PTY terminal
+# PLAN — Image input in all composers (incl. clipboard paste)
 
-Task: `cmd+delete` (and other macOS text-editing shortcuts) don't work in the
-in-board agent terminal for Claude, and likely Codex too.
+Task: allow attaching pictures in every composer, in every state, including from the
+clipboard. Use a lib for the drop/select UX.
 
-## Root cause
+## Goal & the 4 composer surfaces
 
-The terminal is xterm.js (`web/src/components/AgentTerminal.tsx`) bridged over a
-WebSocket to a real PTY in Go (`internal/terminal/terminal.go`). Keystrokes reach
-the PTY only through `term.onData` (AgentTerminal.tsx:145). xterm.js emits `onData`
-for plain keys and a fixed set of control keys, but it does **not** translate
-macOS **Cmd (metaKey)** or **Option (altKey)** editing combos into the byte
-sequences a readline-style TUI expects — those keydowns are silently swallowed, so
-`Cmd+Backspace`, `Cmd+←/→`, `Option+Backspace`, `Option+←/→` do nothing.
+Users can attach one or more images (file-picker, drag-and-drop, **and clipboard paste**)
+in every place they type instructions to an agent:
 
-The existing `attachCustomKeyEventHandler` (AgentTerminal.tsx:70-82) already
-special-cases Escape and Ctrl/Cmd-C copy. It's the right hook — we extend it to
-translate the missing editing combos into control/escape bytes and write them to
-the PTY ourselves.
+1. **Composer.tsx** — the full "New task" modal (body field). New/backlog task.
+2. **Column.tsx → AddTask** — the inline "+ Add task" quick draft. New/backlog task.
+3. **AnswerBox.tsx** — the live `ask_human` answer (needs_human state; rendered in
+   RailCard + TaskDetail).
+4. **ReviseBox.tsx** — the review/failed "send it back to the agent" box.
 
-## Approach (frontend-only, no backend change)
+`AgentTerminal.tsx`'s textarea (raw PTY input) and `Settings.tsx` are NOT composers — skip.
 
-The PTY side is already correct — it writes whatever bytes it receives. The fix is
-purely in `AgentTerminal.tsx`: intercept the modified editing combos in
-`attachCustomKeyEventHandler`, send the equivalent terminal byte sequence via the
-existing `send()` helper (AgentTerminal.tsx:27), `preventDefault()` (to stop
-browser nav like Cmd+←), and return `false` so xterm doesn't also process it.
+## Key insight — how images reach the agent (no prompt-plumbing changes)
 
-### Key → bytes mapping (readline / emacs sequences every Claude/Codex TUI reads)
+The agent is Claude Code, invoked with the task text as its prompt (`buildPrompt` /
+`stepHeader` embed `t.Body`; revise → `ResumeCommand` with the message; answer → delivered
+to the parked agent's stdin). Claude's **Read tool renders image files by absolute path**.
 
-| macOS shortcut        | Intent                     | Bytes sent      |
-|-----------------------|----------------------------|-----------------|
-| Cmd + Backspace       | delete to line start       | `\x15` (Ctrl-U) |
-| Cmd + ←               | move to line start         | `\x01` (Ctrl-A) |
-| Cmd + →               | move to line end           | `\x05` (Ctrl-E) |
-| Option + Backspace    | delete previous word       | `\x1b\x7f`      |
-| Option + ←            | move word left             | `\x1bb` (ESC b) |
-| Option + →            | move word right            | `\x1bf` (ESC f) |
+So the mechanism is uniform and requires ZERO changes to prompt construction:
+**save uploaded images to disk, then append their absolute paths to the outgoing text**
+(body / answer / revise message). The paths ride along in the existing text fields the agent
+already receives. We phrase it so the agent knows to open them, e.g.:
 
-Notes / guardrails:
-- These combos must be checked **only** when the intended modifier is set and the
-  other editing modifiers aren't, e.g. Cmd combos require `metaKey && !altKey`,
-  Option combos require `altKey && !metaKey`. Plain Backspace / Home / End / arrows
-  keep flowing through xterm unchanged (already correct).
-- Keep the existing Escape branch and the Ctrl/Cmd-C-with-selection copy branch
-  **first** so copy still wins over any Cmd handling.
-- On a handled combo: `e.preventDefault()`, `send(seq)`, `return false`.
-- "delete" on Apple keyboards is `key === "Backspace"` (forward-delete is
-  `"Delete"`); the task's "cmd + delete" == Cmd+Backspace → Ctrl-U. (Optionally
-  also map Cmd+Delete forward-delete → `\x0b` Ctrl-K, but not required.)
-- The mapping is agent-agnostic (raw terminal editing sequences), so it fixes
-  Claude and Codex alike.
-
-### Implementation shape
-
-Add a small pure helper near the top of the file, e.g.:
-
-```ts
-// Translate a macOS editing combo xterm.js won't emit on its own into the
-// terminal byte sequence a readline-style TUI expects. Returns null if the
-// event isn't one we remap (let xterm handle it).
-function macEditSeq(e: KeyboardEvent): string | null { ... }
+```
+Attached image(s) — view them with your Read tool:
+- /abs/.ultraflow/attachments/<id>.png
 ```
 
-and call it inside `attachCustomKeyEventHandler` after the Escape/copy branches:
+Storage is a daemon-owned dir independent of any worktree (new-task composers have no
+worktree yet), mirroring the existing `.ultraflow/{worktrees,shots}` convention:
+`.ultraflow/attachments/<random-id>.<ext>` (CWD-relative, like `wtRoot`). We do NOT copy
+them into the worktree — keeping them external means they never pollute the review diff.
 
-```ts
-const seq = macEditSeq(e);
-if (seq !== null) { e.preventDefault(); send(seq); return false; }
-```
+## Backend changes (Go)
 
-Keeping it a pure `(event) -> string | null` function keeps the handler readable
-and leaves the door open to a unit test, though the repo's `web/` has no test
-runner today (no vitest) — don't add one just for this.
+1. **`internal/web/web.go`**
+   - Add `attachDir string` param to `New(...)` (mirrors `staticDir`). Store on `server`.
+   - `POST /api/uploads` — `s.uploadImages`: accept multipart form (`files`), reject
+     non-images via `core.IsImageFile`, cap size (~10MB each), write each to
+     `<attachDir>/<NewID()><ext>`, `MkdirAll` the dir. Return JSON
+     `[{name, path, url}]` where `path` is absolute (`filepath.Abs`) for the prompt and
+     `url` = `/api/uploads/<savedName>` for browser preview.
+   - `GET /api/uploads/:name` — `s.serveUpload`: same filename validation as `getShot`
+     (no `/`, `\`, `..`; must pass `IsImageFile`), `http.ServeFile` from `attachDir`.
+   - Register both routes.
+2. **`cmd/ultraflow/main.go`** — add `-attachments` flag (default `.ultraflow/attachments`),
+   pass into `web.New`. (Also update the one existing `web.New` call.)
+3. Reuse existing `core.IsImageFile` and `core.NewID` — no new store/service code needed.
 
-## Files to change
+## Frontend changes (React/TS)
 
-- `web/src/components/AgentTerminal.tsx` — add `macEditSeq` helper; extend
-  `attachCustomKeyEventHandler` to use it. (~20 lines.)
+Lib: **`react-dropzone`** (v14, React 19 compatible) for the click-to-select + drag-and-drop
+zone. Clipboard **paste** is a native `onPaste` handler reading `e.clipboardData.files`
+(dropzone doesn't cover paste) — this satisfies "including from clipboard".
 
-No Go changes expected.
+1. **`web/src/api.ts`** — add:
+   - `export interface Attachment { name: string; path: string; url: string }`
+   - `uploadImages(files: File[]): Promise<Attachment[]>` → POST `/api/uploads` as
+     `FormData` (no JSON `Content-Type`; let the browser set the multipart boundary).
+2. **New `web/src/components/ImageAttach.tsx`** — shared, reused by all 4 surfaces:
+   - `useImageAttach()` hook → `{ attachments, addFiles, remove, clear, pasteProps, dropzone }`,
+     manages upload state + busy/error.
+   - `<ImageAttachStrip>` — the dropzone affordance ("Add image / paste / drop") plus a row
+     of thumbnail previews (from `attachment.url`) each with a remove ✕. Compact variant for
+     the small AnswerBox/AddTask, standard for Composer/ReviseBox.
+   - Helper `withAttachments(text, attachments)` → appends the "Attached image(s)…" block
+     shown above (returns `text` unchanged when none).
+3. Wire into each surface — hold `attachments` state, render the strip, add `onPaste` to the
+   text field/container, and on submit send `withAttachments(text, attachments)`; `clear()`
+   after success:
+   - **Composer.tsx** — strip under the body `<textarea>`; body → `withAttachments(body, …)`.
+   - **Column.tsx (AddTask)** — compact strip under the input; the quick-add `onAdd(title)`
+     only passes a title, so when attachments exist, **hand off to the full Composer**
+     (`expand`) which owns body — OR extend `onAdd` to carry a body. Simplest: if attachments
+     present, route through Composer. Decide during build; default = compact strip + include
+     paths by extending the quick-create to accept a body. (Confirm with human if it balloons.)
+   - **AnswerBox.tsx** — compact strip above the free-reply row; `send(withAttachments(free,…))`.
+     Option chips stay plain (a chip is a canned answer; attachments only make sense with the
+     free reply).
+   - **ReviseBox.tsx** — strip under the textarea; `revise(withAttachments(msg, …))`.
+
+## Install / build notes
+
+- Node isn't on PATH — prepend the nvm bin dir before `npm`/`vite` (see memory "Node via nvm").
+- `cd web && npm i react-dropzone`.
 
 ## Verification
 
-1. Build the frontend so the daemon serves the new bundle:
-   `cd web && npm run build` (node/npm via nvm — prepend the nvm bin dir; see
-   memory `node-via-nvm`).
-2. Run the daemon on the reserved port and open a task with a live agent terminal
-   (`PORT=51705`). Focus the terminal and confirm each shortcut:
-   - Type a line, `Cmd+Backspace` → whole line cleared.
-   - `Cmd+←` / `Cmd+→` → caret jumps to start / end.
-   - `Option+Backspace` → deletes the previous word only.
-   - `Option+←` / `Option+→` → caret moves one word.
-   - Regression check: plain Backspace, Enter, Ctrl-C (interrupt), and
-     Cmd-C-with-selection (copy) still behave as before; Esc still interrupts
-     without closing the card.
-3. This is an interactive/visual change — capture a screenshot (or short GIF) of
-   the terminal after a `Cmd+Backspace` line-clear into `.ultraflow/shots/` for the
-   review screen.
+- **Go**: `go build ./...` + a `web_test.go` case for `uploadImages` (post a tiny PNG, assert
+  200 + file written + abs path in response) and rejection of a non-image.
+- **Frontend/e2e** (see memory "Verify frontend SSE"): build web, run daemon on `$PORT`
+  (49976) with `-max-concurrent 0`, headless Chrome:
+  1. Open Composer, drop/select a PNG → thumbnail appears; submit → GET the new task,
+     assert its body contains the `/…/.ultraflow/attachments/…png` path and the file exists.
+  2. Simulate a clipboard **paste** (dispatch a paste event carrying a File) into the body →
+     thumbnail appears. Confirms the paste path.
+  3. Spot-check AnswerBox + ReviseBox render the strip (seed a needs_human + a review task).
+- **Screenshots** → save PNGs under `.ultraflow/shots/` for each composer showing the attach
+  strip + a thumbnail (board review screen shows them).
 
-## Risk / notes
+## Open question (raise via ask_human only if it grows)
 
-- Purely additive to an existing handler; the only behavioral surface is the new
-  combos. Low risk of regressing existing keys because we gate strictly on the
-  modifier flags and fall through (`return true`) for everything else.
-- If a future concern is Option-as-compose (typing special chars), note we
-  deliberately remap only Option+Backspace/←/→, leaving Option+letter untouched.
+AddTask quick-create currently carries only a title. Cleanest UX is a compact strip inline;
+if threading a body through the quick-create path proves invasive, fall back to auto-expanding
+into the Composer when an image is attached. Not blocking — resolve in build step.

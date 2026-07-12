@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, errMsg } from "../api";
+import { ImageAttachStrip, useImageAttach, withAttachments } from "./ImageAttach";
 
 // ReviseBox turns review from a merge-or-nothing dead-end into a conversation:
 // the human types what's wrong ("you made X shit, redo it") and the agent is
@@ -9,15 +10,18 @@ export function ReviseBox({ taskId }: { taskId: string }) {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const attach = useImageAttach();
 
   async function send() {
     const m = msg.trim();
-    if (!m || busy) return;
+    // attach.busy: an image is still uploading — block so its path isn't dropped.
+    if ((!m && attach.attachments.length === 0) || busy || attach.busy) return;
     setBusy(true);
     setErr(null);
     try {
-      await api.revise(taskId, m);
+      await api.revise(taskId, withAttachments(m, attach.attachments));
       setMsg("");
+      attach.clear();
       // SSE flips the card to running; the terminal takes over this drawer so the
       // human watches the rework live. Nothing more to do here.
     } catch (e) {
@@ -37,6 +41,7 @@ export function ReviseBox({ taskId }: { taskId: string }) {
       <textarea
         value={msg}
         onChange={(e) => setMsg(e.target.value)}
+        {...attach.pasteProps}
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
             e.preventDefault();
@@ -47,12 +52,13 @@ export function ReviseBox({ taskId }: { taskId: string }) {
         placeholder="e.g. the header spacing is off and the empty state is missing — redo those"
         className="w-full resize-y rounded-lg border border-hairline bg-surface px-3 py-2 text-[13px] leading-relaxed outline-none placeholder:text-muted/50 focus:border-ink/40"
       />
+      <ImageAttachStrip attach={attach} />
       {err && <p className="mt-1.5 text-[12px] text-rust">{err}</p>}
       <div className="mt-2 flex items-center justify-between">
         <span className="font-mono text-[10px] text-muted/70">⌘↵ to send</span>
         <button
           onClick={send}
-          disabled={busy || !msg.trim()}
+          disabled={busy || attach.busy || (!msg.trim() && attach.attachments.length === 0)}
           className="rounded-lg bg-ink px-3 py-1.5 text-[13px] font-semibold text-surface transition hover:brightness-125 disabled:opacity-40"
         >
           {busy ? "Sending…" : "Send back"}

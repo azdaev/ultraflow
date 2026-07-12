@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -51,11 +53,12 @@ type rebaser interface {
 }
 
 type server struct {
-	svc     *core.Service
-	term    *terminal.Manager
-	conc    concurrencyController
-	reviser reviser
-	rebaser rebaser
+	svc       *core.Service
+	term      *terminal.Manager
+	conc      concurrencyController
+	reviser   reviser
+	rebaser   rebaser
+	attachDir string
 }
 
 // New returns the HTTP handler for the board. The frontend is served at the root
@@ -64,8 +67,10 @@ type server struct {
 // nothing (API-only). Pass "" and nil to run API-only. conc lets the settings
 // API read and change the running orchestrator's concurrency limit; pass nil to
 // disable the live change (the value is still persisted).
-func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.FS, conc concurrencyController) http.Handler {
-	s := &server{svc: svc, term: term, conc: conc}
+// attachDir is where images uploaded from a composer are saved (see
+// uploadImages); it's created on first upload.
+func New(svc *core.Service, term *terminal.Manager, staticDir, attachDir string, assets fs.FS, conc concurrencyController) http.Handler {
+	s := &server{svc: svc, term: term, conc: conc, attachDir: attachDir}
 	// The orchestrator passed as conc also drives review send-backs; recover that
 	// capability without widening New's signature (a fake/nil conc simply lacks it).
 	if r, ok := conc.(reviser); ok {
@@ -104,6 +109,8 @@ func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.
 	r.GET("/api/tasks/:id/terminal", s.terminal)
 	r.GET("/api/human_requests", s.pendingRequests)
 	r.POST("/api/human_requests/:id/answer", s.answer)
+	r.POST("/api/uploads", s.uploadImages)
+	r.GET("/api/uploads/:name", s.serveUpload)
 	r.GET("/api/events", s.events)
 	// The React build (and its assets) is everything that isn't an API route; serve
 	// it as the fallback so client-side paths reach index.html.
@@ -678,6 +685,97 @@ func (s *server) answer(c *gin.Context) {
 		return
 	}
 	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// maxUploadBytes caps a single uploaded image at 10MB — enough for a screenshot
+// or pasted photo, small enough that a stray large file can't fill the disk.
+const maxUploadBytes = 10 << 20
+
+// uploadImages accepts a multipart form (field `files`) of images posted from any
+// composer, saves each to attachDir under a fresh random name, and returns
+// [{name, path, url}] for each: `path` is the absolute on-disk path we append to
+// the outgoing text so the agent's Read tool can open it, `url` a board-relative
+// link for the thumbnail preview. Non-images and oversized files are rejected.
+func (s *server) uploadImages(c *gin.Context) {
+	if s.attachDir == "" {
+		http.Error(c.Writer, "image uploads aren't available here", http.StatusServiceUnavailable)
+		return
+	}
+	// Bound the whole request so a client can't stream an unbounded body; each file
+	// is additionally checked against maxUploadBytes below.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<20)
+	form, err := c.MultipartForm()
+	if err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	files := form.File["files"]
+	if len(files) == 0 {
+		http.Error(c.Writer, "no files uploaded", http.StatusBadRequest)
+		return
+	}
+	if err := os.MkdirAll(s.attachDir, 0o755); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type uploaded struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+		URL  string `json:"url"`
+	}
+	out := make([]uploaded, 0, len(files))
+	for _, fh := range files {
+		if !core.IsImageFile(fh.Filename) {
+			http.Error(c.Writer, fmt.Sprintf("%s isn't an image", fh.Filename), http.StatusBadRequest)
+			return
+		}
+		if fh.Size > maxUploadBytes {
+			http.Error(c.Writer, fmt.Sprintf("%s is too large (max 10MB)", fh.Filename), http.StatusBadRequest)
+			return
+		}
+		saved := core.NewID() + strings.ToLower(filepath.Ext(fh.Filename))
+		dst := filepath.Join(s.attachDir, saved)
+		if err := saveUpload(fh, dst); err != nil {
+			http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		abs, err := filepath.Abs(dst)
+		if err != nil {
+			abs = dst
+		}
+		out = append(out, uploaded{Name: fh.Filename, Path: abs, URL: "/api/uploads/" + saved})
+	}
+	writeJSON(c, http.StatusOK, out)
+}
+
+// saveUpload copies one multipart file to dst.
+func saveUpload(fh *multipart.FileHeader, dst string) error {
+	src, err := fh.Open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, src); err != nil {
+		return err
+	}
+	return nil
+}
+
+// serveUpload serves an uploaded image by its saved name for the composer's
+// thumbnail preview. The name is validated to a bare image filename (no path
+// separators or "..") so it can't escape attachDir — same guard as getShot.
+func (s *server) serveUpload(c *gin.Context) {
+	name := c.Param("name")
+	if s.attachDir == "" || name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") || !core.IsImageFile(name) {
+		http.Error(c.Writer, "bad upload name", http.StatusBadRequest)
+		return
+	}
+	http.ServeFile(c.Writer, c.Request, filepath.Join(s.attachDir, name))
 }
 
 func (s *server) events(c *gin.Context) {

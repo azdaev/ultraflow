@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, errMsg, type HumanRequest } from "../api";
+import { ImageAttachStrip, useImageAttach, withAttachments } from "./ImageAttach";
 
 interface Props {
   request: HumanRequest;
@@ -12,6 +13,7 @@ export function AnswerBox({ request }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [free, setFree] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const attach = useImageAttach();
   const options = request.options ?? [];
 
   async function send(answer: string) {
@@ -21,6 +23,7 @@ export function AnswerBox({ request }: Props) {
     setErr(null);
     try {
       await api.answer(request.id, a);
+      attach.clear();
       // The SSE human_answered event removes this request from the board.
     } catch (e) {
       setErr(errMsg(e, "failed to send"));
@@ -47,23 +50,28 @@ export function AnswerBox({ request }: Props) {
         ))}
       </div>
 
+      <ImageAttachStrip attach={attach} compact />
+
       <form
         className="mt-2 flex items-center gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          send(free);
+          // Still uploading — block so the image's path isn't dropped from the answer.
+          if (attach.busy) return;
+          send(withAttachments(free, attach.attachments));
         }}
       >
         <input
           value={free}
           onChange={(e) => setFree(e.target.value)}
+          {...attach.pasteProps}
           placeholder={options.length ? "Other… type a different answer" : "Type your answer"}
           disabled={!!busy}
           className="min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-3 py-2 text-[13px] outline-none placeholder:text-muted/70 focus:border-accent/60"
         />
         <button
           type="submit"
-          disabled={!!busy || !free.trim()}
+          disabled={!!busy || attach.busy || (!free.trim() && attach.attachments.length === 0)}
           className="shrink-0 rounded-lg border border-hairline bg-surface px-3 py-2 text-[13px] font-semibold text-ink transition hover:border-ink/30 disabled:opacity-40"
         >
           Send
