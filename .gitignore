@@ -1,0 +1,14 @@
+# Go
+/ultraflow
+*.db
+*.db-shm
+*.db-wal
+
+# Node / frontend
+web/node_modules/
+web/dist/
+web/node_modules/.tmp/
+
+# Editor / tooling
+.playwright-mcp/
+.DS_Store

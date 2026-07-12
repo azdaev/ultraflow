@@ -1,0 +1,60 @@
+@import "tailwindcss";
+@import "@fontsource-variable/onest";
+@import "@fontsource-variable/jetbrains-mono";
+
+/* Ultraflow design system — industrial: concrete ground, one loud color.
+   Safety-orange is reserved strictly for needs_human. */
+@theme {
+  --color-board: #ececea;
+  --color-surface: #ffffff;
+  --color-ink: #17171a;
+  --color-muted: #6e6e68;
+  --color-hairline: #e2e2de;
+
+  --color-accent: #f5501e; /* needs_human ONLY */
+  --color-accent-tint: #fdece4;
+  --color-accent-line: #f6c3ad;
+
+  --color-steel: #2f6db0; /* running */
+  --color-steel-tint: #e9f0f7;
+  --color-moss: #4f7a4d; /* done / ready */
+  --color-moss-tint: #eaf1e9;
+  --color-rust: #a9432b; /* failed */
+  --color-rust-tint: #f6e7e2;
+
+  --color-claude: #d97757;
+  --color-codex: #10a37f;
+  --color-opencode: #7a5af8;
+
+  --font-sans: "Onest Variable", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-board);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Column header caps — used across the pipeline. */
+.eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+/* Thin custom scrollbars so columns feel light on the concrete ground. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cfcfca transparent;
+}

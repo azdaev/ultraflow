@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ultraflow.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/amady/Code/ultraflow/ultraflow</string>
+    <string>-db</string>
+    <string>/Users/amady/.ultraflow/ultraflow.db</string>
+    <string>-worktrees</string>
+    <string>/Users/amady/.ultraflow/worktrees</string>
+    <string>-static</string>
+    <string>/Users/amady/Code/ultraflow/web/dist</string>
+    <string>-port</string>
+    <string>7787</string>
+  </array>
+
+  <!-- launchd starts with a bare PATH; the daemon shells out to `claude` and
+       `git`, so make both reachable. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/amady/.superset/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/amady/Code/ultraflow</string>
+
+  <!-- Start at login and keep it alive (restart on crash). -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/amady/.ultraflow/ultraflow.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/amady/.ultraflow/ultraflow.log</string>
+</dict>
+</plist>

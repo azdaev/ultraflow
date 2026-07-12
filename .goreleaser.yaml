@@ -1,0 +1,65 @@
+# GoReleaser config — cuts cross-platform release binaries with the frontend
+# baked in, and updates a Homebrew tap. Run `goreleaser release --clean` on a
+# tagged commit (`git tag v0.1.0 && git push --tags`), or `goreleaser build
+# --snapshot --clean` to test locally without publishing.
+version: 2
+
+# Build the React app once before compiling any binary, so `-tags embed` has
+# web/dist to embed.
+before:
+  hooks:
+    - sh -c "cd web && npm ci && npm run build"
+
+builds:
+  - id: ultraflow
+    main: ./cmd/ultraflow
+    binary: ultraflow
+    flags:
+      - -tags=embed
+    ldflags:
+      - -s -w
+    env:
+      - CGO_ENABLED=0 # modernc.org/sqlite is pure Go — static, no C toolchain
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+# One macOS binary that runs on both Intel and Apple Silicon.
+universal_binaries:
+  - id: ultraflow
+    replace: true
+
+archives:
+  - id: ultraflow
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+# Homebrew tap: `brew install <you>/tap/ultraflow`. Requires a public repo named
+# homebrew-tap under your GitHub account (GoReleaser commits the formula there).
+brews:
+  - name: ultraflow
+    repository:
+      owner: azdaev
+      name: homebrew-tap
+    homepage: "https://github.com/azdaev/ultraflow"
+    description: "Local board to run many AI coding agents in parallel over your CLI subscriptions"
+    license: "MIT"
+    # Ultraflow shells out to these; flag them so `brew` users get a heads-up.
+    dependencies:
+      - name: git
+    caveats: |
+      Ultraflow runs your own agent CLIs in headless mode — install and log in to
+      at least one first (e.g. `claude`). Then run `ultraflow` and open
+      http://localhost:7787.
+
+release:
+  # Point at your GitHub repo once it has a remote.
+  github:
+    owner: azdaev
+    name: ultraflow
