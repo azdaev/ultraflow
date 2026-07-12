@@ -184,6 +184,10 @@ func (s *server) board(c *gin.Context) {
 		// Live flow progress per multi-step task, so the card's stepper can light the
 		// active step and caption it. Solo tasks (no run) are simply absent.
 		"runs": s.svc.RunsProgress(tasks),
+		// Latest per-task context size (tokens) for the card's context meter, so a
+		// fresh load isn't blank until the next transcript poll. Live updates arrive
+		// as "context" SSE events. Absent for tasks with no reading yet.
+		"context": s.svc.ContextTokens(),
 	})
 }
 

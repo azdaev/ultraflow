@@ -1,23 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { motion } from "motion/react";
 import { useBoard, useNow } from "./useBoard";
 import { useAttentionNotifications } from "./useNotifications";
-import { useLayout } from "./useSettings";
 import type { Task } from "./api";
-import { Topbar } from "./components/Topbar";
-import { AttentionRail } from "./components/AttentionRail";
-import { FilterBoard } from "./components/FilterBoard";
-import { SwimlanesBoard } from "./components/SwimlanesBoard";
 import { Composer } from "./components/Composer";
 import { Settings } from "./components/Settings";
 import { Changelog } from "./components/Changelog";
 import { TaskDetail } from "./components/TaskDetail";
 import type { AttentionItem } from "./components/RailCard";
 import { RunsContext } from "./runsContext";
+import { BoardPage } from "./board/BoardPage";
 
 export function App() {
-  const { tasks, requests, activity, activityKind, projects, runs, connected } = useBoard();
-  const [layout, setLayout] = useLayout();
+  const { tasks, requests, activity, activityKind, projects, runs, context } = useBoard();
   const now = useNow(1000);
   // The composer carries an optional draft: the inline "+ Add task" hands off its
   // typed title and column project via "More…"; the "n" key and the Topbar open it blank.
@@ -80,10 +74,6 @@ export function App() {
   // it focuses Ultraflow on that task, answering it clears it.
   useAttentionNotifications(attention, setOpenTaskId);
 
-  // Orange strictly for needs_human; failures counted (and shown) separately.
-  const needCount = requests.length;
-  const failedCount = tasks.filter((t) => t.status === "failed").length;
-
   const running = tasks.filter((t) =>
     ["running", "needs_human", "planning", "merging"].includes(t.status),
   ).length;
@@ -98,45 +88,21 @@ export function App() {
 
   return (
     <RunsContext.Provider value={runs}>
-    <div className="flex min-h-full flex-col">
-      <Topbar
-        needCount={needCount}
-        failedCount={failedCount}
+      <BoardPage
+        tasks={tasks}
+        requests={requests}
+        activity={activity}
+        activityKind={activityKind}
+        context={context}
+        projects={projects}
+        now={now}
         running={running}
         queued={queued}
-        connected={connected}
-        onNewTask={() => openComposer()}
+        onOpenTask={setOpenTaskId}
+        onNewTask={openComposer}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenChangelog={() => setChangelogOpen(true)}
       />
-
-      <AttentionRail items={attention} now={now} onOpen={setOpenTaskId} />
-
-      <main className="flex flex-1 px-6 py-6">
-        {tasks.length === 0 ? (
-          <EmptyBoard onNewTask={() => openComposer()} />
-        ) : layout === "swimlanes" ? (
-          <SwimlanesBoard
-            tasks={tasks}
-            activity={activity}
-            activityKind={activityKind}
-            now={now}
-            onOpen={setOpenTaskId}
-            projects={projects}
-            onExpandComposer={openComposer}
-          />
-        ) : (
-          <FilterBoard
-            tasks={tasks}
-            activity={activity}
-            activityKind={activityKind}
-            now={now}
-            onOpen={setOpenTaskId}
-            projects={projects}
-            onExpandComposer={openComposer}
-          />
-        )}
-      </main>
 
       <Composer
         open={composer.open}
@@ -149,8 +115,6 @@ export function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         projects={projects}
-        layout={layout}
-        setLayout={setLayout}
       />
       <Changelog open={changelogOpen} onClose={() => setChangelogOpen(false)} />
       <TaskDetail
@@ -160,54 +124,6 @@ export function App() {
         now={now}
         onClose={() => setOpenTaskId(null)}
       />
-    </div>
     </RunsContext.Provider>
-  );
-}
-
-// The empty state is the first thing a new user sees, so it enters as staged
-// chunks (icon → heading → copy → CTA) rather than one block popping in.
-const emptyContainer = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.08, delayChildren: 0.05 } },
-};
-const emptyItem = {
-  hidden: { opacity: 0, y: 8 },
-  show: {
-    opacity: 1,
-    y: 0,
-    transition: { type: "spring", stiffness: 320, damping: 30 },
-  },
-} as const;
-
-function EmptyBoard({ onNewTask }: { onNewTask: () => void }) {
-  return (
-    <motion.div
-      variants={emptyContainer}
-      initial="hidden"
-      animate="show"
-      className="mx-auto mt-[10vh] max-w-md text-center"
-    >
-      <motion.div
-        variants={emptyItem}
-        className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-xl bg-surface shadow-sm"
-      >
-        <span className="h-3 w-3 rounded-[3px] bg-accent" />
-      </motion.div>
-      <motion.h2 variants={emptyItem} className="text-[19px] font-semibold text-ink">
-        No tasks yet
-      </motion.h2>
-      <motion.p variants={emptyItem} className="mt-1.5 text-[14px] text-muted">
-        Add a task and an agent picks it up automatically. When it needs you, it
-        shows up loud in the attention rail.
-      </motion.p>
-      <motion.button
-        variants={emptyItem}
-        onClick={onNewTask}
-        className="mt-4 rounded-lg bg-accent px-4 py-2.5 text-[14px] font-semibold text-white transition hover:brightness-105"
-      >
-        Add your first task
-      </motion.button>
-    </motion.div>
   );
 }

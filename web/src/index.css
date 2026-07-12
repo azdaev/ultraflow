@@ -9,7 +9,11 @@
   --color-surface: #ffffff;
   --color-ink: #17171a;
   --color-muted: #6e6e68;
+  --color-faint: #9a9a94; /* tertiary text — timers, placeholders, meta */
   --color-hairline: #e2e2de;
+  --color-cardline: #ededea; /* hairline inside a card (footer divider) */
+  --color-chip: #f4f4f2; /* project-chip fill */
+  --color-chip-line: #e9e9e5; /* project-chip border */
 
   --color-accent: #f5501e; /* needs_human ONLY */
   --color-accent-tint: #fdece4;
@@ -17,10 +21,14 @@
 
   --color-steel: #2f6db0; /* running */
   --color-steel-tint: #e9f0f7;
+  --color-steel-strip: #edf2f8; /* running activity strip bg */
   --color-moss: #4f7a4d; /* done / ready */
   --color-moss-tint: #eaf1e9;
+  --color-moss-pill: #e8efe7; /* "nothing needs you" attention pill bg */
   --color-rust: #a9432b; /* failed */
   --color-rust-tint: #f6e7e2;
+  --color-diff-minus: #b4341c; /* review diff −removed */
+  --color-nearcap: #b45309; /* context meter near cap (≥88%) */
 
   --color-amber: #9a6b1f; /* stale · behind main */
   --color-amber-tint: #f6ecd7;

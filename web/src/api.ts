@@ -90,6 +90,9 @@ export interface BoardSnapshot {
   projects: Project[];
   // live flow progress per multi-step task, keyed by task id.
   runs: Record<string, RunProgress>;
+  // latest context size (tokens) per running/review task, for the card's context
+  // meter. Live updates arrive as "context" events; absent until the first poll.
+  context: Record<string, number>;
 }
 
 export interface Settings {

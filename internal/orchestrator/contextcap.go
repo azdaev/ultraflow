@@ -45,8 +45,7 @@ var compactSubmitDelay = 250 * time.Millisecond
 // would do harm: an agent parked on ask_human (task is needs_human, not running)
 // or one idling toward review (idle longer than the working grace).
 func (o *Orchestrator) watchContext(sess *terminal.Session, taskID, dir string) {
-	capTokens := o.svc.ContextCap()
-	if capTokens <= 0 || dir == "" {
+	if dir == "" {
 		return
 	}
 	ticker := time.NewTicker(contextPoll)
@@ -60,6 +59,16 @@ func (o *Orchestrator) watchContext(sess *terminal.Session, taskID, dir string) 
 			tokens, ok := claudeContextTokens(dir)
 			if !ok {
 				continue // transcript not found yet, or unreadable — try again next tick
+			}
+			// Report the live context size to the board every tick, whether or not a
+			// cap is set — this powers the card's context meter. The /compact
+			// enforcement below stays gated on a configured cap, so reporting and
+			// capping are decoupled: the meter works with the budget off.
+			o.svc.PublishContext(taskID, tokens)
+
+			capTokens := o.svc.ContextCap()
+			if capTokens <= 0 {
+				continue // reporting only; the cap feature is off
 			}
 			if tokens < capTokens {
 				armed = true // context is back under the cap: ready to fire on the next crossing

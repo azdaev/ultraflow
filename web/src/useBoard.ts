@@ -7,6 +7,8 @@ export interface BoardState {
   activityKind: Record<string, string>; projects: Project[];
   // live flow progress per multi-step task, keyed by task id.
   runs: Record<string, RunProgress>;
+  // latest context size (tokens) per task, keyed by task id.
+  context: Record<string, number>;
   connected: boolean; reload: () => void;
 }
 

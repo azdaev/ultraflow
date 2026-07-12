@@ -10,9 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"ultraflow/internal/devserver"
@@ -63,6 +65,13 @@ type Service struct {
 	reengage reengager          // set via UseReengager; nil = escalation answers aren't re-run
 	ports    *port.Allocator    // set via UsePorts; nil = no port release
 	dev      *devserver.Manager // set via UseDevServer; nil = no dev-server teardown
+
+	// ctxMu guards ctxTokens: the latest live context size (tokens) per running
+	// task, reported by the orchestrator's transcript poll. Kept in memory only
+	// (it's ephemeral, resets on restart) and mirrored into the board snapshot so
+	// a fresh load isn't blank until the next poll. See PublishContext.
+	ctxMu     sync.Mutex
+	ctxTokens map[string]int
 }
 
 // UseWorktrees gives the service the worktree manager it needs to merge a task's
@@ -99,9 +108,33 @@ func (s *Service) releaseRuntime(t model.Task) {
 
 func NewService(st *store.Store) *Service {
 	return &Service{
-		store:  st,
-		Broker: NewBroker(),
+		store:     st,
+		Broker:    NewBroker(),
+		ctxTokens: map[string]int{},
 	}
+}
+
+// PublishContext records a running task's live context size (in tokens) and fans
+// it out over SSE as a non-persisted "context" event, so the board's context
+// meter tracks the agent's window in real time. The latest value is also kept in
+// memory (ctxTokens) and folded into the board snapshot, so a page load isn't
+// blank until the next poll. Reporting is decoupled from the context-cap feature:
+// this fires whether or not a cap is configured (see orchestrator.watchContext).
+func (s *Service) PublishContext(taskID string, tokens int) {
+	s.ctxMu.Lock()
+	s.ctxTokens[taskID] = tokens
+	s.ctxMu.Unlock()
+	s.publish("context", map[string]any{"taskId": taskID, "tokens": tokens})
+}
+
+// ContextTokens returns a copy of the latest per-task context sizes, for the
+// board snapshot. Keyed by task id; absent for tasks with no reading yet.
+func (s *Service) ContextTokens() map[string]int {
+	s.ctxMu.Lock()
+	defer s.ctxMu.Unlock()
+	out := make(map[string]int, len(s.ctxTokens))
+	maps.Copy(out, s.ctxTokens)
+	return out
 }
 
 // NewID returns a short random hex id. A crypto/rand read failure is unrecoverable

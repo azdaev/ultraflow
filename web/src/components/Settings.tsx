@@ -1,15 +1,12 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, errMsg, type Project } from "../api";
-import type { BoardLayout } from "../useSettings";
 import { Modal } from "./Modal";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   projects: Project[];
-  layout: BoardLayout;
-  setLayout: (l: BoardLayout) => void;
 }
 
 // Concurrency bounds mirror the server clamp (core.MinConcurrent/MaxConcurrentCap);
@@ -28,11 +25,11 @@ const CAP_PRESETS: { value: number; label: string }[] = [
   { value: 500_000, label: "500k" },
 ];
 
-// Settings manages the board layout preference, the parallel-agent limit, and
-// the registered projects. Selection controls use ink (never orange — that
-// stays reserved for needs_human). Adding a project opens the OS-native folder
-// picker via the daemon; the new project arrives over SSE.
-export function Settings({ open, onClose, projects, layout, setLayout }: Props) {
+// Settings manages the parallel-agent limit, the context budget, and the
+// registered projects. Selection controls use ink (never orange — that stays
+// reserved for needs_human). Adding a project opens the OS-native folder picker
+// via the daemon; the new project arrives over SSE.
+export function Settings({ open, onClose, projects }: Props) {
   const [picking, setPicking] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -153,25 +150,8 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
           </button>
         </div>
 
-        {/* board layout */}
-        <h3 className="eyebrow mb-2.5 text-muted">Board layout</h3>
-        <div className="grid grid-cols-2 gap-3">
-          <LayoutOption
-            active={layout === "swimlanes"}
-            onClick={() => setLayout("swimlanes")}
-            title="Swimlanes"
-            desc="A lane per project. Best for a few."
-          />
-          <LayoutOption
-            active={layout === "filter"}
-            onClick={() => setLayout("filter")}
-            title="Filter + chips"
-            desc="One board, switch & tag. Scales."
-          />
-        </div>
-
         {/* parallel agents */}
-        <h3 className="eyebrow mb-2.5 mt-6 text-muted">Parallel agents</h3>
+        <h3 className="eyebrow mb-2.5 text-muted">Parallel agents</h3>
         <div className="flex items-center justify-between rounded-lg border border-hairline bg-board px-3 py-2.5">
           <div className="min-w-0 pr-3">
             <div className="text-[14px] font-medium text-ink">
@@ -403,39 +383,6 @@ function StepButton({
       className="grid h-7 w-7 place-items-center rounded-md text-[16px] font-semibold text-ink transition hover:bg-board disabled:opacity-30 disabled:hover:bg-transparent"
     >
       {children}
-    </button>
-  );
-}
-
-function LayoutOption({
-  active,
-  onClick,
-  title,
-  desc,
-}: {
-  active: boolean;
-  onClick: () => void;
-  title: string;
-  desc: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex flex-col items-start rounded-xl border-2 px-3.5 py-3 text-left transition ${
-        active ? "border-ink bg-board" : "border-hairline bg-surface hover:border-ink/30"
-      }`}
-    >
-      <span className="flex items-center gap-2">
-        <span
-          className={`grid h-4 w-4 place-items-center rounded-full border-2 ${
-            active ? "border-ink" : "border-hairline"
-          }`}
-        >
-          {active && <span className="h-2 w-2 rounded-full bg-ink" />}
-        </span>
-        <span className="text-[14px] font-semibold text-ink">{title}</span>
-      </span>
-      <span className="mt-1.5 text-[12px] leading-snug text-muted">{desc}</span>
     </button>
   );
 }
