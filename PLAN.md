@@ -1,50 +1,48 @@
-# Plan — use the real Ultraflow logo
+# Plan — route every Claude question through Ultraflow
 
-## Task
-Attachment `23cb81f1e80684b6.png` is the Ultraflow logo: a solid‑black "rewind/flow"
-glyph — a small rounded left‑pointing triangle beside a larger rounded left‑pointing
-trapezoid/triangle. Replace the current **placeholder** brand mark with this logo and
-use it as the favicon.
+## Finding
 
-## Current state (what to replace)
-- `web/src/board/TopBar.tsx:23-25` — brand mark is a placeholder: an `bg-accent`
-  (safety‑orange) rounded square containing a small white square. Sits left of the
-  "Ultraflow" wordmark; the whole button opens the changelog.
-- `web/index.html` — has `<title>Ultraflow</title>` but **no favicon** (browser shows
-  a blank/default icon).
-- Icons live in `web/src/board/icons.tsx` as inline SVGs on a 24×24 viewBox, tinted via
-  `currentColor` — the established pattern to follow.
+The screenshot shows Claude Code's built-in `AskUserQuestion` TUI. Ultraflow only
+enters `needs_human` when the agent calls its MCP `ask_human`, so a native Claude
+question remains trapped inside the PTY even though the task prompt explicitly
+asks Claude to use the board tool.
 
-## Approach (smallest change that solves it)
-1. **Add a `LogoIcon`** to `web/src/board/icons.tsx`, matching the file's inline‑SVG
-   convention (`{ size?, className? }`, `fill="currentColor"`, `aria-hidden`). Trace the
-   two rounded shapes from the PNG as `<path>` elements on a viewBox sized to the glyph.
-   Default `fill="currentColor"` so it inherits `text-ink`.
-2. **Swap the placeholder** in `TopBar.tsx`: replace the `bg-accent` square + inner white
-   square (lines 23‑25) with `<LogoIcon />` rendered in `text-ink` (the logo is black;
-   this also honors the design rule that `--color-accent` orange is reserved for
-   `needs_human` only). Keep it inside the existing changelog button, keep `gap-2.25` and
-   the "Ultraflow" wordmark, size the mark to ~size‑6 (24px) to match today's footprint.
-3. **Favicon**: add an SVG favicon so the tab shows the logo. Simplest self‑contained
-   route: put `web/public/favicon.svg` (same paths as `LogoIcon`, `fill="#17171a"`) and
-   add `<link rel="icon" type="image/svg+xml" href="/favicon.svg" />` to
-   `web/index.html`. Vite serves `web/public/` at the web root, and `web/embed.go`
-   embeds the built `dist/` for the Go binary, so the favicon ships automatically.
+Parsing terminal escape sequences or polling Claude's private JSONL format would
+duplicate the question protocol and still leave hard problems around multi-question
+forms and answer delivery. Claude CLI already exposes the right enforcement point:
+`--disallowedTools AskUserQuestion` (confirmed in the installed CLI help). With the
+native tool unavailable, Claude follows the existing prompt and uses Ultraflow's
+`ask_human`, which already persists the request, sets `needs_human`, emits SSE/web
+notifications, renders options, and resumes the PTY after the board answer.
 
-## Files to change
-- `web/src/board/icons.tsx` — add `LogoIcon`.
-- `web/src/board/TopBar.tsx` — use `LogoIcon`, drop the placeholder square.
-- `web/index.html` — add favicon `<link>`.
-- `web/public/favicon.svg` — new asset (traced logo).
+## Implementation
+
+1. In `internal/agent/claude.go`, add `--disallowedTools AskUserQuestion` to every
+   Claude launch path: fresh interactive sessions, resumed interactive sessions,
+   and the legacy/headless `Run` path. Prefer a small shared argument helper or
+   constant so a future launch path cannot accidentally omit this invariant.
+2. Add `internal/agent/claude_test.go` coverage that builds fresh and resumed
+   commands and asserts the native question tool is denied while the Ultraflow MCP
+   config remains present. Cover the headless argument construction too if it is
+   extracted into the shared helper; no real Claude process or credentials should
+   be required.
+3. Update the nearby adapter comment to explain that Claude-native questions are
+   deliberately disabled because only MCP `ask_human` participates in Ultraflow's
+   durable attention lifecycle.
+
+No database, service, or frontend change is needed: `Service.AskHuman` and the
+existing board attention UI remain the single source of truth. Codex is unchanged;
+it has no competing `AskUserQuestion` tool in this adapter and already receives the
+same MCP/prompt contract.
 
 ## Verification
-- `cd web && npm run build` (Node via nvm — prepend the nvm bin dir) — typecheck + build clean.
-- Run the dev server bound to `$PORT` (54669) and load `http://localhost:54669`:
-  confirm the TopBar shows the black rewind glyph left of "Ultraflow", and the browser
-  tab shows the logo favicon. Verify it reads correctly at 24px.
-- Save a screenshot of the TopBar to `.ultraflow/shots/` for the review screen.
 
-## Notes / open question
-- Rendering the mark in **ink (near‑black)** matches the provided logo and frees the
-  reserved orange. If the human wants the accent color instead, that's a one‑line tweak
-  (`text-accent`) — flag on review if unsure.
+- Run `gofmt` on touched Go files and `go test ./internal/agent ./internal/orchestrator ./internal/core` (then `go test ./...` if practical).
+- Inspect generated fresh/resume Claude command args in tests to ensure
+  `--disallowedTools AskUserQuestion` is always present.
+- Manual smoke test: start a Claude task that requires two architectural choices;
+  verify Claude calls MCP `ask_human`, the card/toolbar immediately shows
+  `needs_human`, the question appears on the board, and answering it resumes the
+  same terminal session. Confirm no native terminal questionnaire appears.
+
+This is backend/process configuration only, so no visual screenshot is required.
