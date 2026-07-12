@@ -12,7 +12,7 @@ import { BoardPage } from "./board/BoardPage";
 import { installClickJournal, logUI } from "./journal";
 
 export function App() {
-  const { tasks, requests, activity, activityKind, projects, runs, context } = useBoard();
+  const { tasks, requests, activity, activityKind, projects, runs, context, models } = useBoard();
   const now = useNow(1000);
   // The composer carries an optional draft: the inline "+ Add task" hands off its
   // typed title and column project via "More…"; the "n" key and the Topbar open it blank.
@@ -99,6 +99,7 @@ export function App() {
         activity={activity}
         activityKind={activityKind}
         context={context}
+        models={models}
         projects={projects}
         now={now}
         running={running}
@@ -129,6 +130,7 @@ export function App() {
         task={openTask}
         request={openRequest}
         activitySig={openTaskId ? activity[openTaskId] : undefined}
+        model={openTaskId ? models[openTaskId] : undefined}
         now={now}
         onClose={() => setOpenTaskId(null)}
       />

@@ -139,6 +139,45 @@ export function agentLabel(name: string): string {
   return AGENTS.find((a) => a.key === name)?.label ?? name;
 }
 
+// friendlyModel turns a raw model id from an agent's transcript into a short
+// display name for the card footer: "claude-opus-4-8" → "Opus 4.8",
+// "gpt-5.6-sol" → "GPT-5.6 Sol". It degrades gracefully — an id it doesn't
+// recognise is returned unchanged (never blank), so a new model still shows
+// *something* sensible rather than falling back to the generic provider label.
+export function friendlyModel(raw: string): string {
+  const s = raw.trim();
+  if (!s) return raw;
+
+  // Claude: "claude-opus-4-8" / "claude-haiku-4-5-20251001" → "Opus 4.8".
+  if (s.startsWith("claude-")) {
+    let rest = s.slice("claude-".length);
+    rest = rest.replace(/-\d{8}$/, ""); // strip a trailing date segment (…-20251001)
+    const parts = rest.split("-");
+    const family = titleCase(parts[0]);
+    const version = parts.slice(1).join("."); // 4-8 → 4.8
+    return version ? `${family} ${version}` : family;
+  }
+
+  // Claude CLI shorthands (--fallback-model): "opus" / "sonnet" / "haiku".
+  if (s === "opus" || s === "sonnet" || s === "haiku") return titleCase(s);
+
+  // OpenAI / Codex: "gpt-5" → "GPT-5", "gpt-5-codex" → "GPT-5 Codex",
+  // "gpt-5.6-sol" → "GPT-5.6 Sol". First two tokens (GPT + version) hyphenate;
+  // any trailing words are title-cased and space-joined.
+  if (s.startsWith("gpt-") || s === "gpt") {
+    const [, version, ...tail] = s.split("-");
+    let out = version ? `GPT-${version}` : "GPT";
+    if (tail.length) out += " " + tail.map(titleCase).join(" ");
+    return out;
+  }
+
+  return raw;
+}
+
+function titleCase(s: string): string {
+  return s ? s[0].toUpperCase() + s.slice(1) : s;
+}
+
 // --- projects ---
 
 // projectMap indexes registered projects by name for O(1) chip/lane lookup.

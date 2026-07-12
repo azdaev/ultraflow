@@ -9,6 +9,8 @@ export interface BoardState {
   runs: Record<string, RunProgress>;
   // latest context size (tokens) per task, keyed by task id.
   context: Record<string, number>;
+  // latest model name per task, keyed by task id.
+  models: Record<string, string>;
   connected: boolean; reload: () => void;
 }
 

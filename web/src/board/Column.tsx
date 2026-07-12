@@ -27,6 +27,7 @@ interface Props {
   activity: Record<string, string>;
   activityKind: Record<string, string>;
   context: Record<string, number>;
+  models: Record<string, string>;
   projects: Project[];
   onOpen: (taskId: string) => void;
   onAddTask?: () => void; // backlog only — the dashed "Add task" row
@@ -34,7 +35,7 @@ interface Props {
 
 // Column is one pipeline stage: a coloured header (dot + caps label + count),
 // then its cards, with the backlog column capped by the "Add task" row.
-export function Column({ kind, tasks, now, activity, activityKind, context, projects, onOpen, onAddTask }: Props) {
+export function Column({ kind, tasks, now, activity, activityKind, context, models, projects, onOpen, onAddTask }: Props) {
   const pm = projectMap(projects);
   return (
     <div className="flex min-w-0 flex-col gap-2.25">
@@ -63,6 +64,7 @@ export function Column({ kind, tasks, now, activity, activityKind, context, proj
               activity={activity[t.id]}
               activityKind={activityKind[t.id]}
               contextTokens={context[t.id]}
+              model={models[t.id]}
               now={now}
               index={i}
               project={pm.get(t.project)}

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, type HumanRequest, type Task, type TaskEvent } from "../api";
-import { agentColor, agentLabel, ago, flowOf } from "../util";
+import { agentColor, agentLabel, friendlyModel, ago, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { useRun } from "../runsContext";
 import { AnswerBox } from "./AnswerBox";
@@ -14,6 +14,7 @@ interface Props {
   task: Task | null;
   request?: HumanRequest;
   activitySig?: string; // changes when a new event lands → re-fetch thread
+  model?: string; // real model the agent ran (e.g. "claude-opus-4-8"), if detected
   now: number;
   onClose: () => void;
 }
@@ -21,7 +22,7 @@ interface Props {
 // TaskDetail is a large, near-fullscreen modal: the live terminal takes most of
 // the space (that IS the activity view — no duplicated tool-by-tool thread), with
 // task details and the decision panel in a side rail.
-export function TaskDetail({ task, request, activitySig, now, onClose }: Props) {
+export function TaskDetail({ task, request, activitySig, model, now, onClose }: Props) {
   const run = useRun(task?.id ?? "");
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const termRef = useRef<AgentTerminalHandle>(null);
@@ -272,7 +273,7 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                         className="h-2 w-2 rounded-full"
                         style={{ backgroundColor: agentColor(task.agent) }}
                       />
-                      {agentLabel(task.agent)}
+                      {model ? friendlyModel(model) : agentLabel(task.agent)}
                     </span>
                   </Detail>
                   <Detail label="Flow">{flowOf(task.flow).label}</Detail>
