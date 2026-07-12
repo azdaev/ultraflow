@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type TaskDiff } from "../api";
+import { api, errMsg, type TaskDiff } from "../api";
 import { Markdown } from "./Markdown";
 
 // Files whose changes are likely visual — used only to nudge "you changed UI but
@@ -103,7 +103,7 @@ function Changes({ taskId, sig }: { taskId: string; sig?: string }) {
     api
       .diff(taskId)
       .then((d) => alive && setDiff(d))
-      .catch((e) => alive && setErr(e instanceof Error ? e.message : "couldn't load the diff"));
+      .catch((e) => alive && setErr(errMsg(e, "couldn't load the diff")));
     api
       .shots(taskId)
       .then((s) => alive && setShots(s))

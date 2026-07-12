@@ -43,13 +43,15 @@ task → agent in a worktree → `ask_human` → answer on board → agent conti
 - [x] Claude Code adapter (spawn `claude` headless, stream-json parsed into
       friendly activity events, resume TBD)
 - [x] Minimal orchestrator wiring (solo flow, concurrency limiter)
-- [ ] Refactor API onto **Gin** + **goccy/go-json** (fast serialization; via gin `go_json` build tag)
+- [x] Refactor API onto **Gin** + **goccy/go-json** (fast serialization; via gin
+      `go_json` build tag — see the `-tags go_json` build in the Makefile / goreleaser)
 - [x] Frontend: React + Vite + Tailwind v4 + Motion board built from the Paper
       designs — attention rail (checkpoint + failure), pipeline columns with flow
       stepper + live activity strip, New Task composer, Task Detail thread drawer,
       live SSE. Verified end-to-end in a browser against a seeded DB.
 
-Remaining M0 polish: Gin/goccy refactor; agent-session resume; the sessions table.
+Remaining M0 polish: the dedicated `sessions` table (agent-session resume already
+works via `claude --continue` in the task's worktree).
 
 ## M1 — Worktree manager  ← in progress
 
@@ -68,8 +70,10 @@ Remaining M0 polish: Gin/goccy refactor; agent-session resume; the sessions tabl
       torn down and the task marked done (`Service.MergeTask`, `POST
       /api/tasks/{id}/merge`, "Merge → done" button on review cards). A conflict
       aborts cleanly and returns the task to review with its worktree intact.
-- [ ] Ports / dev-server allocation, diff+screenshot captured into ask_human
-      context, freshness-vs-main / auto-rebase.
+- [x] Ports / dev-server allocation (`internal/port`, `internal/devserver`),
+      diff+screenshot captured into ask_human context (`Service.captureContext`),
+      freshness-vs-main / auto-rebase (`worktree.Freshness` / `worktree.Rebase`,
+      `Service.MergeTask` rebase-then-merge, agent self-heal on conflict).
 
 **Presentation honesty (M0):** only the implemented agent (Claude) and flow
 (Solo) are selectable; the designed-but-unwired flows/adapters show disabled as
@@ -81,27 +85,23 @@ card can never claim a task ran an agent or multi-step flow it didn't.
 Verified good: the DB lives in `~/.ultraflow` (outside the brew cellar) so it
 **survives `brew upgrade`**; install is correctly **brew-based** and current;
 WAL keeps committed data safe across an unclean kill; `RecoverInFlight` requeues
-in-flight work on restart and spares `review`/`done`. Real gaps to fix:
+in-flight work on restart and spares `review`/`done`. The gaps the audit flagged
+have since been closed:
 
-- [ ] **Schema migrations (do before ANY schema change).** `store.migrate()` is
-      `CREATE TABLE IF NOT EXISTS` only — no `user_version`, no `ALTER`. A future
-      release that adds a column will NOT apply it to existing `~/.ultraflow` DBs,
-      breaking upgraders at the first query. Add a `user_version`-gated migration
-      runner *before* M2 touches the schema. (v0.5.0 changes no schema, so it's
-      safe; this is a landmine for the next schema change.)
-- [ ] **Kill hygiene.** Agents run detached (`Setsid` via creack/pty); on SIGKILL
-      of the daemon `term.CloseAll` never runs, and `KeepAlive=true` respawns the
-      daemon which re-runs `RecoverInFlight` and may re-spawn agents on the same
-      worktree while old ones are still dying (collision window). Kill the process
-      *group* in `Session.Close` (not a single PID) so grandchildren die too.
-- [ ] **DB close / WAL checkpoint on shutdown.** No `db.Close()` anywhere; add one
-      + `wal_checkpoint(TRUNCATE)` on graceful exit for hygiene (SQLite auto-
-      checkpoints, so durability is fine — this is cleanliness, low priority).
-- [ ] **UX dead-ends.** (a) A merge conflict silently returns the card to review
-      with only a tiny inline error — no attention-rail entry, no persisted "why".
-      (b) A `review` task with no worktree (non-git / shared-workdir) shows NO way
-      to finish it — no button, dead end. (c) Composer shows many disabled "· soon"
-      flow/agent options — reads as broken to a first-time user.
+- [x] **Schema migrations.** `store.migrate()` now runs a `user_version`-gated
+      migration list in a transaction (`internal/store/store.go`), so a release that
+      adds a column applies it to existing `~/.ultraflow` DBs on first open.
+- [x] **Kill hygiene.** `Session.Close` kills the process *group*
+      (`syscall.Kill(-p.Pid, SIGKILL)`, `internal/terminal/terminal.go`), so
+      detached grandchildren die with the leader rather than orphaning onto a
+      worktree a respawned daemon might reuse.
+- [x] **DB close / WAL checkpoint on shutdown.** `cmd/ultraflow/main.go` calls
+      `st.Close()`, which runs `wal_checkpoint(TRUNCATE)` on graceful exit.
+- [x] **UX dead-ends.** (a) A merge conflict now appends a `merge_failed` event the
+      board lifts into the attention rail (`Service.MergeTask`, `MergeFailedCard`).
+      (b) A `review` task with no worktree can be closed via "Mark done"
+      (`Service.FinishReview`). (c) Composer's disabled "· soon" options are
+      deliberate presentation honesty, not a dead-end.
 
 ## M2 — Flow engine
 

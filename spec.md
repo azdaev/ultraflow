@@ -49,19 +49,21 @@ but secondary — it is the exception, not the default surface.
 
 1. **MCP server** — the heart. Streamable-HTTP MCP endpoint the agents connect to.
    Tools: `create_task`, `list_tasks`, `get_task` (external input) and `ask_human`
-   (agent → human, blocking). See `spec/mcp-protocol.md`.
+   (agent → human, blocking). See `internal/mcp`.
 2. **Agent adapter** — Go interface over a subscription CLI (start in worktree, stream
-   events, resume). Impls: ClaudeCode (first), Codex, OpenCode. See `spec/agents.md`.
+   events, resume). Impls: ClaudeCode (first), Codex, OpenCode. See `internal/agent`
+   and `spec/agent-env.md`.
 3. **Flow engine** — a flow is a graph of steps `{role, agent, prompt, gate?}`,
-   configured in YAML per project / task-type. Presets + custom. See `spec/flows.md`.
+   configured in YAML per project / task-type. Presets + custom. (Design only; M0
+   runs the `solo` flow — see `spec/roadmap.md`.)
 4. **Worktree manager** — git worktree per task, setup hook, port allocation, freshness,
-   teardown, concurrency limiter. See `spec/worktrees.md`.
+   teardown, concurrency limiter. See `internal/worktree`.
 5. **Web board** — React/Tailwind/Motion. Kanban, `needs_human` highlighting, question
    card with options + diff/screenshot, answer posts back into the blocked MCP call.
    Live updates via SSE. See `spec/web.md`. Designed in Paper first.
 
 **State:** SQLite — `projects, tasks, flows, runs, events (incl. human_requests),
-sessions`. See `spec/data-model.md`.
+sessions`. See `internal/store`.
 
 ## Task lifecycle
 

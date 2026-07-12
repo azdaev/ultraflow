@@ -4,6 +4,17 @@ Known issues and deferred cleanups. Newest first.
 
 ---
 
+## Architecture review (2026-07-12) — deferred deepening candidates
+
+A codebase-wide review applied the safe, behavior-preserving cleanups (helper
+extraction in the orchestrator, collapsing the duplicate `LatestActivity` query,
+surfacing swallowed errors, a `commitPending` bug, frontend dead-code + an
+`errMsg` helper, doc reconciliation). The larger structural candidates it chose
+NOT to auto-apply — the `Service` nil-able-dependency seam, board prop-drilling,
+the dead headless `Agent.Run` pipeline, Go↔TS status/type/port duplication, the
+phantom `planning` status, and `internal/mcp` test coverage — are written up with
+rationale in **`spec/architecture-review.md`**.
+
 ## Fixed 250ms sleep to submit a board answer into the agent's terminal
 
 **Where:** `internal/core/service.go` — `AnswerHuman` and the `answerSubmitDelay`

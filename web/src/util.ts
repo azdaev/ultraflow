@@ -41,6 +41,26 @@ export function groupColumns(tasks: Task[]): Columns {
   return cols;
 }
 
+// --- status classification (the single TS source of truth, co-located with the
+// grouping above; kept in sync with the daemon's groupings in
+// internal/core/service.go). ---
+
+// CANCELLABLE — a task with a live (or about-to-be-live) agent can be Stopped.
+// Mirrors the daemon's cancellableStatuses.
+export const CANCELLABLE = new Set<TaskStatus>(["queued", "running", "needs_human", "planning"]);
+
+// DELETABLE — a not-live task (backlog, or terminal) can be Removed. Mirrors the
+// daemon's deletableStatuses.
+export const DELETABLE = new Set<TaskStatus>(["backlog", "done", "failed", "cancelled"]);
+
+// DEV_LINK_STATUSES — stages where a task still holds its reserved dev port and the
+// server may be up (the port is freed on merge/mark-done/failure).
+export const DEV_LINK_STATUSES = new Set<TaskStatus>(["running", "needs_human", "merging", "review"]);
+
+// CLOSED — a closed card (done or cancelled) reads muted; its work is finished, so
+// it recedes rather than competing with live cards for attention.
+export const CLOSED = new Set<TaskStatus>(["done", "cancelled"]);
+
 // --- flows: presets that double as templates (see spec/flows / web.md). The
 // backend tracks flow *name*, not per-step progress (that lands in M2), so the
 // stepper derives an approximate active step from task status. ---

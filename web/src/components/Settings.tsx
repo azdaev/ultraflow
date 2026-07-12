@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { api, type Project } from "../api";
+import { api, errMsg, type Project } from "../api";
 import type { BoardLayout } from "../useSettings";
 import { Modal } from "./Modal";
 
@@ -68,7 +68,7 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
       setConc(maxConcurrent); // server's clamped value wins
     } catch (e) {
       setConc(prev); // roll back on failure
-      setErr(e instanceof Error ? e.message : "couldn't change parallel agents");
+      setErr(errMsg(e, "couldn't change parallel agents"));
     }
   }
 
@@ -79,7 +79,7 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
     try {
       await api.pickProject(); // new project (if any) arrives via SSE
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "couldn't open the folder picker");
+      setErr(errMsg(e, "couldn't open the folder picker"));
     } finally {
       setPicking(false);
     }
@@ -97,7 +97,7 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
       await api.addProject(path);
       setPastePath("");
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "couldn't add that folder");
+      setErr(errMsg(e, "couldn't add that folder"));
     } finally {
       setPicking(false);
     }
@@ -108,7 +108,7 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
     try {
       await api.deleteProject(p.id); // removal arrives via SSE
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "couldn't remove the project");
+      setErr(errMsg(e, "couldn't remove the project"));
     }
   }
 

@@ -1,29 +1,21 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { api, type Project, type Task } from "../api";
-import { agentColor, agentLabel, ago, copyText, elapsed, flowOf } from "../util";
+import { api, errMsg, type Project, type Task } from "../api";
+import {
+  agentColor,
+  agentLabel,
+  ago,
+  CANCELLABLE,
+  CLOSED,
+  copyText,
+  DELETABLE,
+  DEV_LINK_STATUSES,
+  elapsed,
+  flowOf,
+} from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { ProjectChip } from "./ProjectChip";
 import { ContextMenu, useContextMenu, type MenuItem } from "./ContextMenu";
-
-// DEV_LINK_STATUSES are the stages where a task still holds its reserved dev
-// port and the server may be up (the port is freed on merge/mark-done/failure).
-const DEV_LINK_STATUSES = new Set<Task["status"]>([
-  "running",
-  "needs_human",
-  "merging",
-  "review",
-]);
-
-// A task with a live (or about-to-be-live) agent can be Stopped; a not-live task
-// (backlog, or terminal) can be Removed. Kept in sync with the daemon's
-// cancellableStatuses / deletableStatuses (internal/core/service.go).
-const CANCELLABLE = new Set<Task["status"]>(["queued", "running", "needs_human", "planning"]);
-const DELETABLE = new Set<Task["status"]>(["backlog", "done", "failed", "cancelled"]);
-
-// A closed card (done or cancelled) reads as muted — its work is finished, so it
-// recedes rather than competing with live cards for attention.
-const CLOSED = new Set<Task["status"]>(["done", "cancelled"]);
 
 interface Props {
   task: Task;
@@ -189,7 +181,7 @@ function MergeAction({ taskId }: { taskId: string }) {
     try {
       await api.merge(taskId);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "merge failed");
+      setErr(errMsg(e, "merge failed"));
       setBusy(false);
     }
   }
@@ -230,7 +222,7 @@ function MarkDoneAction({ taskId }: { taskId: string }) {
     try {
       await api.markDone(taskId);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "couldn't mark done");
+      setErr(errMsg(e, "couldn't mark done"));
       setBusy(false);
     }
   }

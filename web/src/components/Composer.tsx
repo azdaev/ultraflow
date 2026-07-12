@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type Project } from "../api";
+import { api, errMsg, type Project } from "../api";
 import { AGENTS, FLOWS } from "../util";
 import { Modal } from "./Modal";
 
@@ -70,7 +70,7 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
       submitted.current = true;
       onClose();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "failed to create task");
+      setErr(errMsg(e, "failed to create task"));
       setBusy(false);
     }
   }

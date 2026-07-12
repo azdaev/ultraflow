@@ -97,25 +97,13 @@ func (c *Claude) writeMCPConfig() (string, error) {
 }
 
 func (c *Claude) Run(ctx context.Context, dir, prompt string, out chan<- Event) error {
-	// Write a throwaway MCP config pointing Claude Code at the Ultraflow daemon.
-	cfg := map[string]any{
-		"mcpServers": map[string]any{
-			"ultraflow": map[string]any{
-				"type": "http",
-				"url":  c.mcpURL,
-			},
-		},
-	}
-	f, err := os.CreateTemp("", "ultraflow-mcp-*.json")
+	// Throwaway MCP config pointing Claude Code at the Ultraflow daemon (same wiring
+	// as the interactive Command path).
+	cfgPath, err := c.writeMCPConfig()
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
-	if err := json.NewEncoder(f).Encode(cfg); err != nil {
-		f.Close()
-		return err
-	}
-	f.Close()
+	defer os.Remove(cfgPath)
 
 	cmd := exec.CommandContext(ctx, "claude",
 		"-p", prompt,
@@ -123,7 +111,7 @@ func (c *Claude) Run(ctx context.Context, dir, prompt string, out chan<- Event) 
 		"--verbose",
 		// Add Ultraflow's ask_human server on top of the user's own MCP servers
 		// (no --strict-mcp-config), so agents keep access to the human's full MCP set.
-		"--mcp-config", f.Name(),
+		"--mcp-config", cfgPath,
 		// Unattended: the agent runs in an isolated worktree, so it must not stall
 		// on permission prompts (which in headless mode are auto-denied, leaving the
 		// agent unable to run Bash/tests). This is the autonomous-orchestrator mode.

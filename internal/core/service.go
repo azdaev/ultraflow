@@ -103,10 +103,15 @@ func NewService(st *store.Store) *Service {
 	}
 }
 
-// NewID returns a short random hex id.
+// NewID returns a short random hex id. A crypto/rand read failure is unrecoverable
+// (the id is a primary key — a silent all-zero id would collide across records), so
+// it panics rather than hand back a degenerate id; on supported platforms this read
+// does not fail in practice.
 func NewID() string {
 	b := make([]byte, 8)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("ultraflow: crypto/rand unavailable for id generation: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }
 
@@ -119,6 +124,11 @@ func (s *Service) appendEvent(taskID, kind, data string) {
 	e := model.Event{TaskID: taskID, Kind: kind, Data: data, CreatedAt: time.Now()}
 	if id, err := s.store.AppendEvent(e); err == nil {
 		e.ID = id
+	} else {
+		// The event still fans out live (ID stays 0) for a responsive board, but a
+		// failed persist would otherwise be invisible — and a reconnecting client
+		// that resyncs from the DB wouldn't see it. Surface it in the log.
+		log.Printf("task %s: append %s event: %v", taskID, kind, err)
 	}
 	s.publish("event", e)
 }
@@ -238,6 +248,7 @@ func (s *Service) SwapStatus(id string, from []model.TaskStatus, to model.TaskSt
 
 func (s *Service) SetWorktree(id, wt string) {
 	if err := s.store.SetWorktree(id, wt); err != nil {
+		log.Printf("task %s: set worktree %q: %v", id, wt, err)
 		return
 	}
 	s.publish("task_updated", map[string]any{"taskId": id, "worktree": wt})
@@ -259,6 +270,7 @@ func (s *Service) SetAttempt(id string, attempt int) {
 // the board can show a clickable http://localhost:PORT link on the card.
 func (s *Service) SetPort(id string, port int) {
 	if err := s.store.SetPort(id, port); err != nil {
+		log.Printf("task %s: set port %d: %v", id, port, err)
 		return
 	}
 	s.publish("task_updated", map[string]any{"taskId": id, "port": port})
@@ -282,7 +294,9 @@ func (s *Service) RetryTask(id string) error {
 	if err != nil {
 		return err
 	}
-	s.UpdateStatus(t.ID, model.StatusBacklog)
+	if err := s.UpdateStatus(t.ID, model.StatusBacklog); err != nil {
+		return err // don't claim it was re-queued if the write didn't land
+	}
 	s.appendEvent(t.ID, "status", "re-queued by human")
 	return nil
 }
@@ -852,14 +866,20 @@ func (s *Service) TaskEvents(taskID string) ([]model.Event, error) {
 	return s.store.TaskEvents(taskID)
 }
 
-// LatestActivity returns the latest activity line per task for the board.
-func (s *Service) LatestActivity() (map[string]string, error) {
-	return s.store.LatestActivity()
-}
-
-// LatestActivityKind returns the kind of each task's latest activity line, so the
-// board can distinguish an ordinary status line from a "merge_failed" event it
-// should raise into the attention rail.
-func (s *Service) LatestActivityKind() (map[string]string, error) {
-	return s.store.LatestActivityKind()
+// LatestActivity returns, per task, the text and the kind of its latest activity
+// line for the board — the text drives the live activity strip, the kind lets the
+// board raise a "merge_failed" event into the attention rail rather than showing it
+// as a quiet status line. Both maps come from one store query.
+func (s *Service) LatestActivity() (text, kind map[string]string, err error) {
+	lines, err := s.store.LatestActivity()
+	if err != nil {
+		return nil, nil, err
+	}
+	text = make(map[string]string, len(lines))
+	kind = make(map[string]string, len(lines))
+	for id, a := range lines {
+		text[id] = a.Data
+		kind[id] = a.Kind
+	}
+	return text, kind, nil
 }

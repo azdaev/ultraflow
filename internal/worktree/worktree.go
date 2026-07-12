@@ -112,8 +112,11 @@ func baseBranch(repoPath string) string {
 // edits. A no-op when the tree is clean. `diff --cached --quiet` exits non-zero
 // exactly when there is something staged to commit.
 func commitPending(wtPath, message string) error {
-	if _, err := run(wtPath, "add", "-A"); err != nil {
-		return nil // not a worktree / nothing to add — leave it to the caller's next step
+	// `git add -A` succeeds (with nothing to do) on a clean tree, so a non-nil error
+	// here is a genuine staging failure — surface it rather than proceeding to a
+	// merge/rebase that would silently act on the agent's uncommitted work being lost.
+	if out, err := run(wtPath, "add", "-A"); err != nil {
+		return fmt.Errorf("staging worktree changes: %w: %s", err, out)
 	}
 	if _, err := run(wtPath, "diff", "--cached", "--quiet"); err != nil {
 		if out, cerr := run(wtPath, "commit", "-m", message); cerr != nil {

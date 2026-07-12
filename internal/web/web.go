@@ -148,12 +148,7 @@ func (s *server) board(c *gin.Context) {
 		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	activity, err := s.svc.LatestActivity()
-	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	activityKind, err := s.svc.LatestActivityKind()
+	activity, activityKind, err := s.svc.LatestActivity()
 	if err != nil {
 		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return

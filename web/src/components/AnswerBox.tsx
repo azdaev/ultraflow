@@ -1,15 +1,14 @@
 import { useState } from "react";
-import { api, type HumanRequest } from "../api";
+import { api, errMsg, type HumanRequest } from "../api";
 
 interface Props {
   request: HumanRequest;
-  compact?: boolean;
 }
 
 // AnswerBox renders the live ask_human decision UI: one-tap option chips plus a
 // free-reply row. Both post to /api/human_requests/{id}/answer, which unblocks
 // the parked agent. Orange is the decision family.
-export function AnswerBox({ request, compact }: Props) {
+export function AnswerBox({ request }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [free, setFree] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -24,13 +23,13 @@ export function AnswerBox({ request, compact }: Props) {
       await api.answer(request.id, a);
       // The SSE human_answered event removes this request from the board.
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "failed to send");
+      setErr(errMsg(e, "failed to send"));
       setBusy(null);
     }
   }
 
   return (
-    <div className={compact ? "" : "mt-1"}>
+    <div className="mt-1">
       <div className="flex flex-wrap gap-2">
         {options.map((opt, i) => (
           <button

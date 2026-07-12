@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { AnimatePresence } from "motion/react";
+import { errMsg } from "../api";
 import type { Project, Task } from "../api";
 import { TaskCard } from "./TaskCard";
 
@@ -135,7 +136,7 @@ function AddTask({
       setTitle("");
       inputRef.current?.focus();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "failed to add task");
+      setErr(errMsg(e, "failed to add task"));
     } finally {
       setBusy(false);
     }
