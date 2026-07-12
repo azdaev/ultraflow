@@ -17,6 +17,17 @@ interface Props {
 const CONC_MIN = 1;
 const CONC_MAX = 8;
 
+// Context-budget presets, in tokens. 0 = off; the rest sit inside the server's
+// 50k–1M band. 200k is the recommended default (see the section copy). Each
+// running agent that crosses the chosen cap gets a /compact injected.
+const CAP_PRESETS: { value: number; label: string }[] = [
+  { value: 0, label: "Off" },
+  { value: 100_000, label: "100k" },
+  { value: 200_000, label: "200k" },
+  { value: 300_000, label: "300k" },
+  { value: 500_000, label: "500k" },
+];
+
 // Settings manages the board layout preference, the parallel-agent limit, and
 // the registered projects. Selection controls use ink (never orange — that
 // stays reserved for needs_human). Adding a project opens the OS-native folder
@@ -36,6 +47,9 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
   const [concMin, setConcMin] = useState(CONC_MIN);
   const [concMax, setConcMax] = useState(CONC_MAX);
 
+  // Per-agent context budget in tokens (0 = off). null while it loads.
+  const [cap, setCap] = useState<number | null>(null);
+
   useEffect(() => {
     if (!open) return;
     setErr(null);
@@ -47,6 +61,7 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
         setConc(s.maxConcurrent);
         setConcMin(s.maxConcurrentMin);
         setConcMax(s.maxConcurrentMax);
+        setCap(s.contextCap);
         setNativePicker(s.nativePicker);
       })
       .catch(() => {
@@ -69,6 +84,20 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
     } catch (e) {
       setConc(prev); // roll back on failure
       setErr(errMsg(e, "couldn't change parallel agents"));
+    }
+  }
+
+  async function changeCap(next: number) {
+    if (cap === null || next === cap) return;
+    const prev = cap;
+    setCap(next); // optimistic
+    setErr(null);
+    try {
+      const { contextCap } = await api.setContextCap(next);
+      setCap(contextCap); // server's clamped value wins
+    } catch (e) {
+      setCap(prev); // roll back on failure
+      setErr(errMsg(e, "couldn't change the context budget"));
     }
   }
 
@@ -159,6 +188,25 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
             max={concMax}
             onChange={changeConcurrency}
           />
+        </div>
+
+        {/* context budget */}
+        <h3 className="eyebrow mb-2.5 mt-6 text-muted">Context budget</h3>
+        <div className="rounded-lg border border-hairline bg-board px-3 py-2.5">
+          <div className="mb-2.5 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[14px] font-medium text-ink">
+                Compact when context gets big
+              </div>
+              <div className="text-[12px] leading-snug text-muted">
+                Agents ship huge context windows, but quality and cost degrade long
+                before they fill. Past this many tokens, Ultraflow has the agent
+                summarize and carry on. 200k is a good balance; Off leaves it to the
+                CLI. Claude only for now.
+              </div>
+            </div>
+          </div>
+          <PresetRow value={cap} presets={CAP_PRESETS} onChange={changeCap} />
         </div>
 
         {/* projects */}
@@ -295,6 +343,42 @@ function Stepper({
       >
         +
       </StepButton>
+    </div>
+  );
+}
+
+// PresetRow is a segmented control of context-budget presets. The active one gets
+// an ink border/fill (never orange — that stays reserved for needs_human). value
+// is null while the setting loads, leaving every option un-selected.
+function PresetRow({
+  value,
+  presets,
+  onChange,
+}: {
+  value: number | null;
+  presets: { value: number; label: string }[];
+  onChange: (n: number) => void;
+}) {
+  return (
+    <div className="flex gap-1.5">
+      {presets.map((p) => {
+        const active = value === p.value;
+        return (
+          <button
+            key={p.value}
+            type="button"
+            onClick={() => onChange(p.value)}
+            aria-pressed={active}
+            className={`flex-1 rounded-md border px-2 py-1.5 text-[13px] font-semibold tabular-nums transition ${
+              active
+                ? "border-ink bg-ink text-surface"
+                : "border-hairline bg-surface text-ink hover:border-ink/40"
+            }`}
+          >
+            {p.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

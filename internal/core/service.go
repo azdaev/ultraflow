@@ -688,6 +688,57 @@ func (s *Service) SetMaxConcurrent(n int) (int, error) {
 	return n, nil
 }
 
+// Context-budget bounds. 0 means off; any set value is held in a sane band so a
+// too-low cap can't make an agent compact every turn and never progress, and a
+// too-high one is meaningless against real context windows.
+const (
+	MinContextCap    = 50_000
+	MaxContextCap    = 1_000_000
+	settingKeyCtxCap = "context_cap_tokens"
+)
+
+// clampContextCap normalizes a context-cap value: 0 (and anything below) means
+// off; otherwise it's forced into MinContextCap..MaxContextCap.
+func clampContextCap(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	if n < MinContextCap {
+		return MinContextCap
+	}
+	if n > MaxContextCap {
+		return MaxContextCap
+	}
+	return n
+}
+
+// ContextCap returns the persisted per-agent context budget in tokens, or 0 when
+// unset or disabled. When a running claude agent's context crosses this, the
+// orchestrator injects /compact into its live session (see
+// orchestrator.watchContext). Default off — a behaviour-changing feature the
+// human opts into from Settings.
+func (s *Service) ContextCap() int {
+	v, ok, err := s.store.GetSetting(settingKeyCtxCap)
+	if err != nil || !ok {
+		return 0
+	}
+	var n int
+	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
+		return 0 // corrupt value → treat as off
+	}
+	return clampContextCap(n)
+}
+
+// SetContextCap clamps n (0 = off, else 50k..1M), persists it, and returns the
+// stored value so the UI can echo the effective number back.
+func (s *Service) SetContextCap(n int) (int, error) {
+	n = clampContextCap(n)
+	if err := s.store.SetSetting(settingKeyCtxCap, fmt.Sprintf("%d", n)); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // --- the ask_human protocol (the core of Ultraflow) ---
 
 // AskHuman posts a question to the board and returns immediately — it does NOT

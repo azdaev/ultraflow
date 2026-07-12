@@ -96,6 +96,34 @@ func TestMaxConcurrentClampAndPersist(t *testing.T) {
 	}
 }
 
+func TestContextCapClampAndPersist(t *testing.T) {
+	svc := newTestService(t)
+
+	// Off by default (0): the feature does nothing until the human opts in.
+	if got := svc.ContextCap(); got != 0 {
+		t.Fatalf("default ContextCap = %d; want 0 (off)", got)
+	}
+
+	// 0 stays off; a too-low value snaps up to the floor; a too-high one to the cap.
+	if n, err := svc.SetContextCap(0); err != nil || n != 0 {
+		t.Fatalf("SetContextCap(0) = %d,%v; want 0", n, err)
+	}
+	if n, err := svc.SetContextCap(10_000); err != nil || n != MinContextCap {
+		t.Fatalf("SetContextCap(10k) = %d,%v; want %d", n, err, MinContextCap)
+	}
+	if n, err := svc.SetContextCap(9_999_999); err != nil || n != MaxContextCap {
+		t.Fatalf("SetContextCap(huge) = %d,%v; want %d", n, err, MaxContextCap)
+	}
+
+	// A valid value round-trips.
+	if _, err := svc.SetContextCap(200_000); err != nil {
+		t.Fatalf("set 200k: %v", err)
+	}
+	if got := svc.ContextCap(); got != 200_000 {
+		t.Fatalf("ContextCap = %d; want 200000", got)
+	}
+}
+
 // TestMaxConcurrentSurvivesReopen mirrors the acceptance criterion that a set
 // value persists across a daemon restart (a fresh store on the same file).
 func TestMaxConcurrentSurvivesReopen(t *testing.T) {
