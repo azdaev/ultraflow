@@ -1,10 +1,10 @@
 package core
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,140 +151,269 @@ func TestRecoverInFlight(t *testing.T) {
 	}
 }
 
-// TestAskHumanBlocksThenReturns exercises the core loop: AskHuman parks the
-// caller until AnswerHuman is invoked with the human's choice.
-func TestAskHumanBlocksThenReturns(t *testing.T) {
+// fakeTerm captures bytes delivered to a task's terminal so tests can assert the
+// human's answer is injected as the agent's next input. dead=true simulates a
+// terminal whose agent has already exited (WriteTo reports no live session).
+type fakeTerm struct {
+	writes map[string][]byte
+	dead   bool
+}
+
+func (f *fakeTerm) WriteTo(id string, p []byte) (bool, error) {
+	if f.dead {
+		return false, nil
+	}
+	if f.writes == nil {
+		f.writes = map[string][]byte{}
+	}
+	f.writes[id] = append(f.writes[id], p...)
+	return true, nil
+}
+
+// TestAskHumanPostsAndDelivers exercises the core loop: AskHuman posts a question
+// without blocking (flipping the task to needs_human), and AnswerHuman records
+// the reply and injects it into the parked agent's terminal.
+func TestAskHumanPostsAndDelivers(t *testing.T) {
 	svc := newTestService(t)
+	ft := &fakeTerm{}
+	svc.UseTerminal(ft)
 	task, _ := svc.CreateTask("t", "", "")
 
-	answered := make(chan string, 1)
-	go func() {
-		ans, err := svc.AskHuman(context.Background(), task.ID, "Merge to main?", []string{"yes", "no"}, "diff: +10 -2")
-		if err != nil {
-			t.Errorf("ask_human: %v", err)
-		}
-		answered <- ans
-	}()
-
-	// Wait for the request to be registered as pending.
-	var reqID string
-	deadline := time.After(2 * time.Second)
-	for reqID == "" {
-		select {
-		case <-deadline:
-			t.Fatal("request never became pending")
-		default:
-		}
-		reqs, _ := svc.PendingRequests()
-		if len(reqs) == 1 {
-			reqID = reqs[0].ID
-			if reqs[0].Question != "Merge to main?" {
-				t.Fatalf("bad question: %q", reqs[0].Question)
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
+	req, err := svc.AskHuman(task.ID, "Merge to main?", []string{"yes", "no"}, "diff: +10 -2")
+	if err != nil {
+		t.Fatalf("ask_human: %v", err)
+	}
+	if req.Question != "Merge to main?" {
+		t.Fatalf("bad question: %q", req.Question)
 	}
 
-	// The task should have flipped to needs_human while blocked.
+	// The task flips to needs_human and the request sits on the rail.
 	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusNeedsHuman {
 		t.Fatalf("expected needs_human, got %s", got.Status)
 	}
+	if reqs, _ := svc.PendingRequests(); len(reqs) != 1 || reqs[0].ID != req.ID {
+		t.Fatalf("expected the request pending on the rail")
+	}
 
-	if err := svc.AnswerHuman(reqID, "yes"); err != nil {
+	if err := svc.AnswerHuman(req.ID, "yes"); err != nil {
 		t.Fatalf("answer: %v", err)
 	}
 
-	select {
-	case ans := <-answered:
-		if ans != "yes" {
-			t.Fatalf("expected answer 'yes', got %q", ans)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("AskHuman never returned after answer")
-	}
-
-	// Task should be back to running and the request no longer pending.
+	// Task back to running, request off the rail, answer injected as terminal input.
 	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusRunning {
 		t.Fatalf("expected running after answer, got %s", got.Status)
 	}
 	if reqs, _ := svc.PendingRequests(); len(reqs) != 0 {
 		t.Fatalf("expected no pending requests, got %d", len(reqs))
 	}
+	if got := string(ft.writes[task.ID]); got != "yes\r" {
+		t.Fatalf("expected answer delivered to terminal as %q, got %q", "yes\r", got)
+	}
 }
 
-func TestAskHumanContextCancel(t *testing.T) {
+func hasErrorEvent(evs []model.Event) bool {
+	for _, e := range evs {
+		if e.Kind == "error" {
+			return true
+		}
+	}
+	return false
+}
+
+// TestResolveCrashWhileParked: an agent that crashes (non-zero exit) while parked
+// is failed, its orphaned checkpoint retired, and a reason recorded.
+func TestResolveCrashWhileParked(t *testing.T) {
+	svc := newTestService(t)
+	svc.UseTerminal(&fakeTerm{})
+	task, _ := svc.CreateTask("t", "", "")
+	svc.AskHuman(task.ID, "q", []string{"yes"}, "")
+
+	svc.ResolveAgentExit(task.ID, true, "boom")
+
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusFailed {
+		t.Fatalf("expected failed, got %s", got.Status)
+	}
+	if reqs, _ := svc.PendingRequests(); len(reqs) != 0 {
+		t.Fatalf("expected the checkpoint retired, got %d pending", len(reqs))
+	}
+	evs, _ := svc.TaskEvents(task.ID)
+	if !hasErrorEvent(evs) {
+		t.Fatal("expected an error event explaining the failure")
+	}
+}
+
+// TestAnswerThenCrashFails covers the answer-wins interleaving: the human answer
+// resumes the task (needs_human→running) and delivers input, then the agent is
+// found crashed. The crash resolution must still fail the task from running
+// rather than strand it behind the dead agent.
+func TestAnswerThenCrashFails(t *testing.T) {
+	svc := newTestService(t)
+	ft := &fakeTerm{}
+	svc.UseTerminal(ft)
+	task, _ := svc.CreateTask("t", "", "")
+	req, _ := svc.AskHuman(task.ID, "q", []string{"yes"}, "")
+
+	if err := svc.AnswerHuman(req.ID, "yes"); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusRunning {
+		t.Fatalf("expected running after answer, got %s", got.Status)
+	}
+
+	svc.ResolveAgentExit(task.ID, true, "boom")
+
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusFailed {
+		t.Fatalf("expected failed after crash, got %s", got.Status)
+	}
+}
+
+// TestAnswerAfterCrashIsNoop covers the death-wins interleaving: the crash
+// resolution runs (needs_human→failed + abandon) before the human's answer lands.
+// The answer must be a harmless no-op — it must not resurrect the failed task or
+// inject stale input.
+func TestAnswerAfterCrashIsNoop(t *testing.T) {
+	svc := newTestService(t)
+	ft := &fakeTerm{}
+	svc.UseTerminal(ft)
+	task, _ := svc.CreateTask("t", "", "")
+	req, _ := svc.AskHuman(task.ID, "q", []string{"yes"}, "")
+
+	svc.ResolveAgentExit(task.ID, true, "boom")
+
+	if err := svc.AnswerHuman(req.ID, "yes"); err != nil {
+		t.Fatalf("late answer: %v", err)
+	}
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusFailed {
+		t.Fatalf("late answer must not resurrect the task, got %s", got.Status)
+	}
+	if len(ft.writes[task.ID]) != 0 {
+		t.Fatalf("late answer must not inject input, got %q", string(ft.writes[task.ID]))
+	}
+}
+
+// TestResolveCleanExitWhileParkedFails: a clean exit (exit 0) while still parked
+// means the agent never received its answer, so the task fails rather than being
+// presented as reviewable.
+func TestResolveCleanExitWhileParkedFails(t *testing.T) {
+	svc := newTestService(t)
+	svc.UseTerminal(&fakeTerm{})
+	task, _ := svc.CreateTask("t", "", "")
+	svc.AskHuman(task.ID, "q", []string{"yes"}, "")
+
+	svc.ResolveAgentExit(task.ID, false, "")
+
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusFailed {
+		t.Fatalf("expected failed, got %s", got.Status)
+	}
+	if reqs, _ := svc.PendingRequests(); len(reqs) != 0 {
+		t.Fatalf("expected the checkpoint retired, got %d pending", len(reqs))
+	}
+}
+
+// TestCleanExitAnswerRaceAlwaysTerminal hammers the clean-exit death path against
+// a concurrent human answer — the exact interleaving that twice stranded a task
+// in `running` behind a dead agent. Whatever the ordering, the task must always
+// come to rest terminal (review or failed), never in-flight. Run under -race.
+func TestCleanExitAnswerRaceAlwaysTerminal(t *testing.T) {
+	svc := newTestService(t)
+	svc.UseTerminal(&fakeTerm{})
+	for i := range 300 {
+		task, _ := svc.CreateTask("t", "", "")
+		req, _ := svc.AskHuman(task.ID, "q", []string{"yes"}, "")
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); svc.AnswerHuman(req.ID, "yes") }()
+		go func() { defer wg.Done(); svc.ResolveAgentExit(task.ID, false, "") }()
+		wg.Wait()
+
+		if got, _ := svc.GetTask(task.ID); got.Status != model.StatusReview && got.Status != model.StatusFailed {
+			t.Fatalf("iter %d: task not terminal after race: %s", i, got.Status)
+		}
+	}
+}
+
+// TestResolveCleanExitRunningReviews: a running agent that exits cleanly after
+// ending its turn (never parked) goes to review.
+func TestResolveCleanExitRunningReviews(t *testing.T) {
+	svc := newTestService(t)
+	task, _ := svc.CreateTask("t", "", "")
+	svc.UpdateStatus(task.ID, model.StatusRunning)
+
+	svc.ResolveAgentExit(task.ID, false, "")
+
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusReview {
+		t.Fatalf("expected review, got %s", got.Status)
+	}
+}
+
+// TestAnswerToDeadTerminalStillResumes: if the terminal reports no live session,
+// AnswerHuman still flips the (still-parked) task to running and records the
+// answer — the orchestrator's Wait path is what fails a genuinely dead agent, so
+// AnswerHuman must not silently swallow the answer.
+func TestAnswerToDeadTerminalStillResumes(t *testing.T) {
+	svc := newTestService(t)
+	svc.UseTerminal(&fakeTerm{dead: true})
+	task, _ := svc.CreateTask("t", "", "")
+
+	req, _ := svc.AskHuman(task.ID, "q", []string{"yes"}, "")
+	if err := svc.AnswerHuman(req.ID, "yes"); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusRunning {
+		t.Fatalf("expected running after answer, got %s", got.Status)
+	}
+	if reqs, _ := svc.PendingRequests(); len(reqs) != 0 {
+		t.Fatalf("expected request off the rail, got %d", len(reqs))
+	}
+}
+
+// TestAbandonRequests covers the parked-agent-died path: when an agent exits
+// while its task is still needs_human, the orchestrator calls AbandonRequests to
+// retire the now-orphaned request so it leaves the attention rail (it can no
+// longer be answered into a void).
+func TestAbandonRequests(t *testing.T) {
 	svc := newTestService(t)
 	task, _ := svc.CreateTask("t", "", "")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	errc := make(chan error, 1)
-	go func() {
-		_, err := svc.AskHuman(ctx, task.ID, "q", nil, "")
-		errc <- err
-	}()
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-errc:
-		if err == nil {
-			t.Fatal("expected context error, got nil")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("AskHuman did not unblock on context cancel")
+	if _, err := svc.AskHuman(task.ID, "q", nil, ""); err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+	if reqs, _ := svc.PendingRequests(); len(reqs) != 1 {
+		t.Fatalf("expected 1 pending, got %d", len(reqs))
 	}
 
-	// M-3: a dead agent's request must be retired, not left dangling in the rail,
-	// and the task must fail (not stay stuck in needs_human).
+	svc.AbandonRequests(task.ID)
+
 	if reqs, _ := svc.PendingRequests(); len(reqs) != 0 {
-		t.Fatalf("expected the cancelled request to leave the rail, got %d pending", len(reqs))
-	}
-	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusFailed {
-		t.Fatalf("expected failed after agent death, got %s", got.Status)
+		t.Fatalf("expected the abandoned request to leave the rail, got %d pending", len(reqs))
 	}
 }
 
 // TestAnswerHumanDoubleAnswerNoop covers M-4: a second (or unknown) answer must
-// be a harmless no-op that neither errors, hangs, nor re-runs side effects.
+// be a harmless no-op that neither errors nor re-runs side effects — in
+// particular it must not inject a second line into the agent's terminal.
 func TestAnswerHumanDoubleAnswerNoop(t *testing.T) {
 	svc := newTestService(t)
+	ft := &fakeTerm{}
+	svc.UseTerminal(ft)
 	task, _ := svc.CreateTask("t", "", "")
 
-	answered := make(chan string, 1)
-	go func() {
-		ans, _ := svc.AskHuman(context.Background(), task.ID, "q", []string{"yes"}, "")
-		answered <- ans
-	}()
-
-	var reqID string
-	deadline := time.After(2 * time.Second)
-	for reqID == "" {
-		select {
-		case <-deadline:
-			t.Fatal("request never became pending")
-		default:
-		}
-		if reqs, _ := svc.PendingRequests(); len(reqs) == 1 {
-			reqID = reqs[0].ID
-		}
-		time.Sleep(10 * time.Millisecond)
+	req, err := svc.AskHuman(task.ID, "q", []string{"yes"}, "")
+	if err != nil {
+		t.Fatalf("ask: %v", err)
 	}
 
-	if err := svc.AnswerHuman(reqID, "yes"); err != nil {
+	if err := svc.AnswerHuman(req.ID, "yes"); err != nil {
 		t.Fatalf("first answer: %v", err)
 	}
-	<-answered
 
-	// Second answer to the same (now answered) request: no-op, no hang, no error.
-	done := make(chan error, 1)
-	go func() { done <- svc.AnswerHuman(reqID, "no") }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("duplicate answer should be a no-op, got %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("duplicate AnswerHuman hung")
+	// Second answer to the same (now answered) request: no-op, no error.
+	if err := svc.AnswerHuman(req.ID, "no"); err != nil {
+		t.Fatalf("duplicate answer should be a no-op, got %v", err)
+	}
+	if got := string(ft.writes[task.ID]); got != "yes\r" {
+		t.Fatalf("duplicate answer re-injected input: %q", got)
 	}
 
 	// The original answer must stand; the task stays running (not re-flipped).

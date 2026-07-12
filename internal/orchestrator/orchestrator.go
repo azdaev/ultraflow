@@ -169,12 +169,12 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 
 // launch runs cmd as the task's live PTY agent: it registers the session (so the
 // board can attach and watch/type/Ctrl-C), flips the card to running only once
-// the terminal exists (never a 404), waits for the process to exit, then applies
-// the finish semantics. The normal finish is the agent calling finish_task, which
-// moves the task to review and closes the session; only when the process exited
-// WITHOUT that signal (status still running/queued) do we decide here — a
-// non-zero exit is a genuine failure, a clean exit lands in review. Shared by a
-// fresh start and a review send-back (Revise).
+// the terminal exists (never a 404), waits for the process to exit, then hands
+// the outcome to the service to resolve. The normal finish is the agent calling
+// finish_task, which moves the task to review and closes the session; anything
+// still in-flight when the process exits is resolved by ResolveAgentExit (with
+// guarded transitions, so a human answer racing in can't strand the task).
+// Shared by a fresh start and a review send-back (Revise).
 func (o *Orchestrator) launch(taskID string, cmd *exec.Cmd, cleanup func(), runningMsg string) {
 	defer cleanup()
 
@@ -187,15 +187,12 @@ func (o *Orchestrator) launch(taskID string, cmd *exec.Cmd, cleanup func(), runn
 	o.svc.AppendTaskEvent(taskID, "status", runningMsg)
 
 	werr := sess.Wait()
-	cur, err := o.svc.GetTask(taskID)
-	if err == nil && (cur.Status == model.StatusRunning || cur.Status == model.StatusQueued) {
-		if werr != nil {
-			log.Printf("task %s: agent exited before finishing: %v", taskID, werr)
-			o.fail(taskID, "agent exited before reporting completion: "+werr.Error())
-		} else {
-			o.svc.UpdateStatus(taskID, model.StatusReview)
-		}
+	detail := ""
+	if werr != nil {
+		detail = werr.Error()
+		log.Printf("task %s: agent exited before finishing: %v", taskID, werr)
 	}
+	o.svc.ResolveAgentExit(taskID, werr != nil, detail)
 }
 
 // Revise re-engages a task's agent after it has gone to review (or failed): it
@@ -320,8 +317,9 @@ Title: %s
 IMPORTANT: You have an MCP tool "ask_human". When a decision is irreversible,
 visual, or architectural — or you need the human to review something — do NOT
 guess. Call ask_human with task_id="%s", a clear question, suggested options,
-and helpful context (a diff, a plan, or a screenshot description). It blocks
-until the human replies on the board, then returns their answer.
+and helpful context (a diff, a plan, or a screenshot description). After you call
+it, STOP and end your turn — do not keep working or guess. The human's answer is
+delivered to you as your next input, and you continue from there.
 
 %s
 

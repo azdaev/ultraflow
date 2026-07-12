@@ -2,13 +2,11 @@ package web
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"ultraflow/internal/core"
 	"ultraflow/internal/model"
@@ -133,34 +131,26 @@ func TestCreateRequiresTitle(t *testing.T) {
 	}
 }
 
-// TestAnswerEndpoint drives the HTTP answer path against a blocked AskHuman.
+// TestAnswerEndpoint drives the HTTP answer path: a posted question shows up on
+// the pending endpoint, and answering it returns the task to running.
 func TestAnswerEndpoint(t *testing.T) {
 	ts, svc := newTestServer(t)
 	defer ts.Close()
 
 	task, _ := svc.CreateTask("t", "", "")
-	answered := make(chan string, 1)
-	go func() {
-		ans, _ := svc.AskHuman(context.Background(), task.ID, "q?", []string{"a"}, "")
-		answered <- ans
-	}()
-
-	// Poll the pending endpoint until the request shows up.
-	var reqID string
-	for i := 0; i < 200 && reqID == ""; i++ {
-		var reqs []model.HumanRequest
-		getJSON(t, ts.URL+"/api/human_requests", &reqs)
-		if len(reqs) == 1 {
-			reqID = reqs[0].ID
-		} else {
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-	if reqID == "" {
-		t.Fatal("request never appeared on /api/human_requests")
+	req, err := svc.AskHuman(task.ID, "q?", []string{"a"}, "")
+	if err != nil {
+		t.Fatalf("ask: %v", err)
 	}
 
-	res, err := http.Post(ts.URL+"/api/human_requests/"+reqID+"/answer",
+	// The request appears on the pending endpoint.
+	var reqs []model.HumanRequest
+	getJSON(t, ts.URL+"/api/human_requests", &reqs)
+	if len(reqs) != 1 || reqs[0].ID != req.ID {
+		t.Fatalf("expected the request on /api/human_requests, got %d", len(reqs))
+	}
+
+	res, err := http.Post(ts.URL+"/api/human_requests/"+req.ID+"/answer",
 		"application/json", bytes.NewBufferString(`{"answer":"chosen"}`))
 	if err != nil {
 		t.Fatalf("answer post: %v", err)
@@ -170,13 +160,12 @@ func TestAnswerEndpoint(t *testing.T) {
 	}
 	res.Body.Close()
 
-	select {
-	case ans := <-answered:
-		if ans != "chosen" {
-			t.Fatalf("expected 'chosen', got %q", ans)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("AskHuman did not return after HTTP answer")
+	// Task returns to running and the request leaves the rail.
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusRunning {
+		t.Fatalf("expected running after answer, got %s", got.Status)
+	}
+	if reqs2, _ := svc.PendingRequests(); len(reqs2) != 0 {
+		t.Fatalf("expected no pending after answer, got %d", len(reqs2))
 	}
 
 	// Events endpoint should record the exchange.

@@ -166,6 +166,19 @@ func (s *Session) Write(p []byte) error {
 	return err
 }
 
+// WriteTo delivers p to the stdin of task id's live session, exactly as if the
+// human had typed it into the terminal. It reports whether a live session
+// existed: a false return means the agent is no longer running, so the input had
+// nowhere to go. This is how AnswerHuman feeds a board reply back to a parked
+// interactive agent idling at its prompt.
+func (m *Manager) WriteTo(id string, p []byte) (bool, error) {
+	s, ok := m.Get(id)
+	if !ok {
+		return false, nil
+	}
+	return true, s.Write(p)
+}
+
 // Resize updates the PTY window size so the CLI reflows to the browser terminal.
 func (s *Session) Resize(rows, cols uint16) error {
 	return pty.Setsize(s.pty, &pty.Winsize{Rows: rows, Cols: cols})

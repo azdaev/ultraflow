@@ -55,6 +55,9 @@ func main() {
 	// Live PTY sessions: the orchestrator runs each agent in a terminal, the web
 	// layer attaches the browser to it over a WebSocket, and finish_task closes it.
 	term := terminal.NewManager()
+	// The service delivers a human's board answer into the parked agent's stdin,
+	// so it needs the same terminal manager the orchestrator runs agents in.
+	svc.UseTerminal(term)
 
 	mcpSrv := mcpserver.New(svc, term)
 	mcpURL := fmt.Sprintf("http://localhost:%d/mcp", *port)

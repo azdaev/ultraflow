@@ -1,5 +1,5 @@
 // Package mcpserver exposes Ultraflow over MCP: external task input plus the
-// blocking ask_human tool that agents call when they need the human.
+// ask_human tool that agents call (then yield their turn) when they need the human.
 package mcpserver
 
 import (
@@ -71,15 +71,17 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "ask_human",
-		Description: "Ask the human for input and BLOCK until they answer on the Ultraflow board. " +
-			"Call this whenever a decision is irreversible, visual, or architectural, or you need review — do NOT guess. " +
-			"Returns the human's chosen answer.",
+		Description: "Ask the human for input. Posts your question to the Ultraflow board and returns " +
+			"immediately — then STOP: end your turn and wait. The human's answer arrives as your next " +
+			"input, and you resume from there. Call this whenever a decision is irreversible, visual, or " +
+			"architectural, or you need review — do NOT guess, and do NOT keep working after asking.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, a askArgs) (*mcp.CallToolResult, any, error) {
-		ans, err := svc.AskHuman(ctx, a.TaskID, a.Question, a.Options, a.Context)
-		if err != nil {
+		if _, err := svc.AskHuman(a.TaskID, a.Question, a.Options, a.Context); err != nil {
 			return nil, nil, err
 		}
-		return text(ans), nil, nil
+		return text("Asked the human on the board: " + a.Question + "\n" +
+			"END YOUR TURN NOW and wait — do not guess or keep working. Their answer will be " +
+			"delivered to you as your next input; resume once it arrives."), nil, nil
 	})
 
 	type finishArgs struct {

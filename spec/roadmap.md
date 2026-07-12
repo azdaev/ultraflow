@@ -34,7 +34,12 @@ task → agent in a worktree → `ask_human` → answer on board → agent conti
 - [x] SQLite store + schema (tasks, events, human_requests)
 - [x] HTTP API + SSE for the board (`/api/board`, `/api/tasks`, `/api/events`,
       `/api/tasks/{id}/events`, `/api/tasks/{id}/retry`, answer endpoint)
-- [x] MCP server: `create_task`, `list_tasks`, `get_task`, `ask_human` (blocking)
+- [x] MCP server: `create_task`, `list_tasks`, `get_task`, `ask_human`, `finish_task`.
+      `ask_human` is **non-blocking**: it posts the question to the board and returns
+      immediately, telling the agent to end its turn. The agent (a live interactive
+      terminal) then idles at its prompt — a durable, timeout-proof wait — and the
+      human's board answer is written straight into its stdin, resuming it. No
+      HTTP/tool call is held open across human time, so nothing can time it out.
 - [x] Claude Code adapter (spawn `claude` headless, stream-json parsed into
       friendly activity events, resume TBD)
 - [x] Minimal orchestrator wiring (solo flow, concurrency limiter)

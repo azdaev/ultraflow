@@ -4,10 +4,8 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"log"
-	"time"
 
 	"ultraflow/internal/core"
 	"ultraflow/internal/model"
@@ -49,17 +47,14 @@ func main() {
 	mk("Migrate answer store to WAL", "", "ultraflow", "claude", "solo", model.StatusFailed, "go build ./... : undefined: foo")
 	mk("Add keyboard shortcuts help", "", "worktrees", "claude", "solo", model.StatusQueued, "")
 
-	// A task waiting on the human (parks no goroutine — the request row is enough
-	// for a visual check; answering via the API just updates the DB).
+	// A task waiting on the human. AskHuman just persists the request row and
+	// flips the task to needs_human — no goroutine to park — so the pending row
+	// exists for the visual check.
 	waiting := mk("Redesign the empty-board state", "", "ultraflow", "claude", "solo", model.StatusRunning, "Read web/src/App.tsx")
-	// Launch and don't wait: AskHuman persists the request row before it parks,
-	// so the pending row exists for the visual check. The parked goroutine dies
-	// when this throwaway process exits.
-	go svc.AskHuman(context.Background(), waiting.ID,
+	svc.AskHuman(waiting.ID,
 		"I made two empty-state variants — which direction?",
 		[]string{"Minimal (icon + one line)", "Guided (checklist)"},
 		"+64 −0 · web/src/App.tsx · affects first-run only")
-	time.Sleep(200 * time.Millisecond)
 
 	log.Printf("seeded %s", *dbPath)
 }

@@ -1,15 +1,15 @@
-// Package core holds Ultraflow's business logic: task lifecycle, the blocking
+// Package core holds Ultraflow's business logic: task lifecycle, the non-blocking
 // ask_human protocol, and the SSE event broker. Both the MCP server and the web
 // API depend on it.
 package core
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sync"
+	"log"
+	"strings"
 	"time"
 
 	"ultraflow/internal/model"
@@ -17,15 +17,20 @@ import (
 	"ultraflow/internal/worktree"
 )
 
+// termInput delivers a human's board reply into a task's live agent terminal
+// (its stdin). *terminal.Manager satisfies it; kept as an interface so core need
+// not import the terminal package and tests can stub it.
+type termInput interface {
+	WriteTo(taskID string, p []byte) (bool, error)
+}
+
 // Service is the central coordinator shared by the MCP server, web API and
 // orchestrator.
 type Service struct {
 	store  *store.Store
 	Broker *Broker
 	wt     *worktree.Manager // set via UseWorktrees; nil = merge/teardown disabled
-
-	mu      sync.Mutex
-	pending map[string]chan string // human_request id -> answer channel
+	term   termInput         // set via UseTerminal; nil = answers aren't delivered
 }
 
 // UseWorktrees gives the service the worktree manager it needs to merge a task's
@@ -33,11 +38,14 @@ type Service struct {
 // root), so both agree on where a task's worktree lives.
 func (s *Service) UseWorktrees(m *worktree.Manager) { s.wt = m }
 
+// UseTerminal gives the service the terminal manager it uses to deliver a human's
+// answer into the parked agent's stdin. Shares the orchestrator's manager.
+func (s *Service) UseTerminal(t termInput) { s.term = t }
+
 func NewService(st *store.Store) *Service {
 	return &Service{
-		store:   st,
-		Broker:  NewBroker(),
-		pending: make(map[string]chan string),
+		store:  st,
+		Broker: NewBroker(),
 	}
 }
 
@@ -110,8 +118,8 @@ func (s *Service) CreateTaskFull(title, body, project, agent, flow string) (mode
 // so it only writes; the first board snapshot reflects the recovered state.
 func (s *Service) RecoverInFlight() (int64, error) { return s.store.RecoverInFlight() }
 
-func (s *Service) ListTasks() ([]model.Task, error)     { return s.store.ListTasks() }
-func (s *Service) BacklogTasks() ([]model.Task, error)  { return s.store.BacklogTasks() }
+func (s *Service) ListTasks() ([]model.Task, error)      { return s.store.ListTasks() }
+func (s *Service) BacklogTasks() ([]model.Task, error)   { return s.store.BacklogTasks() }
 func (s *Service) GetTask(id string) (model.Task, error) { return s.store.GetTask(id) }
 
 // UpdateStatus persists a task's new status and broadcasts it. It returns the
@@ -125,6 +133,23 @@ func (s *Service) UpdateStatus(id string, st model.TaskStatus) error {
 	}
 	s.publish("task_updated", map[string]any{"taskId": id, "status": st, "updatedAt": updatedAt})
 	return nil
+}
+
+// SwapStatus is the guarded (compare-and-swap) form of UpdateStatus: it moves a
+// task to `to` only if it is currently one of `from`, returning whether it did.
+// Used where a concurrent writer may have already moved the task — a human answer
+// resuming a parked task vs. the orchestrator failing it because the agent died —
+// so the two can't clobber each other into a stranded state.
+func (s *Service) SwapStatus(id string, from []model.TaskStatus, to model.TaskStatus) bool {
+	ok, err := s.store.SwapStatusFrom(id, from, to)
+	if err != nil {
+		log.Printf("task %s: swap status → %s: %v", id, to, err)
+		return false
+	}
+	if ok {
+		s.publish("task_updated", map[string]any{"taskId": id, "status": to})
+	}
+	return ok
 }
 
 func (s *Service) SetWorktree(id, wt string) {
@@ -319,10 +344,14 @@ func (s *Service) SetMaxConcurrent(n int) (int, error) {
 
 // --- the ask_human protocol (the core of Ultraflow) ---
 
-// AskHuman parks the caller until the human answers the request on the board,
-// then returns the chosen answer. This is invoked from the MCP tool handler, so
-// the agent's tool call blocks for exactly as long as this does.
-func (s *Service) AskHuman(ctx context.Context, taskID, question string, options []string, contextStr string) (string, error) {
+// AskHuman posts a question to the board and returns immediately — it does NOT
+// block. The agent runs as a live interactive terminal, so after asking it ends
+// its turn and idles at its prompt: a durable, tokenless, timeout-proof wait
+// (nothing holds an HTTP/tool call open across human time). When the human
+// answers on the board, AnswerHuman writes the reply straight into that
+// terminal's stdin and the agent resumes from its next input. Returns the
+// created request so the caller can tell the agent what it just asked.
+func (s *Service) AskHuman(taskID, question string, options []string, contextStr string) (model.HumanRequest, error) {
 	req := model.HumanRequest{
 		ID:        NewID(),
 		TaskID:    taskID,
@@ -333,75 +362,105 @@ func (s *Service) AskHuman(ctx context.Context, taskID, question string, options
 		CreatedAt: time.Now(),
 	}
 	if err := s.store.CreateHumanRequest(req); err != nil {
-		return "", err
+		return model.HumanRequest{}, err
 	}
-
-	// Register the answer channel BEFORE announcing the request, so an answer
-	// that races in immediately after the board sees it always finds the channel.
-	ch := make(chan string, 1)
-	s.mu.Lock()
-	s.pending[req.ID] = ch
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.pending, req.ID)
-		s.mu.Unlock()
-	}()
-
 	_ = s.UpdateStatus(taskID, model.StatusNeedsHuman)
 	s.appendEvent(taskID, "human_request", req.Question)
 	s.publish("human_request", req)
-
-	select {
-	case <-ctx.Done():
-		// The agent went away while parked (process died, MCP connection dropped).
-		// Retire the request so it doesn't linger in the attention rail as an
-		// unanswerable checkpoint — and so a later human answer can't resurrect a
-		// task that has no agent behind it. Mark the task failed; the human can
-		// retry it from the board.
-		if cancelled, _ := s.store.CancelHumanRequest(req.ID); cancelled {
-			s.publish("human_cancelled", map[string]any{"id": req.ID, "taskId": taskID})
-			_ = s.UpdateStatus(taskID, model.StatusFailed)
-			s.appendEvent(taskID, "status", "agent stopped while awaiting your answer")
-		}
-		return "", ctx.Err()
-	case ans := <-ch:
-		return ans, nil
-	}
+	return req, nil
 }
 
 // AnswerHuman is called by the web API when the human replies on the board. It
-// unblocks the parked AskHuman call.
+// records the answer, returns the task to running, and delivers the reply into
+// the agent's live terminal (its stdin) — which is how the parked interactive
+// agent, idle at its prompt, receives it and continues.
 func (s *Service) AnswerHuman(reqID, answer string) error {
 	updated, err := s.store.AnswerHumanRequest(reqID, answer)
 	if err != nil {
 		return err
 	}
 	// A duplicate/late answer (already answered, or unknown id) is a no-op: don't
-	// re-run side effects or touch the parked channel — the AskHuman caller may
-	// already be gone, and a second blocking send would hang this handler.
+	// re-run side effects or re-inject input into the agent.
 	if !updated {
 		return nil
 	}
 
-	if req, err := s.store.GetHumanRequest(reqID); err == nil {
-		s.UpdateStatus(req.TaskID, model.StatusRunning)
-		s.appendEvent(req.TaskID, "human_answer", answer)
+	req, err := s.store.GetHumanRequest(reqID)
+	if err != nil {
+		return err
 	}
+
+	// Resume the task only if it is still parked. If it has already left
+	// needs_human the agent died and the orchestrator's death path has resolved
+	// (or is resolving) it — flipping to running here would strand it behind a
+	// dead agent. The guarded swap makes answer-vs-death mutually exclusive.
+	if !s.SwapStatus(req.TaskID, []model.TaskStatus{model.StatusNeedsHuman}, model.StatusRunning) {
+		s.appendEvent(req.TaskID, "status", "your answer arrived after the agent had already stopped")
+		return nil
+	}
+	s.appendEvent(req.TaskID, "human_answer", answer)
 	s.publish("human_answered", map[string]any{"id": reqID, "answer": answer})
 
-	s.mu.Lock()
-	ch, ok := s.pending[reqID]
-	s.mu.Unlock()
-	if ok {
-		// Non-blocking: the buffered channel (cap 1) always accepts the first
-		// answer; the guard above ensures we only reach here once per request.
-		select {
-		case ch <- answer:
-		default:
+	// Deliver the reply into the agent's terminal exactly as if the human typed
+	// it there; the trailing CR submits it as the agent's next input. Newlines are
+	// flattened so an embedded one can't submit the line early. If no live terminal
+	// exists the agent exited between the swap and now — the orchestrator's Wait
+	// path fails the task — so the log is just a diagnostic.
+	if s.term != nil {
+		line := strings.NewReplacer("\r", " ", "\n", " ").Replace(answer)
+		if live, werr := s.term.WriteTo(req.TaskID, []byte(line+"\r")); werr != nil {
+			log.Printf("task %s: delivering answer to terminal: %v", req.TaskID, werr)
+		} else if !live {
+			log.Printf("task %s: answered but the agent terminal is gone", req.TaskID)
 		}
 	}
 	return nil
+}
+
+// AbandonRequests retires any still-pending human request for a task whose agent
+// has exited, so an orphaned checkpoint doesn't linger on the attention rail and
+// can't be answered into a void.
+func (s *Service) AbandonRequests(taskID string) {
+	if n, _ := s.store.CancelTaskRequests(taskID); n > 0 {
+		s.publish("human_cancelled", map[string]any{"taskId": taskID})
+	}
+}
+
+// ResolveAgentExit drives a task to a terminal state after its agent PROCESS has
+// exited (the orchestrator learns this from sess.Wait). It is the single
+// authority for "the agent is gone": finish_task already moved a completed task
+// to review, so that no-ops here; anything still in-flight didn't finish and is
+// resolved now. crashed is true for a non-zero exit; detail carries the exit
+// error for the failed card.
+//
+// Every transition is a guarded compare-and-swap, so a human answer racing in at
+// this instant (needs_human→running) cannot strand the task behind the dead
+// agent — note that BOTH the crash swap and the clean-exit fail swap include
+// `running`, so an answer that lands in the gap is still driven terminal.
+func (s *Service) ResolveAgentExit(taskID string, crashed bool, detail string) {
+	if crashed {
+		if s.SwapStatus(taskID, []model.TaskStatus{model.StatusQueued, model.StatusRunning, model.StatusNeedsHuman}, model.StatusFailed) {
+			s.AbandonRequests(taskID)
+			reason := "agent exited before reporting completion"
+			if detail != "" {
+				reason += ": " + detail
+			}
+			s.appendEvent(taskID, "error", reason)
+		}
+		return
+	}
+	// Clean exit (exit 0 without finish_task — e.g. the human ended the session at
+	// the prompt): a running/queued agent that finished its turn goes to review.
+	if s.SwapStatus(taskID, []model.TaskStatus{model.StatusQueued, model.StatusRunning}, model.StatusReview) {
+		return
+	}
+	// Otherwise it was still parked — or a late answer resumed it into `running`
+	// behind this now-dead agent — so it never finished: fail it (running included
+	// to close the answer-in-the-gap race) and retire the orphaned checkpoint.
+	if s.SwapStatus(taskID, []model.TaskStatus{model.StatusNeedsHuman, model.StatusRunning}, model.StatusFailed) {
+		s.AbandonRequests(taskID)
+		s.appendEvent(taskID, "error", "agent stopped while awaiting your answer")
+	}
 }
 
 func (s *Service) PendingRequests() ([]model.HumanRequest, error) {

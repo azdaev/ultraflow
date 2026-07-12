@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver, no CGO
@@ -21,9 +22,15 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// WAL for concurrent readers; busy_timeout so a write that briefly collides
-	// with another (e.g. a simultaneous answer/cancel of the same request) waits
-	// and retries rather than failing with SQLITE_BUSY.
+	// Serialize ALL access through a single connection. sql.DB is a pool, and a
+	// PRAGMA set via db.Exec lands on just one arbitrary pooled connection — so
+	// with >1 conn, concurrent writers race on other connections and fail with
+	// SQLITE_BUSY instead of honoring busy_timeout. That broke the guarded status
+	// swaps (a busy error read as "CAS missed", stranding a task). One connection
+	// makes every write queue behind the last, so the compare-and-swaps the
+	// answer/death paths rely on are truly atomic. Fine for a local single-user
+	// daemon; WAL still gives durable, non-blocking snapshot reads.
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`); err != nil {
 		return nil, err
 	}
@@ -190,6 +197,30 @@ func (s *Store) UpdateTaskStatus(id string, st model.TaskStatus) (time.Time, err
 	return now, nil
 }
 
+// SwapStatusFrom sets a task's status to `to` only if it is currently one of
+// `from`, reporting whether it changed a row. This is the compare-and-swap the
+// answer path and the agent-death path both use so their concurrent writes agree
+// on a single outcome: a stale read followed by a blind write could otherwise
+// strand a task in `running` behind a dead agent (a human answer resuming it
+// after the death handler already failed it, or vice versa).
+func (s *Store) SwapStatusFrom(id string, from []model.TaskStatus, to model.TaskStatus) (bool, error) {
+	if len(from) == 0 {
+		return false, nil
+	}
+	args := []any{string(to), time.Now(), id}
+	for _, f := range from {
+		args = append(args, string(f))
+	}
+	q := `UPDATE tasks SET status=?, updated_at=? WHERE id=? AND status IN (?` +
+		strings.Repeat(",?", len(from)-1) + `)`
+	res, err := s.db.Exec(q, args...)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 func (s *Store) SetWorktree(id, wt string) error {
 	_, err := s.db.Exec(`UPDATE tasks SET worktree=?, updated_at=? WHERE id=?`, wt, time.Now(), id)
 	return err
@@ -308,17 +339,16 @@ func (s *Store) AnswerHumanRequest(id, answer string) (bool, error) {
 	return n > 0, err
 }
 
-// CancelHumanRequest marks a still-pending request cancelled (e.g. the asking
-// agent died while parked), so it drops off the attention rail and can no longer
-// be answered. Returns whether a pending row was actually cancelled.
-func (s *Store) CancelHumanRequest(id string) (bool, error) {
+// CancelTaskRequests cancels every still-pending request belonging to a task
+// (its agent has exited, so no one will consume an answer). Returns how many
+// were cancelled.
+func (s *Store) CancelTaskRequests(taskID string) (int64, error) {
 	res, err := s.db.Exec(
-		`UPDATE human_requests SET status='cancelled' WHERE id=? AND status='pending'`, id)
+		`UPDATE human_requests SET status='cancelled' WHERE task_id=? AND status='pending'`, taskID)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	n, err := res.RowsAffected()
-	return n > 0, err
+	return res.RowsAffected()
 }
 
 func (s *Store) PendingHumanRequests() ([]model.HumanRequest, error) {
