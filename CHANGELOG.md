@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.5 — 2026-07-12
+
+- Ultraflow: Audit multi-step task lifecycle
+- Ultraflow: allow inputing picture in all our composers in all states. including from clipboard. use some libs
+
 ## v0.10.4 — 2026-07-12
 
 - Ultraflow: hotkeys are broken in claude pty. maybe in codex too. for example cmd + delete.
