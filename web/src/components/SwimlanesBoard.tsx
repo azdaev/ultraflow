@@ -7,13 +7,14 @@ interface Props {
   now: number;
   onOpen: (taskId: string) => void;
   projects: Project[];
+  onExpandComposer?: (title: string, project: string) => void;
 }
 
 // SwimlanesBoard stacks a horizontal lane per project, each a full pipeline row
 // under a lane header (swatch, name, repo path, task count). Cards carry no
 // chip — the lane names the project. Tasks with no registered project fall into
 // a trailing "Unassigned" lane. Best for a few projects.
-export function SwimlanesBoard({ tasks, activity, now, onOpen, projects }: Props) {
+export function SwimlanesBoard({ tasks, activity, now, onOpen, projects, onExpandComposer }: Props) {
   const registered = new Set(projects.map((p) => p.name));
   const orphans = tasks.filter((t) => !registered.has(t.project));
 
@@ -31,6 +32,7 @@ export function SwimlanesBoard({ tasks, activity, now, onOpen, projects }: Props
           onOpen={onOpen}
           projects={projects}
           addProject={p.name}
+          onExpandComposer={onExpandComposer}
         />
       ))}
       {orphans.length > 0 && (
@@ -44,6 +46,7 @@ export function SwimlanesBoard({ tasks, activity, now, onOpen, projects }: Props
           onOpen={onOpen}
           projects={projects}
           addProject=""
+          onExpandComposer={onExpandComposer}
         />
       )}
       {projects.length === 0 && orphans.length === 0 && (
@@ -63,6 +66,7 @@ function Lane({
   onOpen,
   projects,
   addProject,
+  onExpandComposer,
 }: {
   swatch: string;
   name: string;
@@ -73,6 +77,7 @@ function Lane({
   onOpen: (taskId: string) => void;
   projects: Project[];
   addProject: string;
+  onExpandComposer?: (title: string, project: string) => void;
 }) {
   return (
     <section>
@@ -95,6 +100,7 @@ function Lane({
         projects={projects}
         compact
         addProject={addProject}
+        onExpandComposer={onExpandComposer}
       />
     </section>
   );

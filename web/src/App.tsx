@@ -16,7 +16,12 @@ export function App() {
   const { tasks, requests, activity, activityKind, projects, connected } = useBoard();
   const [layout, setLayout] = useLayout();
   const now = useNow(1000);
-  const [composerOpen, setComposerOpen] = useState(false);
+  // The composer carries an optional draft: the inline "+ Add task" hands off its
+  // typed title and column project via "More…"; ⌘N and the Topbar open it blank.
+  const [composer, setComposer] = useState({ open: false, title: "", project: "" });
+  const openComposer = (title = "", project = "") =>
+    setComposer({ open: true, title, project });
+  const closeComposer = () => setComposer((c) => ({ ...c, open: false }));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
@@ -25,7 +30,7 @@ export function App() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") {
         e.preventDefault();
-        setComposerOpen(true);
+        openComposer();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -80,7 +85,7 @@ export function App() {
         running={running}
         queued={queued}
         connected={connected}
-        onNewTask={() => setComposerOpen(true)}
+        onNewTask={() => openComposer()}
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
@@ -88,7 +93,7 @@ export function App() {
 
       <main className="flex flex-1 px-6 py-6">
         {tasks.length === 0 ? (
-          <EmptyBoard onNewTask={() => setComposerOpen(true)} />
+          <EmptyBoard onNewTask={() => openComposer()} />
         ) : layout === "swimlanes" ? (
           <SwimlanesBoard
             tasks={tasks}
@@ -96,6 +101,7 @@ export function App() {
             now={now}
             onOpen={setOpenTaskId}
             projects={projects}
+            onExpandComposer={openComposer}
           />
         ) : (
           <FilterBoard
@@ -104,14 +110,17 @@ export function App() {
             now={now}
             onOpen={setOpenTaskId}
             projects={projects}
+            onExpandComposer={openComposer}
           />
         )}
       </main>
 
       <Composer
-        open={composerOpen}
-        onClose={() => setComposerOpen(false)}
+        open={composer.open}
+        onClose={closeComposer}
         projects={projects}
+        initialTitle={composer.title}
+        initialProject={composer.project}
       />
       <Settings
         open={settingsOpen}
