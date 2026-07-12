@@ -72,6 +72,7 @@ type Service struct {
 	// a fresh load isn't blank until the next poll. See PublishContext.
 	ctxMu     sync.Mutex
 	ctxTokens map[string]int
+	telegram telegramConfigurator
 }
 
 // UseWorktrees gives the service the worktree manager it needs to merge a task's
@@ -683,10 +684,53 @@ func (s *Service) DeleteProject(id string) error {
 // Concurrency bounds: at least one agent, and a ceiling that keeps a single
 // subscription from being hammered by too many parallel agents.
 const (
-	MinConcurrent     = 1
-	MaxConcurrentCap  = 8
-	settingKeyMaxConc = "max_concurrent"
+	MinConcurrent      = 1
+	MaxConcurrentCap   = 8
+	settingKeyMaxConc  = "max_concurrent"
+	settingKeyTelegram = "telegram_config"
 )
+
+// TelegramSettings is persisted daemon-side. Token is deliberately omitted by
+// the settings GET endpoint; HasToken lets the UI show that a secret is saved.
+type TelegramSettings struct {
+	Enabled bool   `json:"enabled"`
+	Token   string `json:"token"`
+	UserID  int64  `json:"userId"`
+	ChatID  int64  `json:"chatId"`
+}
+
+type telegramConfigurator interface{ ApplyTelegram(TelegramSettings) }
+
+func (s *Service) UseTelegramConfigurator(c telegramConfigurator) { s.telegram = c }
+
+func (s *Service) TelegramSettings() (TelegramSettings, bool, error) {
+	v, ok, err := s.store.GetSetting(settingKeyTelegram)
+	if err != nil || !ok {
+		return TelegramSettings{}, ok, err
+	}
+	var cfg TelegramSettings
+	if err := json.Unmarshal([]byte(v), &cfg); err != nil {
+		return TelegramSettings{}, false, nil
+	}
+	return cfg, true, nil
+}
+
+func (s *Service) SetTelegramSettings(cfg TelegramSettings) error {
+	if cfg.Enabled && (strings.TrimSpace(cfg.Token) == "" || cfg.UserID == 0 || cfg.ChatID == 0) {
+		return fmt.Errorf("bot token, user ID, and chat ID are required when Telegram is enabled")
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if err := s.store.SetSetting(settingKeyTelegram, string(b)); err != nil {
+		return err
+	}
+	if s.telegram != nil {
+		s.telegram.ApplyTelegram(cfg)
+	}
+	return nil
+}
 
 // clampConcurrent forces n into the allowed 1..8 range.
 func clampConcurrent(n int) int {

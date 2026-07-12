@@ -24,6 +24,7 @@ import (
 	"ultraflow/internal/orchestrator"
 	portpkg "ultraflow/internal/port"
 	"ultraflow/internal/store"
+	telegrambot "ultraflow/internal/telegram"
 	"ultraflow/internal/terminal"
 	"ultraflow/internal/web"
 	"ultraflow/internal/worktree"
@@ -112,6 +113,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go orch.Run(ctx)
+	telegram := telegrambot.NewManager(ctx, svc, svc.Broker)
+	svc.UseTelegramConfigurator(telegram)
+	if cfg, ok, err := svc.TelegramSettings(); err != nil {
+		log.Printf("couldn't read Telegram settings: %v", err)
+	} else if ok {
+		telegram.ApplyTelegram(cfg)
+	} else if cfg, enabled, err := telegrambot.ConfigFromEnv(os.Getenv); err != nil {
+		log.Printf("telegram disabled: %v", err)
+	} else if enabled {
+		// Backwards-compatible one-time migration from the original env setup.
+		_ = svc.SetTelegramSettings(core.TelegramSettings{Enabled: true, Token: cfg.Token, UserID: cfg.UserID, ChatID: cfg.ChatID})
+	}
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpSrv }, nil)
 	// staticDir (the -static flag) wins for dev; otherwise a release binary built
