@@ -89,6 +89,18 @@ working directory.
 %s`, step.Role, t.ID, t.Title, taskBrief(t), strings.TrimSpace(guidance), stepFinishContract(t.ID))
 }
 
+// buildStepRestartPrompt is deliberately small: the persisted active phase says
+// this exact step already received the full task prompt. Claude reconnects that
+// conversation; adapters without session restore still have the task identity,
+// role, files, and finish contract needed to continue safely.
+func (o *Orchestrator) buildStepRestartPrompt(t model.Task, step flow.Step) string {
+	return fmt.Sprintf(`Ultraflow restarted while you were working on the %s step of task %s (%s).
+Continue this SAME step in the existing working directory. Inspect the current files and
+finish the work already in progress; do not restart the flow or redo earlier steps.
+
+%s`, step.Role, t.ID, t.Title, stepFinishContract(t.ID))
+}
+
 // buildStepSelfHealPrompt resumes a work step's conversation after it crashed, so
 // the agent diagnoses and retries within the same step.
 func (o *Orchestrator) buildStepSelfHealPrompt(t model.Task, step flow.Step, retry, budget int) string {

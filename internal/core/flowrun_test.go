@@ -33,6 +33,7 @@ func TestCompleteTurnMidFlowMarksTurnDone(t *testing.T) {
 	if err := svc.StartRun(task.ID, "plan-build-critic-gate", "plan"); err != nil {
 		t.Fatalf("start run: %v", err)
 	}
+	svc.SetRunPhase(task.ID, model.RunActive)
 	_ = svc.UpdateStatus(task.ID, model.StatusRunning)
 
 	if err := svc.CompleteTurn(task.ID, "planned", "the plan"); err != nil {

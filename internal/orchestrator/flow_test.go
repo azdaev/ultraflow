@@ -23,8 +23,9 @@ import (
 // so each work step advances. It records the dir every step ran in, so a test can
 // assert all steps of a flow shared one worktree.
 type fakeFlowAgent struct {
-	mu   sync.Mutex
-	dirs []string
+	mu      sync.Mutex
+	dirs    []string
+	resumes int
 }
 
 func (a *fakeFlowAgent) Name() string { return "claude" }
@@ -53,8 +54,17 @@ func (a *fakeFlowAgent) Command(ctx context.Context, dir, prompt string) (*exec.
 }
 
 func (a *fakeFlowAgent) ResumeCommand(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error) {
+	a.mu.Lock()
+	a.resumes++
+	a.mu.Unlock()
 	a.record(dir)
 	return exec.Command("true"), func() {}, nil
+}
+
+func (a *fakeFlowAgent) resumeTurns() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.resumes
 }
 
 // wireFlowOrch builds an orchestrator whose only agent is a fakeFlowAgent, with the
@@ -248,6 +258,7 @@ func TestFlowResumeInPlaceWalksGraph(t *testing.T) {
 	}
 	svc.AdvanceRun(task.ID, "plan", "build")
 	svc.AdvanceRun(task.ID, "build", "critic")
+	svc.SetRunPhase(task.ID, model.RunActive)
 	svc.SetResume(task.ID, true)
 
 	o.start(context.Background(), task)
@@ -264,5 +275,27 @@ func TestFlowResumeInPlaceWalksGraph(t *testing.T) {
 	// Only critic ran — plan and build were already done before the restart.
 	if n := len(fake.turns()); n != 1 {
 		t.Fatalf("resume should run only critic; turns=%d", n)
+	}
+	if n := fake.resumeTurns(); n != 1 {
+		t.Fatalf("an interrupted active step must resume its old session, resume calls=%d", n)
+	}
+}
+
+// A pending cursor means the graph selected the step but never launched an
+// agent. Recovery must cold-start exactly that step; trying to resume here could
+// attach to the previous step's conversation.
+func TestFlowRestartColdStartsPendingStep(t *testing.T) {
+	svc, o, fake := wireFlowOrch(t)
+	task, _ := svc.CreateTaskFull("t", "", "", "claude", "plan-build")
+	if err := svc.StartRun(task.ID, "plan-build", "build"); err != nil {
+		t.Fatal(err)
+	}
+	o.start(context.Background(), task)
+	waitFor(t, "pending build completes", func() bool {
+		got, _ := svc.GetTask(task.ID)
+		return got.Status == model.StatusReview
+	})
+	if n := fake.resumeTurns(); n != 0 {
+		t.Fatalf("a never-started pending step must use a fresh session, resume calls=%d", n)
 	}
 }
