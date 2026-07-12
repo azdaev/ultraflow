@@ -3,27 +3,25 @@
 Multi-agent + configurable flows are day-one *architecture*. Adapters and UI polish
 land incrementally so we can debug the core loop before fanning out.
 
-## Now — terminal UX
+## Now — terminal UX  ← shipped (v0.5.0)
 
-The live terminal exists but the surrounding UX fights it. Fix so the terminal is
-a calm, opt-in "peek at progress", not something to babysit.
+The live terminal is now a calm, opt-in "peek at progress", not something to babysit.
 
-- [ ] **Big modal, not a sidebar.** Clicking a card opens a large near-fullscreen
+- [x] **Big modal, not a sidebar.** Clicking a card opens a large near-fullscreen
       modal (overlay), with the terminal taking most of the area and task details
-      secondary — instead of the current cramped right drawer.
-- [ ] **Drop the tool-event list.** The "read this file / used this tool" activity
-      thread under the terminal duplicates what the terminal already shows and the
-      two visually clash. With the live terminal, delete that rendering.
-- [ ] **DB / install / UX audit.** Confirm the SQLite DB in `~/.ultraflow`
-      survives a `brew upgrade` and app restart (data must persist across binary
-      swaps); confirm the daemon shuts down cleanly on kill (no corruption, in-
-      flight tasks recovered); confirm the install is via brew (not a raw local
-      build); and sanity-check that the board UX is intuitive and smooth.
-- [ ] **Session auto-closes on stage completion.** When the agent finishes its
-      turn the session ends itself (→ review) and frees its slot — the human never
-      opens the card to manually stop it. The terminal is only for optionally
-      watching or stepping in; the whole point is not to babysit agents. (Also
-      fixes the interactive session holding a concurrency slot forever.)
+      secondary — replacing the old cramped right drawer.
+- [x] **Drop the tool-event list.** The per-tool activity thread under the terminal
+      duplicated what the terminal already shows; with the live terminal it was
+      removed (only `error` events still surface, for failed cards with no terminal).
+- [x] **DB / install / UX audit.** Confirmed: the SQLite DB in `~/.ultraflow`
+      survives a `brew upgrade` (it lives outside the brew cellar); WAL keeps
+      committed data safe across an unclean kill; `RecoverInFlight` requeues
+      in-flight tasks on restart; install is brew-based. Remaining UX dead-ends are
+      tracked under Hardening below.
+- [x] **Session auto-closes on stage completion.** `finish_task` sends the task to
+      review and frees its slot; a bare turn-end is caught by the idle-watcher
+      (`watchIdle`) which sends the idle task to review and kills the session, so an
+      interactive TUI can no longer pin a concurrency slot forever.
 
 ## M0 — Walking skeleton  ← current
 
@@ -53,7 +51,7 @@ task → agent in a worktree → `ask_human` → answer on board → agent conti
 Remaining M0 polish: the dedicated `sessions` table (agent-session resume already
 works via `claude --continue` in the task's worktree).
 
-## M1 — Worktree manager  ← in progress
+## M1 — Worktree manager  ← done
 
 - [x] Per-task git worktree off the project's `repoPath`, on branch
       `ultraflow/<taskID>` (`internal/worktree`). Agents run in isolated
@@ -117,7 +115,11 @@ N times (per-flow) before escalating as a `needs_human` item — see spec.md
 
 ## M3 — More adapters
 
-Codex + opencode (interface already exists; just add impls).
+- [x] **Codex** — `internal/agent/codex.go` runs the `codex` CLI as an interactive
+      PTY session wired to Ultraflow's MCP server; it's a real, selectable agent in
+      the Composer (`implementedAgents = {claude, codex}`).
+- [ ] **opencode** — interface already exists (`agent.Agent` + `interactiveAgent`);
+      just add the impl.
 
 ## M4 — Board polish & merge
 
@@ -133,19 +135,43 @@ CLI (`claude` etc.); nothing ships secrets. Target audience is Mac developers.
       Dev builds (no tag) still serve the frontend from disk, so a fresh checkout
       compiles without a prebuilt frontend. Verified: the embed binary serves the
       full UI + API from a directory with no `web/dist` alongside it.
-- [ ] **Release + install channel** — `.goreleaser.yaml` is ready (universal mac
-      binary + linux, frontend built in the `before` hook, Homebrew tap section).
-      Needs: push the repo to GitHub, create a `homebrew-tap` repo, fill the
-      `CHANGEME-github-user` placeholders, then `git tag v0.1.0 && goreleaser
-      release --clean`. Result: `brew install <you>/tap/ultraflow`.
+- [x] **Release + install channel** — shipped via GoReleaser to a Homebrew tap:
+      `brew install azdaev/tap/ultraflow`. Runs under launchd (`make live` =
+      goreleaser release + brew upgrade + launchctl kickstart). (GoReleaser gotcha:
+      add `/dist/` to `.gitignore` or its output dirties the tree and aborts the
+      release.)
 - [ ] Cross-platform folder picker (currently macOS `osascript` only) — a plain
       "paste repo path" field for non-mac users. Not blocking for a Mac audience.
 
+## Context cap — auto-compact at a threshold  ← done
+
+Agents ship ~1M context windows, which is often too much — quality and cost
+degrade long before the window fills, and Claude Code's own auto-compact only
+fires near the very top. Ultraflow now enforces a configurable context budget:
+when a running agent's context crosses the cap, Ultraflow injects `/compact` into
+its live session so it summarizes and carries on with a tighter working set.
+
+- **How it's measured.** We own the launch + session lifecycle, so a monitor
+  (`orchestrator.watchContext`, started per attempt alongside `watchIdle`) reads
+  the agent's own transcript. Claude Code writes a JSONL transcript per session
+  under `~/.claude/projects/<encoded-cwd>/`; because every task runs in its own
+  worktree (a unique cwd), the newest transcript there is this task's. The live
+  context size is the last turn's `usage.input_tokens +
+  cache_creation_input_tokens + cache_read_input_tokens` — exactly what was sent
+  to the model that turn.
+- **How it compacts.** When context ≥ cap and the agent is actively working (not
+  parked on `ask_human`, not idle/finishing — gated on `IdleFor` and task status),
+  the monitor types `/compact` + Enter into the PTY (the same two-write,
+  paste-safe pattern as a board answer) and disarms; it re-arms once context falls
+  back below the cap, so it fires once per crossing, not in a loop. A thread event
+  records each compaction.
+- **The setting.** A daemon-wide `context_cap_tokens` setting (Settings → Context
+  budget), mirroring the concurrency control: `0` disables it, otherwise it clamps
+  to 50k–1M. Default off. Claude-only for now (codex's transcript format differs).
+  Per-flow budgets come with the flow engine (M2).
+
 ## Ideas / later (not scheduled)
 
-- **Context cap / auto-compact at a threshold.** Agents now ship ~1M context
-  windows, which is often too much — quality/cost degrade long before it fills.
-  Claude Code has no configurable auto-compact point. Ultraflow could enforce a
-  per-agent context budget (e.g. compact/summarize around ~250k tokens) as a
-  first-class, per-flow setting. Applies across adapters since we own the launch
-  + session lifecycle.
+- **Per-flow context budgets.** Today the cap is daemon-wide; once flows land (M2)
+  it becomes a per-flow setting so a "deep refactor" flow and a "quick fix" flow
+  can carry different budgets.

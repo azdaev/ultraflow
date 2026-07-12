@@ -82,6 +82,7 @@ func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.
 	r.GET("/api/board", s.board)
 	r.GET("/api/settings", s.getSettings)
 	r.POST("/api/settings/concurrency", s.setConcurrencyHandler)
+	r.POST("/api/settings/context-cap", s.setContextCapHandler)
 	r.GET("/api/projects", s.listProjects)
 	r.POST("/api/projects", s.createProject)
 	r.POST("/api/projects/pick", s.pickProject)
@@ -195,6 +196,12 @@ func (s *server) getSettings(c *gin.Context) {
 		"maxConcurrent":    s.currentConcurrency(),
 		"maxConcurrentMin": core.MinConcurrent,
 		"maxConcurrentMax": core.MaxConcurrentCap,
+		// Per-agent context budget in tokens (0 = off). When a running agent crosses
+		// it, Ultraflow injects /compact so it summarizes and continues on a tighter
+		// working set.
+		"contextCap":    s.svc.ContextCap(),
+		"contextCapMin": core.MinContextCap,
+		"contextCapMax": core.MaxContextCap,
 		// nativePicker is true where the daemon can open an OS folder dialog
 		// (macOS only, see pickFolder). Off it, the board falls back to a
 		// paste-the-path field that POSTs to /api/projects.
@@ -226,6 +233,29 @@ func (s *server) setConcurrencyHandler(c *gin.Context) {
 		s.conc.SetLimit(n)
 	}
 	writeJSON(c, http.StatusOK, map[string]any{"maxConcurrent": n})
+}
+
+// setContextCapHandler validates and persists the per-agent context budget. 0
+// disables it; any other value must fall in the allowed band. The new value takes
+// effect on the next transcript poll of each running agent — no restart needed.
+func (s *server) setContextCapHandler(c *gin.Context) {
+	var body struct {
+		Value int `json:"value"`
+	}
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.Value != 0 && (body.Value < core.MinContextCap || body.Value > core.MaxContextCap) {
+		http.Error(c.Writer, fmt.Sprintf("value must be 0 (off) or between %d and %d", core.MinContextCap, core.MaxContextCap), http.StatusBadRequest)
+		return
+	}
+	n, err := s.svc.SetContextCap(body.Value)
+	if err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(c, http.StatusOK, map[string]any{"contextCap": n})
 }
 
 func (s *server) listProjects(c *gin.Context) {

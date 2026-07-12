@@ -80,6 +80,11 @@ export interface Settings {
   maxConcurrent: number;
   maxConcurrentMin: number;
   maxConcurrentMax: number;
+  // per-agent context budget in tokens (0 = off). When a running agent's context
+  // crosses this, Ultraflow injects /compact so it summarizes and continues.
+  contextCap: number;
+  contextCapMin: number;
+  contextCapMax: number;
   // true where the daemon can open a native folder dialog (macOS). Off it, the
   // board shows a paste-the-path field instead (see addProject).
   nativePicker: boolean;
@@ -243,4 +248,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
     }).then((r) => json<{ maxConcurrent: number }>(r)),
+
+  // setContextCap persists the per-agent context budget in tokens (0 = off). The
+  // new value is picked up on each running agent's next transcript poll. Returns
+  // the effective (clamped) value.
+  setContextCap: (value: number) =>
+    fetch("/api/settings/context-cap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    }).then((r) => json<{ contextCap: number }>(r)),
 };

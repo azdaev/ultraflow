@@ -313,8 +313,13 @@ func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, dir st
 	retries := 0
 	o.svc.SetAttempt(t.ID, retries) // 0 = the original run, no sub-state
 
+	// Only claude sessions get the context-cap monitor: it reads Claude Code's
+	// transcript format (see watchContext). Resolved once from the concrete adapter,
+	// not t.Agent, so a fallback-to-claude is still covered.
+	_, isClaude := ia.(*agent.Claude)
+
 	for {
-		werr, started := o.runAgent(t.ID, cmd, cleanup, runningMsg)
+		werr, started := o.runAgent(t.ID, dir, isClaude, cmd, cleanup, runningMsg)
 		if !started {
 			return // runAgent already failed the task (couldn't start the terminal)
 		}
@@ -373,7 +378,7 @@ func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, dir st
 // running only once the terminal exists (never a 404), waits for the process to
 // exit, and returns the exit error (nil = clean). started is false only when the
 // terminal couldn't be started, in which case the task is already failed.
-func (o *Orchestrator) runAgent(taskID string, cmd *exec.Cmd, cleanup func(), runningMsg string) (werr error, started bool) {
+func (o *Orchestrator) runAgent(taskID, dir string, isClaude bool, cmd *exec.Cmd, cleanup func(), runningMsg string) (werr error, started bool) {
 	defer cleanup()
 
 	sess, err := o.term.Start(taskID, cmd)
@@ -391,6 +396,13 @@ func (o *Orchestrator) runAgent(taskID string, cmd *exec.Cmd, cleanup func(), ru
 	// (the task is now in review), not a crash to retry. Runs for the attempt's whole
 	// life so it also catches a second idle after an ask_human answer resumes.
 	go o.watchIdle(sess, taskID, idleTimeout, idlePoll)
+
+	// Keep the agent's context under the daemon's budget by injecting /compact when
+	// it crosses the cap (claude only — it reads Claude Code's transcript). No-op
+	// when no cap is set. Same per-attempt lifetime as the idle-watcher.
+	if isClaude {
+		go o.watchContext(sess, taskID, dir)
+	}
 
 	werr = sess.Wait()
 	if werr != nil {
