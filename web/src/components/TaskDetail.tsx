@@ -26,7 +26,13 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const termRef = useRef<AgentTerminalHandle>(null);
   const taskId = task?.id;
-  const live = task?.status === "running" || task?.status === "needs_human";
+  // A human gate parks the task with NO live agent — the work step's agent has
+  // already exited, so there is no PTY to attach to (the server 404s the terminal
+  // WS and the client loops "connection dropped, reconnecting…"). A mid-step
+  // ask_human is different: that agent idles on a still-live session, so its
+  // terminal stays real. `run.gate` is the signal that tells the two apart.
+  const atGate = task?.status === "needs_human" && !!run?.gate;
+  const live = task?.status === "running" || (task?.status === "needs_human" && !atGate);
   // Send-back is available whenever the agent has parked the task for a decision.
   const canRevise = task?.status === "review" || task?.status === "failed";
   const done = task?.status === "done";
@@ -40,11 +46,12 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
   const outcome =
     events.filter((e) => e.kind === "result").pop()?.data ??
     events.filter((e) => e.kind === "status").pop()?.data;
-  // Review is a real screen: once the agent parks a task, show what it did — its
-  // report and, when it touched a worktree, the diff. A question task has a report
-  // but no worktree; a code task may have either or both. Excludes a merged `done`
-  // task whose worktree was torn down and that left no report.
-  const showReview = canRevise && (!!task?.worktree || !!report);
+  // Review is a real screen: once the agent parks a task — at a final review OR at
+  // a mid-flow gate — the big panel shows what it did (its report and, when it
+  // touched a worktree, the diff) so the human can decide, instead of a dead
+  // terminal. A question task has a report but no worktree; a code task may have
+  // either or both. Excludes a merged `done` task torn down with no report.
+  const showReview = (canRevise || atGate) && (!!task?.worktree || !!report);
   // We only surface errors now — the terminal shows tool activity live, so the
   // old event thread was redundant. Errors matter for a failed card (no terminal).
   const errors = events.filter((e) => e.kind === "error");
@@ -153,7 +160,9 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                   <>
                     <div className="mb-2 flex items-center gap-2">
                       <span className="h-1.5 w-1.5 rounded-full bg-moss" />
-                      <h3 className="eyebrow text-muted">What the agent did</h3>
+                      <h3 className="eyebrow text-muted">
+                        {atGate ? "Ready for your review" : "What the agent did"}
+                      </h3>
                     </div>
                     <ReviewPanel
                       taskId={task.id}
@@ -200,11 +209,17 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                   <div className="grid flex-1 place-items-center rounded-xl border border-dashed border-hairline text-center">
                     <div className="max-w-sm px-6">
                       <p className="text-[14px] font-medium text-ink">
-                        No live session
+                        {atGate ? "Waiting on your approval" : "No live session"}
                       </p>
                       <p className="mt-1 text-[13px] leading-relaxed text-muted">
-                        The terminal appears here while the agent is running. This
-                        task is <span className="text-ink">{task.status}</span>.
+                        {atGate ? (
+                          "This step is done and has nothing to preview. Approve to continue, or send it back, in the panel on the right."
+                        ) : (
+                          <>
+                            The terminal appears here while the agent is running.
+                            This task is <span className="text-ink">{task.status}</span>.
+                          </>
+                        )}
                       </p>
                     </div>
                   </div>
