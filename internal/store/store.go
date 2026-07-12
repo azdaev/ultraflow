@@ -4,6 +4,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver, no CGO
@@ -33,9 +34,42 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// migrations is the ordered list of schema steps. Index i is migration version
+// i+1; a DB at PRAGMA user_version = N has had migrations[0..N-1] applied. To
+// evolve the schema, append a new step (e.g. an ALTER TABLE) — never edit an
+// existing one, or DBs already past it will skip your change. Migration 1 is the
+// original schema and stays idempotent (CREATE TABLE IF NOT EXISTS) so it applies
+// cleanly to both fresh and pre-migration-runner databases.
+var migrations = []string{
+	schema,
+}
+
+// migrate applies every migration newer than the DB's user_version in a single
+// transaction, then stamps user_version to the latest. A user_version of 0 (a
+// fresh or pre-runner DB) runs them all; already-applied steps are skipped.
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(schema)
-	return err
+	var current int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&current); err != nil {
+		return err
+	}
+	if current >= len(migrations) {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for v := current; v < len(migrations); v++ {
+		if _, err := tx.Exec(migrations[v]); err != nil {
+			return err
+		}
+	}
+	// PRAGMA doesn't accept bound parameters, so splice the trusted int directly.
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations))); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 const schema = `
