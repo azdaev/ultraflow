@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.3 — 2026-07-12
+
+- Ultraflow: Audit core agentic logic & MCP
+
 ## v0.10.2 — 2026-07-12
 
 - Ultraflow: Public + private changelog on each release cut
