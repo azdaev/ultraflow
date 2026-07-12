@@ -49,6 +49,36 @@ func TestCompleteTurnMidFlowMarksTurnDone(t *testing.T) {
 	}
 }
 
+// A conflict rebase or review revision happens after the original flow has
+// completed. Its finish must return directly to review instead of treating the
+// historical run as a live step and walking plan/build/critic again.
+func TestCompleteTurnAfterCompletedFlowGoesStraightToReview(t *testing.T) {
+	svc := newTestService(t)
+	task, _ := svc.CreateTaskFull("t", "", "", "claude", "plan-build-critic-gate")
+	if err := svc.StartRun(task.ID, "plan-build-critic-gate", "plan"); err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	_ = svc.UpdateStatus(task.ID, model.StatusRunning)
+	if err := svc.FinishFlow(task.ID); err != nil {
+		t.Fatalf("finish flow: %v", err)
+	}
+	if !svc.QueueRebase(task.ID) {
+		t.Fatal("queue post-review rebase")
+	}
+	_ = svc.UpdateStatus(task.ID, model.StatusRunning)
+
+	if err := svc.CompleteTurn(task.ID, "rebased", "conflicts resolved"); err != nil {
+		t.Fatalf("complete rebase turn: %v", err)
+	}
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusReview {
+		t.Fatalf("completed-flow repair should return to review, got %s", got.Status)
+	}
+	run, ok := svc.Run(task.ID)
+	if !ok || run.Phase != model.RunComplete || run.Cursor != "" {
+		t.Fatalf("historical flow progress changed: %+v (ok=%v)", run, ok)
+	}
+}
+
 // TestRunLifecycle exercises the run cursor + completed tracking the board reads:
 // advancing records completions (deduped across a loop-back) and moves the cursor.
 func TestRunLifecycle(t *testing.T) {

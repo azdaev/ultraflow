@@ -94,11 +94,14 @@ func (s *Service) FinishFlow(taskID string) error {
 //
 //   - No run (a solo task): the guarded finish to review (FinishForReview) — the
 //     unchanged solo path; a task no longer running is rejected.
-//   - A run exists (a flow step): the orchestrator's flow runner owns the
+//   - An active run exists (a flow step): the orchestrator's flow runner owns the
 //     transition, so we only mark the step's turn done and leave the status alone.
 //     On the agent's exit the runner advances the graph, or finishes to review at
 //     a terminal step. Not touching status here is what stops the card flashing to
 //     review between steps.
+//   - A completed run exists: this is a post-review repair (revision or conflict
+//     rebase), not another flow step. Finish directly back to review while keeping
+//     the completed run as historical progress.
 //
 // The caller (mcp finish_task) closes the live session regardless.
 func (s *Service) CompleteTurn(taskID, summary, report string) error {
@@ -110,7 +113,7 @@ func (s *Service) CompleteTurn(taskID, summary, report string) error {
 	}
 	s.appendEvent(taskID, "result", summary)
 
-	if _, ok := s.Run(taskID); ok {
+	if run, ok := s.Run(taskID); ok && run.Phase != model.RunComplete {
 		if !s.SetTurnDone(taskID, true) {
 			return fmt.Errorf("flow step is not active")
 		}
