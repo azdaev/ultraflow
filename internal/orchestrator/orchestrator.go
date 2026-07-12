@@ -52,7 +52,10 @@ func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal
 	}
 	o := &Orchestrator{
 		svc:     svc,
-		agents:  map[string]agent.Agent{"claude": agent.NewClaude(mcpURL)},
+		agents: map[string]agent.Agent{
+			"claude": agent.NewClaude(mcpURL),
+			"codex":  agent.NewCodex(mcpURL),
+		},
 		workdir: workdir,
 		wt:      wt,
 		term:    term,

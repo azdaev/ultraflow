@@ -80,7 +80,7 @@ func (s *Service) CreateTask(title, body, project string) (model.Task, error) {
 // that — the board shows the agent's name and colour on the card, so a task that
 // really ran Claude must not be stored (and later displayed) as "Codex". Blank or
 // not-yet-implemented values normalize to the working defaults.
-var implementedAgents = map[string]bool{"claude": true}
+var implementedAgents = map[string]bool{"claude": true, "codex": true}
 var implementedFlows = map[string]bool{"solo": true}
 
 // CreateTaskFull creates a task, defaulting agent and flow when blank and

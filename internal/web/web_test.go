@@ -96,7 +96,7 @@ func TestCreateAndBoard(t *testing.T) {
 	// A not-yet-implemented agent/flow must be normalized down to what the
 	// orchestrator actually runs, so the stored (and later displayed) values never
 	// claim a task ran an adapter or multi-step flow it didn't.
-	body := `{"title":"do X","body":"b","project":"p","agent":"codex","flow":"tdd"}`
+	body := `{"title":"do X","body":"b","project":"p","agent":"opencode","flow":"tdd"}`
 	res, err := http.Post(ts.URL+"/api/tasks", "application/json", bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)

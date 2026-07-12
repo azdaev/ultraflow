@@ -36,6 +36,11 @@ export function useContextMenu() {
     onOpenChange: setOpen,
     placement: "right-start",
     strategy: "fixed",
+    // Position via top/left, not transform: the panel is a motion.div whose
+    // scale animation owns `transform`. If Floating UI also used transform to
+    // place it, Motion would clobber the translate and the menu would snap to
+    // the page's top-left corner. top/left leaves transform free for the pop.
+    transform: false,
     middleware: [
       offset({ mainAxis: 6, crossAxis: 4 }),
       flip({ fallbackAxisSideDirection: "end", padding: 8 }),

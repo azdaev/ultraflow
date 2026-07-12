@@ -102,12 +102,25 @@ func TestCreateTaskDefaults(t *testing.T) {
 // task used an adapter or multi-step flow that doesn't exist yet.
 func TestCreateTaskNormalizesUnimplemented(t *testing.T) {
 	svc := newTestService(t)
-	task, err := svc.CreateTaskFull("t", "", "proj", "codex", "tdd")
+	task, err := svc.CreateTaskFull("t", "", "proj", "opencode", "tdd")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if task.Agent != "claude" || task.Flow != "solo" {
-		t.Fatalf("expected codex/tdd normalized to claude/solo, got %s/%s", task.Agent, task.Flow)
+		t.Fatalf("expected opencode/tdd normalized to claude/solo, got %s/%s", task.Agent, task.Flow)
+	}
+}
+
+// TestCreateTaskKeepsImplementedAgent verifies a wired adapter (codex) is
+// preserved, not collapsed to the default — so a codex task really runs codex.
+func TestCreateTaskKeepsImplementedAgent(t *testing.T) {
+	svc := newTestService(t)
+	task, err := svc.CreateTaskFull("t", "", "proj", "codex", "solo")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if task.Agent != "codex" {
+		t.Fatalf("expected codex preserved, got %s", task.Agent)
 	}
 }
 

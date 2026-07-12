@@ -104,7 +104,7 @@ export function activeStep(status: TaskStatus, steps: string[]): number {
 // letting a card claim it ran an agent it didn't.
 export const AGENTS = [
   { key: "claude", label: "Claude Code", color: "var(--color-claude)", available: true },
-  { key: "codex", label: "Codex", color: "var(--color-codex)", available: false },
+  { key: "codex", label: "Codex", color: "var(--color-codex)", available: true },
   { key: "opencode", label: "opencode", color: "var(--color-opencode)", available: false },
 ];
 
