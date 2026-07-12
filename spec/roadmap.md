@@ -3,6 +3,28 @@
 Multi-agent + configurable flows are day-one *architecture*. Adapters and UI polish
 land incrementally so we can debug the core loop before fanning out.
 
+## Now — terminal UX
+
+The live terminal exists but the surrounding UX fights it. Fix so the terminal is
+a calm, opt-in "peek at progress", not something to babysit.
+
+- [ ] **Big modal, not a sidebar.** Clicking a card opens a large near-fullscreen
+      modal (overlay), with the terminal taking most of the area and task details
+      secondary — instead of the current cramped right drawer.
+- [ ] **Drop the tool-event list.** The "read this file / used this tool" activity
+      thread under the terminal duplicates what the terminal already shows and the
+      two visually clash. With the live terminal, delete that rendering.
+- [ ] **DB / install / UX audit.** Confirm the SQLite DB in `~/.ultraflow`
+      survives a `brew upgrade` and app restart (data must persist across binary
+      swaps); confirm the daemon shuts down cleanly on kill (no corruption, in-
+      flight tasks recovered); confirm the install is via brew (not a raw local
+      build); and sanity-check that the board UX is intuitive and smooth.
+- [ ] **Session auto-closes on stage completion.** When the agent finishes its
+      turn the session ends itself (→ review) and frees its slot — the human never
+      opens the card to manually stop it. The terminal is only for optionally
+      watching or stepping in; the whole point is not to babysit agents. (Also
+      fixes the interactive session holding a concurrency slot forever.)
+
 ## M0 — Walking skeleton  ← current
 
 Prove the full loop end to end with ONE agent:
@@ -48,6 +70,33 @@ Remaining M0 polish: Gin/goccy refactor; agent-session resume; the sessions tabl
 (Solo) are selectable; the designed-but-unwired flows/adapters show disabled as
 "· soon". Task creation normalizes any other choice down to claude/solo so a
 card can never claim a task ran an agent or multi-step flow it didn't.
+
+## Hardening — from the DB/kill/UX audit
+
+Verified good: the DB lives in `~/.ultraflow` (outside the brew cellar) so it
+**survives `brew upgrade`**; install is correctly **brew-based** and current;
+WAL keeps committed data safe across an unclean kill; `RecoverInFlight` requeues
+in-flight work on restart and spares `review`/`done`. Real gaps to fix:
+
+- [ ] **Schema migrations (do before ANY schema change).** `store.migrate()` is
+      `CREATE TABLE IF NOT EXISTS` only — no `user_version`, no `ALTER`. A future
+      release that adds a column will NOT apply it to existing `~/.ultraflow` DBs,
+      breaking upgraders at the first query. Add a `user_version`-gated migration
+      runner *before* M2 touches the schema. (v0.5.0 changes no schema, so it's
+      safe; this is a landmine for the next schema change.)
+- [ ] **Kill hygiene.** Agents run detached (`Setsid` via creack/pty); on SIGKILL
+      of the daemon `term.CloseAll` never runs, and `KeepAlive=true` respawns the
+      daemon which re-runs `RecoverInFlight` and may re-spawn agents on the same
+      worktree while old ones are still dying (collision window). Kill the process
+      *group* in `Session.Close` (not a single PID) so grandchildren die too.
+- [ ] **DB close / WAL checkpoint on shutdown.** No `db.Close()` anywhere; add one
+      + `wal_checkpoint(TRUNCATE)` on graceful exit for hygiene (SQLite auto-
+      checkpoints, so durability is fine — this is cleanliness, low priority).
+- [ ] **UX dead-ends.** (a) A merge conflict silently returns the card to review
+      with only a tiny inline error — no attention-rail entry, no persisted "why".
+      (b) A `review` task with no worktree (non-git / shared-workdir) shows NO way
+      to finish it — no button, dead end. (c) Composer shows many disabled "· soon"
+      flow/agent options — reads as broken to a first-time user.
 
 ## M2 — Flow engine
 

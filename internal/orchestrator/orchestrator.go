@@ -120,14 +120,22 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		// Flip to running only now the terminal exists, so the card's terminal never
 		// opens to a 404 before the session is registered.
 		o.svc.UpdateStatus(t.ID, model.StatusRunning)
-		o.svc.AppendTaskEvent(t.ID, "status", "running — open the card to watch or type in the live terminal")
+		o.svc.AppendTaskEvent(t.ID, "status", "running — open the card to watch progress (Ctrl-C to interrupt)")
 
-		if err := sess.Wait(); err != nil {
-			log.Printf("task %s failed: %v", t.ID, err)
-			o.fail(t.ID, "agent exited with an error: "+err.Error())
-			return
+		// The normal finish is the agent calling finish_task, which moves the task to
+		// review and closes the session; Wait then returns. So only decide here when
+		// the process exited WITHOUT that signal (status still running/queued):
+		// a non-zero exit is a genuine failure, a clean exit is a human-ended session.
+		werr := sess.Wait()
+		cur, err := o.svc.GetTask(t.ID)
+		if err == nil && (cur.Status == model.StatusRunning || cur.Status == model.StatusQueued) {
+			if werr != nil {
+				log.Printf("task %s: agent exited before finishing: %v", t.ID, werr)
+				o.fail(t.ID, "agent exited before reporting completion: "+werr.Error())
+			} else {
+				o.svc.UpdateStatus(t.ID, model.StatusReview)
+			}
 		}
-		o.svc.UpdateStatus(t.ID, model.StatusReview)
 	}()
 }
 
@@ -179,6 +187,10 @@ IMPORTANT: You have an MCP tool "ask_human". When a decision is irreversible,
 visual, or architectural — or you need the human to review something — do NOT
 guess. Call ask_human with task_id="%s", a clear question, suggested options,
 and helpful context (a diff, a plan, or a screenshot description). It blocks
-until the human replies on the board, then returns their answer.`,
-		t.ID, t.Title, t.Body, t.ID)
+until the human replies on the board, then returns their answer.
+
+WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-
+line summary. That sends your work to review and ends this session — do not sit
+idle at the prompt waiting; call finish_task and stop.`,
+		t.ID, t.Title, t.Body, t.ID, t.ID)
 }

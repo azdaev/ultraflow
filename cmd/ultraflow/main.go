@@ -52,17 +52,17 @@ func main() {
 		log.Printf("recovered %d task(s) left in-flight by a previous run → backlog", n)
 	}
 
-	mcpSrv := mcpserver.New(svc)
+	// Live PTY sessions: the orchestrator runs each agent in a terminal, the web
+	// layer attaches the browser to it over a WebSocket, and finish_task closes it.
+	term := terminal.NewManager()
+
+	mcpSrv := mcpserver.New(svc, term)
 	mcpURL := fmt.Sprintf("http://localhost:%d/mcp", *port)
 
 	// One worktree manager, shared: the orchestrator creates per-task worktrees,
 	// the service merges and tears them down (same root, so they agree on paths).
 	wt := worktree.New(*wtRoot)
 	svc.UseWorktrees(wt)
-
-	// Live PTY sessions: the orchestrator runs each agent in a terminal, the web
-	// layer attaches the browser to it over a WebSocket.
-	term := terminal.NewManager()
 	orch := orchestrator.New(svc, *workdir, wt, term, mcpURL, *maxConc)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

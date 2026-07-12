@@ -10,10 +10,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"ultraflow/internal/core"
+	"ultraflow/internal/model"
+	"ultraflow/internal/terminal"
 )
 
-// New builds the Ultraflow MCP server backed by svc.
-func New(svc *core.Service) *mcp.Server {
+// New builds the Ultraflow MCP server backed by svc. term lets finish_task end
+// the agent's live session so a completed task frees its concurrency slot.
+func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "ultraflow", Version: "0.1.0"}, nil)
 
 	type createArgs struct {
@@ -77,6 +80,32 @@ func New(svc *core.Service) *mcp.Server {
 			return nil, nil, err
 		}
 		return text(ans), nil, nil
+	})
+
+	type finishArgs struct {
+		TaskID  string `json:"task_id" jsonschema:"the id of the task you are working on (given at start)"`
+		Summary string `json:"summary" jsonschema:"one line: what you did, so the human can review"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "finish_task",
+		Description: "Call this ONCE when the task is fully complete. It sends the work to review and " +
+			"ENDS your session — you do not need to keep the terminal open or wait. Do not call it before " +
+			"the task is actually done.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a finishArgs) (*mcp.CallToolResult, any, error) {
+		summary := a.Summary
+		if summary == "" {
+			summary = "agent reported the task complete"
+		}
+		svc.AppendTaskEvent(a.TaskID, "result", summary)
+		if err := svc.UpdateStatus(a.TaskID, model.StatusReview); err != nil {
+			return nil, nil, err
+		}
+		// End the live session so the slot frees. Close asynchronously: closing kills
+		// this agent's own process, and we want this tool call to return first.
+		if sess, ok := term.Get(a.TaskID); ok {
+			go sess.Close()
+		}
+		return text("Recorded complete and sent to review. Your session is ending — you can stop now."), nil, nil
 	})
 
 	return s

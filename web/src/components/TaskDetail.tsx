@@ -14,11 +14,16 @@ interface Props {
   onClose: () => void;
 }
 
-// TaskDetail is the context-immersion drawer: flow stepper, the event THREAD,
-// a DETAILS card, and — when the task is waiting — the live decision panel.
+// TaskDetail is a large, near-fullscreen modal: the live terminal takes most of
+// the space (that IS the activity view — no duplicated tool-by-tool thread), with
+// task details and the decision panel in a side rail.
 export function TaskDetail({ task, request, activitySig, now, onClose }: Props) {
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const taskId = task?.id;
+  const live = task?.status === "running" || task?.status === "needs_human";
+  // We only surface errors now — the terminal shows tool activity live, so the
+  // old event thread was redundant. Errors matter for a failed card (no terminal).
+  const errors = events.filter((e) => e.kind === "error");
 
   useEffect(() => {
     if (!taskId) return;
@@ -41,28 +46,28 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
   return (
     <AnimatePresence>
       {task && (
-        <div className="fixed inset-0 z-40">
+        <div className="fixed inset-0 z-40 grid place-items-center p-4 sm:p-6">
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="absolute inset-0 bg-ink/20 backdrop-blur-[2px]"
+            className="absolute inset-0 bg-ink/30 backdrop-blur-[2px]"
           />
-          <motion.aside
-            initial={{ x: "100%" }}
-            animate={{ x: 0 }}
-            exit={{ x: "100%" }}
-            transition={{ type: "spring", stiffness: 300, damping: 34 }}
-            className="absolute right-0 top-0 flex h-full w-full max-w-[560px] flex-col border-l border-hairline bg-board shadow-2xl"
+          <motion.div
+            initial={{ opacity: 0, scale: 0.97, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: 8 }}
+            transition={{ type: "spring", stiffness: 320, damping: 30 }}
+            className="relative flex h-[90vh] w-full max-w-[1200px] flex-col overflow-hidden rounded-2xl border border-hairline bg-board shadow-2xl"
           >
             {/* header */}
-            <div className="flex items-start justify-between gap-4 border-b border-hairline bg-surface px-5 py-4">
+            <div className="flex items-start justify-between gap-4 border-b border-hairline bg-surface px-6 py-4">
               <div className="min-w-0">
                 <p className="font-mono text-[11px] text-muted">
                   {task.id} · {task.status}
                 </p>
-                <h2 className="mt-1 text-[19px] font-semibold leading-snug text-ink">
+                <h2 className="mt-1 truncate text-[19px] font-semibold leading-snug text-ink">
                   {task.title}
                 </h2>
                 <div className="mt-3">
@@ -77,33 +82,78 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
               </button>
             </div>
 
-            {/* body */}
-            <div className="flex-1 overflow-y-auto px-5 py-4">
-              {/* live decision panel */}
-              {request && (
-                <div className="mb-5 rounded-xl border border-accent-line bg-surface p-4">
-                  <div className="mb-1.5 flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-accent" />
-                    <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-accent">
-                      Needs you · waiting {ago(request.createdAt, now)}
-                    </span>
+            {/* body: terminal dominates, details in a side rail */}
+            <div className="flex min-h-0 flex-1">
+              {/* main — the live terminal (that IS the activity view) */}
+              <div className="flex min-w-0 flex-1 flex-col p-4">
+                {live ? (
+                  <>
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="relative flex h-1.5 w-1.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-moss opacity-60" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-moss" />
+                      </span>
+                      <h3 className="eyebrow text-muted">
+                        Terminal · live — watch progress, Ctrl-C to interrupt
+                      </h3>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-hairline bg-[#17171A] p-2">
+                      <AgentTerminal taskId={task.id} />
+                    </div>
+                  </>
+                ) : (
+                  <div className="grid flex-1 place-items-center rounded-xl border border-dashed border-hairline text-center">
+                    <div className="max-w-sm px-6">
+                      <p className="text-[14px] font-medium text-ink">
+                        No live session
+                      </p>
+                      <p className="mt-1 text-[13px] leading-relaxed text-muted">
+                        The terminal appears here while the agent is running. This
+                        task is <span className="text-ink">{task.status}</span>.
+                      </p>
+                    </div>
                   </div>
-                  <p className="text-[16px] font-semibold leading-snug text-ink">
-                    {request.question}
-                  </p>
-                  {request.context && (
-                    <p className="mt-1.5 rounded-lg bg-board px-2.5 py-1.5 text-[12px] leading-relaxed text-muted">
-                      {request.context}
-                    </p>
-                  )}
-                  <div className="mt-2">
-                    <AnswerBox request={request} />
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
 
-              {/* details card */}
-              <div className="mb-5 rounded-xl border border-hairline bg-surface p-4">
+              {/* side rail — decision + details */}
+              <aside className="w-[320px] shrink-0 overflow-y-auto border-l border-hairline bg-surface px-5 py-4">
+                {request && (
+                  <div className="mb-5 rounded-xl border border-accent-line bg-board p-4">
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-accent" />
+                      <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-accent">
+                        Needs you · waiting {ago(request.createdAt, now)}
+                      </span>
+                    </div>
+                    <p className="text-[15px] font-semibold leading-snug text-ink">
+                      {request.question}
+                    </p>
+                    {request.context && (
+                      <p className="mt-1.5 rounded-lg bg-surface px-2.5 py-1.5 text-[12px] leading-relaxed text-muted">
+                        {request.context}
+                      </p>
+                    )}
+                    <div className="mt-2">
+                      <AnswerBox request={request} />
+                    </div>
+                  </div>
+                )}
+
+                {errors.length > 0 && (
+                  <div className="mb-5 rounded-xl border border-rust/40 bg-board p-4">
+                    <h3 className="eyebrow mb-2 text-rust">Why it failed</h3>
+                    {errors.map((e) => (
+                      <p
+                        key={e.id}
+                        className="font-mono text-[12px] leading-relaxed text-rust"
+                      >
+                        {e.data}
+                      </p>
+                    ))}
+                  </div>
+                )}
+
                 <h3 className="eyebrow mb-3 text-muted">Details</h3>
                 <dl className="grid grid-cols-2 gap-y-2.5 text-[13px]">
                   <Detail label="Agent">
@@ -129,29 +179,9 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                     {task.body}
                   </p>
                 )}
-              </div>
-
-              {/* live terminal — a real interactive session while the agent runs */}
-              {(task.status === "running" || task.status === "needs_human") && (
-                <div className="mb-5">
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="relative flex h-1.5 w-1.5">
-                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-moss opacity-60" />
-                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-moss" />
-                    </span>
-                    <h3 className="eyebrow text-muted">Terminal · live — type to steer, Ctrl-C to interrupt</h3>
-                  </div>
-                  <div className="h-[380px] overflow-hidden rounded-xl border border-hairline bg-[#17171A] p-2">
-                    <AgentTerminal taskId={task.id} />
-                  </div>
-                </div>
-              )}
-
-              {/* thread */}
-              <h3 className="eyebrow mb-3 text-muted">Thread</h3>
-              <Thread events={events} now={now} />
+              </aside>
             </div>
-          </motion.aside>
+          </motion.div>
         </div>
       )}
     </AnimatePresence>
@@ -175,74 +205,3 @@ function Detail({
   );
 }
 
-function Thread({ events, now }: { events: TaskEvent[]; now: number }) {
-  if (events.length === 0) {
-    return <p className="text-[13px] text-muted/70">No activity yet.</p>;
-  }
-  return (
-    <ol className="relative ml-1 border-l border-hairline">
-      {events.map((e) => (
-        <li key={e.id} className="relative py-2 pl-5">
-          <span
-            className="absolute -left-[5px] top-3.5 h-2 w-2 rounded-full"
-            style={{ backgroundColor: kindColor(e.kind) }}
-          />
-          <div className="flex items-baseline justify-between gap-3">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted/70">
-              {kindLabel(e.kind)}
-            </span>
-            <span className="shrink-0 font-mono text-[10px] text-muted/60">
-              {ago(e.createdAt, now)}
-            </span>
-          </div>
-          <p
-            className={`mt-0.5 text-[13px] leading-relaxed ${
-              e.kind === "tool"
-                ? "font-mono text-[12px] text-muted"
-                : e.kind === "error"
-                  ? "font-mono text-[12px] text-rust"
-                  : "text-ink"
-            }`}
-          >
-            {e.data}
-          </p>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-function kindColor(kind: string): string {
-  switch (kind) {
-    case "human_request":
-    case "human_answer":
-      return "var(--color-accent)";
-    case "result":
-      return "var(--color-moss)";
-    case "tool":
-      return "var(--color-steel)";
-    case "error":
-      return "var(--color-rust)";
-    default:
-      return "var(--color-muted)";
-  }
-}
-
-function kindLabel(kind: string): string {
-  switch (kind) {
-    case "human_request":
-      return "asked you";
-    case "human_answer":
-      return "you answered";
-    case "tool":
-      return "action";
-    case "result":
-      return "result";
-    case "message":
-      return "note";
-    case "error":
-      return "failed";
-    default:
-      return kind;
-  }
-}

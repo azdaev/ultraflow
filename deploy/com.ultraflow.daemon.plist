@@ -19,11 +19,13 @@
   </array>
 
   <!-- launchd starts with a bare PATH; the daemon shells out to `claude` and
-       `git`, so make both reachable. -->
+       `git`, so make both reachable. ~/.local/bin holds the real `claude`
+       binary (the ~/.superset/bin one is a wrapper that delegates to it), so
+       both dirs must be present or agents die with exit 127. -->
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/Users/amady/.superset/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/Users/amady/.superset/bin:/Users/amady/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
 
   <key>WorkingDirectory</key>
