@@ -56,6 +56,7 @@ var migrations = []string{
 	humanContextSchema, // migration 5: human_requests added/removed/files/shots
 	resumeSchema,       // migration 6: tasks.resume
 	runsSchema,         // migration 7: runs (multi-step flow progress)
+	runPhaseSchema,     // migration 8: explicit recoverable step lifecycle
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -195,6 +196,11 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 `
 
+// Existing runs predate explicit phases. They are conservatively pending: the
+// cursor is preserved, but we do not claim a session exists unless a subsequent
+// launch records it as active.
+const runPhaseSchema = `ALTER TABLE runs ADD COLUMN phase TEXT NOT NULL DEFAULT 'pending';`
+
 // --- runs (multi-step flow progress) ---
 
 // CreateRun starts (or resets) a task's flow run at the given cursor. It upserts,
@@ -202,10 +208,10 @@ CREATE TABLE IF NOT EXISTS runs (
 // erroring — a retry of a flow task restarts its walk cleanly.
 func (s *Store) CreateRun(taskID, flow, cursor string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO runs (task_id,flow,cursor,completed,turn_done,updated_at)
-		 VALUES (?,?,?,'[]',0,?)
+		`INSERT INTO runs (task_id,flow,cursor,completed,turn_done,phase,updated_at)
+		 VALUES (?,?,?,'[]',0,'pending',?)
 		 ON CONFLICT(task_id) DO UPDATE SET flow=excluded.flow, cursor=excluded.cursor,
-		   completed='[]', turn_done=0, updated_at=excluded.updated_at`,
+		   completed='[]', turn_done=0, phase='pending', updated_at=excluded.updated_at`,
 		taskID, flow, cursor, time.Now())
 	return err
 }
@@ -216,8 +222,8 @@ func (s *Store) GetRun(taskID string) (model.Run, bool, error) {
 	var completed string
 	var turnDone int
 	err := s.db.QueryRow(
-		`SELECT task_id,flow,cursor,completed,turn_done,updated_at FROM runs WHERE task_id=?`, taskID,
-	).Scan(&r.TaskID, &r.Flow, &r.Cursor, &completed, &turnDone, &r.UpdatedAt)
+		`SELECT task_id,flow,cursor,completed,turn_done,phase,updated_at FROM runs WHERE task_id=?`, taskID,
+	).Scan(&r.TaskID, &r.Flow, &r.Cursor, &completed, &turnDone, &r.Phase, &r.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return model.Run{}, false, nil
 	}
@@ -242,7 +248,7 @@ func (s *Store) AdvanceRun(taskID, completedStep, next string) error {
 	}
 	blob, _ := json.Marshal(r.Completed)
 	_, err = s.db.Exec(
-		`UPDATE runs SET cursor=?, completed=?, turn_done=0, updated_at=? WHERE task_id=?`,
+		`UPDATE runs SET cursor=?, completed=?, turn_done=0, phase='pending', updated_at=? WHERE task_id=?`,
 		next, string(blob), time.Now(), taskID)
 	return err
 }
@@ -250,21 +256,36 @@ func (s *Store) AdvanceRun(taskID, completedStep, next string) error {
 // SetRunCursor moves the cursor without recording a completion — used when the
 // orchestrator (re)enters a step, e.g. resuming after a restart or routing a gate.
 func (s *Store) SetRunCursor(taskID, cursor string) error {
-	_, err := s.db.Exec(`UPDATE runs SET cursor=?, turn_done=0, updated_at=? WHERE task_id=?`,
+	_, err := s.db.Exec(`UPDATE runs SET cursor=?, turn_done=0, phase='pending', updated_at=? WHERE task_id=?`,
 		cursor, time.Now(), taskID)
+	return err
+}
+
+func (s *Store) SetRunPhase(taskID string, phase model.RunPhase) error {
+	_, err := s.db.Exec(`UPDATE runs SET phase=?, updated_at=? WHERE task_id=?`, phase, time.Now(), taskID)
 	return err
 }
 
 // SetRunTurnDone flips the transient flag the orchestrator reads after a step's
 // agent exits: true means the agent ended its turn on purpose (finish_task or an
 // idle turn-end) so the flow should advance; false is the fresh-step default.
-func (s *Store) SetRunTurnDone(taskID string, done bool) error {
+func (s *Store) SetRunTurnDone(taskID string, done bool) (bool, error) {
 	v := 0
 	if done {
 		v = 1
 	}
-	_, err := s.db.Exec(`UPDATE runs SET turn_done=?, updated_at=? WHERE task_id=?`, v, time.Now(), taskID)
-	return err
+	query := `UPDATE runs SET turn_done=?, updated_at=? WHERE task_id=?`
+	if done {
+		// Only the currently live step may finish. This rejects stale MCP calls
+		// arriving after the graph advanced, while at a gate, or after completion.
+		query += ` AND phase='active'`
+	}
+	res, err := s.db.Exec(query, v, time.Now(), taskID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // DeleteRun removes a task's run row (called when the task is deleted, so no
@@ -281,7 +302,7 @@ func (s *Store) RunsForTasks(ids []string) (map[string]model.Run, error) {
 	if len(ids) == 0 {
 		return out, nil
 	}
-	q := `SELECT task_id,flow,cursor,completed,turn_done,updated_at FROM runs WHERE task_id IN (?` +
+	q := `SELECT task_id,flow,cursor,completed,turn_done,phase,updated_at FROM runs WHERE task_id IN (?` +
 		strings.Repeat(",?", len(ids)-1) + `)`
 	args := make([]any, len(ids))
 	for i, id := range ids {
@@ -296,7 +317,7 @@ func (s *Store) RunsForTasks(ids []string) (map[string]model.Run, error) {
 		var r model.Run
 		var completed string
 		var turnDone int
-		if err := rows.Scan(&r.TaskID, &r.Flow, &r.Cursor, &completed, &turnDone, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.TaskID, &r.Flow, &r.Cursor, &completed, &turnDone, &r.Phase, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(completed), &r.Completed)

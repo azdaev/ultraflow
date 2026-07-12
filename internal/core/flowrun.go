@@ -44,6 +44,12 @@ func (s *Service) SetRunCursor(taskID, cursor string) {
 	s.publishRun(taskID)
 }
 
+func (s *Service) SetRunPhase(taskID string, phase model.RunPhase) {
+	if err := s.store.SetRunPhase(taskID, phase); err != nil {
+		log.Printf("task %s: set run phase: %v", taskID, err)
+	}
+}
+
 // AdvanceRun records the step just finished and moves the cursor to the next one,
 // then publishes the new progress. completedStep is the step left; next is the
 // step entered.
@@ -58,10 +64,12 @@ func (s *Service) AdvanceRun(taskID, completedStep, next string) {
 // SetTurnDone flips the transient per-step flag the orchestrator reads after a
 // step agent exits (true = the agent ended its turn deliberately, so advance;
 // false = the fresh-step default set when a step (re)starts).
-func (s *Service) SetTurnDone(taskID string, done bool) {
-	if err := s.store.SetRunTurnDone(taskID, done); err != nil {
+func (s *Service) SetTurnDone(taskID string, done bool) bool {
+	changed, err := s.store.SetRunTurnDone(taskID, done)
+	if err != nil {
 		log.Printf("task %s: set turn done: %v", taskID, err)
 	}
+	return changed
 }
 
 // FinishFlow completes a multi-step flow: the cursor is cleared (every step done)
@@ -74,6 +82,7 @@ func (s *Service) FinishFlow(taskID string) error {
 		log.Printf("task %s: finish flow cursor: %v", taskID, err)
 	}
 	s.publishRun(taskID)
+	s.SetRunPhase(taskID, model.RunComplete)
 	if s.FinishForReview(taskID) {
 		s.appendEvent(taskID, "result", "flow complete — sent to review")
 	}
@@ -102,7 +111,9 @@ func (s *Service) CompleteTurn(taskID, summary, report string) error {
 	s.appendEvent(taskID, "result", summary)
 
 	if _, ok := s.Run(taskID); ok {
-		s.SetTurnDone(taskID, true)
+		if !s.SetTurnDone(taskID, true) {
+			return fmt.Errorf("flow step is not active")
+		}
 		return nil
 	}
 	if !s.FinishForReview(taskID) {

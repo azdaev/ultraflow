@@ -52,10 +52,14 @@ between steps).
 
 ## Persistence & resume
 
-One `runs` row per multi-step task: `flow, cursor, completed[], turn_done`. The
-cursor is persisted every step, so `RecoverInFlight` (which requeues in-flight
-tasks) resumes a restarted flow at the step it was on — the run row is kept, not
-cleared. The board reads `RunProgress` (index, total, sub-agent, gate, caption)
+One `runs` row per multi-step task: `flow, cursor, completed[], phase, turn_done`.
+The explicit persisted phase is `pending`, `active`, `waiting`, or `complete`.
+Recovery cold-starts a pending step, but resumes an interrupted active step's
+session with a compact continuation prompt. Gates and escalations remain waiting;
+only an active step can accept `finish_task`, so a late call from an old agent
+cannot advance a newer cursor. The cursor is persisted every step, so
+`RecoverInFlight` resumes at that step — the run row is kept, not cleared. The
+board reads `RunProgress` (index, total, sub-agent, gate, caption)
 from the cursor + graph; the card's stepper lights the live step and captions it
 ("Build · step 2 of 4 · critic + your gate next").
 

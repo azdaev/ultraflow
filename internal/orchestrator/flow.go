@@ -42,16 +42,18 @@ func (o *Orchestrator) runFlow(ctx context.Context, t model.Task, dir string, pr
 	defer o.endHeal(t.ID)
 
 	cursor := fl.Start
+	resume := false
 	if run, ok := o.svc.Run(t.ID); ok {
 		if run.Cursor == "" {
 			return // the run already completed — nothing to resume
 		}
 		cursor = run.Cursor
+		resume = run.Phase == model.RunActive
 		o.svc.AppendTaskEvent(t.ID, "status", "resuming flow at the "+stepRole(fl, cursor)+" step")
 	} else {
 		o.svc.StartRun(t.ID, fl.Key, fl.Start)
 	}
-	o.walkFlow(ctx, t, dir, prt, fl, cursor, "", false)
+	o.walkFlow(ctx, t, dir, prt, fl, cursor, "", resume)
 }
 
 // walkFlow is the graph loop, shared by a fresh run and by the answer-driven
@@ -70,9 +72,8 @@ func (o *Orchestrator) walkFlow(ctx context.Context, t model.Task, dir string, p
 			_ = o.svc.FinishFlow(t.ID)
 			return
 		}
-		o.svc.SetRunCursor(t.ID, cursor)
-
 		if step.Gate {
+			o.svc.SetRunPhase(t.ID, model.RunWaiting)
 			o.openGate(t, fl, step)
 			return // parked for the human; an answer re-enters via resumeGate
 		}
@@ -118,6 +119,9 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 		// Fresh per-turn: a step is done only once finish_task or an idle turn-end
 		// flips this. A bare crash leaves it false, which is how we tell the two apart.
 		o.svc.SetTurnDone(t.ID, false)
+		// Persist before process creation. If the daemon dies after this point,
+		// recovery resumes this step's session with a compact continuation prompt.
+		o.svc.SetRunPhase(t.ID, model.RunActive)
 
 		var (
 			cmd     *exec.Cmd
@@ -126,9 +130,13 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 		)
 		switch {
 		case retries == 0 && resume:
-			// Re-entering this step after a human answered its escalation: keep the
-			// agent's memory via --continue and seed the guidance.
-			cmd, cleanup, err = ia.ResumeCommand(ctx, dir, o.buildStepReengagePrompt(t, step, seed))
+			// A persisted active phase means the daemon interrupted an already-started
+			// session. Human-guided re-entry also resumes, but carries the answer.
+			if seed == "" {
+				cmd, cleanup, err = ia.ResumeCommand(ctx, dir, o.buildStepRestartPrompt(t, step))
+			} else {
+				cmd, cleanup, err = ia.ResumeCommand(ctx, dir, o.buildStepReengagePrompt(t, step, seed))
+			}
 		case retries == 0:
 			cmd, cleanup, err = ia.Command(ctx, dir, o.buildStepPrompt(t, fl, step, prt, seed))
 		default:
@@ -164,6 +172,7 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 		// A genuine crash. Retry the step in place (resuming its conversation) up to
 		// the budget, then escalate to the human as an ordinary checkpoint.
 		if retries >= budget {
+			o.svc.SetRunPhase(t.ID, model.RunWaiting)
 			o.escalate(t.ID, budget, werr.Error())
 			return stepHalted
 		}
@@ -222,7 +231,9 @@ func (o *Orchestrator) watchStepIdle(sess *terminal.Session, taskID string) {
 			if cur, _ := o.svc.GetTask(taskID); cur.Status != model.StatusRunning {
 				continue // parked on a mid-step ask_human — leave it be
 			}
-			o.svc.SetTurnDone(taskID, true)
+			if !o.svc.SetTurnDone(taskID, true) {
+				return
+			}
 			o.svc.AppendTaskEvent(taskID, "status", "step ended its turn — advancing the flow")
 			sess.Close()
 			return

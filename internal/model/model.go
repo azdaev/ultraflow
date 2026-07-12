@@ -32,31 +32,31 @@ type Project struct {
 
 // Task is a unit of work an agent runs, shown as a card on the board.
 type Task struct {
-	ID        string     `json:"id"`
-	Title     string     `json:"title"`
-	Body      string     `json:"body"`
-	Project   string     `json:"project"`
-	Agent     string     `json:"agent"` // which CLI adapter: claude, codex, opencode
-	Flow      string     `json:"flow"`  // flow preset name
-	Status    TaskStatus `json:"status"`
-	Worktree  string     `json:"worktree"`
+	ID       string     `json:"id"`
+	Title    string     `json:"title"`
+	Body     string     `json:"body"`
+	Project  string     `json:"project"`
+	Agent    string     `json:"agent"` // which CLI adapter: claude, codex, opencode
+	Flow     string     `json:"flow"`  // flow preset name
+	Status   TaskStatus `json:"status"`
+	Worktree string     `json:"worktree"`
 	// Self-heal sub-state. On an agent error the orchestrator auto-diagnoses and
 	// re-runs the task up to MaxAttempts times while it STAYS `running` — Attempt is
 	// how many auto-retries it has spent (0 = the original run, no sub-state; k>0 =
 	// on its k-th retry, shown as "fixing itself · k/N"). Only when the budget is
 	// exhausted does it escalate to the human; failure is a card state, not a
 	// destination (see spec.md "Failure self-heals").
-	Attempt     int       `json:"attempt"`
-	MaxAttempts int       `json:"maxAttempts"`
-	Port        int       `json:"port"` // dev-server port reserved for this task (0 = none)
+	Attempt     int `json:"attempt"`
+	MaxAttempts int `json:"maxAttempts"`
+	Port        int `json:"port"` // dev-server port reserved for this task (0 = none)
 	// Resume marks a task a daemon restart interrupted mid-run: the orchestrator
 	// picks it back up IN PLACE (same worktree, and for claude the same
 	// conversation via --continue) instead of pruning and starting it over. Set by
 	// store.RecoverInFlight at startup, cleared when the resume launches. A one-shot
 	// recovery signal, not a lifecycle state.
-	Resume      bool      `json:"resume"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	Resume    bool      `json:"resume"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Run is a task's progress through a multi-step flow: which flow it's walking,
@@ -68,13 +68,25 @@ type Task struct {
 // advance the graph rather than treat the agent's exit as a crash. Persisting
 // Cursor is what lets a daemon restart resume mid-flow instead of from step one.
 type Run struct {
-	TaskID    string    `json:"taskId"`
-	Flow      string    `json:"flow"`
-	Cursor    string    `json:"cursor"` // current step id; "" once the flow is complete
-	Completed []string  `json:"completed"`
-	TurnDone  bool      `json:"-"`
+	TaskID    string   `json:"taskId"`
+	Flow      string   `json:"flow"`
+	Cursor    string   `json:"cursor"` // current step id; "" once the flow is complete
+	Completed []string `json:"completed"`
+	TurnDone  bool     `json:"-"`
+	// Phase makes recovery deterministic. In particular, a cursor alone cannot
+	// distinguish "step selected but never launched" from "agent was interrupted".
+	Phase     RunPhase  `json:"-"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
+
+type RunPhase string
+
+const (
+	RunPending  RunPhase = "pending" // cursor selected; no agent session started yet
+	RunActive   RunPhase = "active"  // step agent was launched; restart must resume it
+	RunWaiting  RunPhase = "waiting" // parked at a gate or after an escalation
+	RunComplete RunPhase = "complete"
+)
 
 // RunProgress is the board-facing view of a task's flow run: enough for the card's
 // stepper to light the LIVE active step and caption it, derived server-side from
