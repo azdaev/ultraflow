@@ -1,16 +1,87 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type TaskDiff } from "../api";
+import { Markdown } from "./Markdown";
 
 // Files whose changes are likely visual — used only to nudge "you changed UI but
 // left no screenshots", never to block anything.
 const VISUAL_EXT = /\.(tsx?|jsx?|css|scss|sass|less|html|vue|svelte)$/i;
 
-// ReviewPanel is what makes the review screen useful: the actual work the agent
-// did. Screenshots it captured (for visual changes) up top, then the code diff
-// (magnitude first, raw patch collapsible — the human rarely reads code). Shown
-// for a task that has a worktree and isn't live. `sig` changes when a new event
-// lands so a rework's fresh diff/shots reload.
-export function ReviewPanel({ taskId, sig }: { taskId: string; sig?: string }) {
+// ReviewPanel is the review screen's content: the agent's Report (native Markdown
+// writeup — for a question/audit task this IS the deliverable) and, when the task
+// touched a worktree, the Changes (screenshots + code diff). Tabs keep both a tap
+// apart. `report` is the agent's finish_task writeup; `hasWorktree` gates the diff
+// side. `sig` changes when a new event lands so a rework's fresh diff/shots reload.
+export function ReviewPanel({
+  taskId,
+  sig,
+  report,
+  hasWorktree,
+}: {
+  taskId: string;
+  sig?: string;
+  report?: string;
+  hasWorktree: boolean;
+}) {
+  const tabs = useMemo(() => {
+    const t: { key: "report" | "changes"; label: string; icon: string }[] = [];
+    if (report) t.push({ key: "report", label: "Report", icon: "¶" });
+    if (hasWorktree) t.push({ key: "changes", label: "Changes", icon: "±" });
+    return t;
+  }, [report, hasWorktree]);
+
+  const [tab, setTab] = useState<"report" | "changes">(tabs[0]?.key ?? "report");
+  // Until the human picks a tab, follow the preferred default (tabs[0] — Report
+  // when there is one). Events load async, so on a code task the report often
+  // arrives after first mount; without this the view would stick on Changes.
+  const touched = useRef(false);
+  useEffect(() => {
+    if (!tabs.length) return;
+    if (touched.current) {
+      if (!tabs.some((t) => t.key === tab)) setTab(tabs[0].key); // stay valid
+    } else if (tabs[0].key !== tab) {
+      setTab(tabs[0].key);
+    }
+  }, [tabs, tab]);
+  const pick = (k: "report" | "changes") => {
+    touched.current = true;
+    setTab(k);
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {tabs.length > 1 && (
+        <div className="mb-3 flex shrink-0 gap-1 border-b border-hairline">
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => pick(t.key)}
+              className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-[13px] font-medium transition ${
+                tab === t.key
+                  ? "border-ink text-ink"
+                  : "border-transparent text-muted hover:text-ink"
+              }`}
+            >
+              <span className="font-mono text-[12px] opacity-60">{t.icon}</span>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === "report" && report && (
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          <Markdown text={report} />
+        </div>
+      )}
+
+      {tab === "changes" && hasWorktree && <Changes taskId={taskId} sig={sig} />}
+    </div>
+  );
+}
+
+// Changes is the code-review surface: screenshots the agent captured (visual
+// changes) up top, then the diff (magnitude first, raw patch collapsible).
+function Changes({ taskId, sig }: { taskId: string; sig?: string }) {
   const [diff, setDiff] = useState<TaskDiff | null>(null);
   const [shots, setShots] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);

@@ -87,17 +87,26 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 	type finishArgs struct {
 		TaskID  string `json:"task_id" jsonschema:"the id of the task you are working on (given at start)"`
 		Summary string `json:"summary" jsonschema:"one line: what you did, so the human can review"`
+		Report  string `json:"report" jsonschema:"the full result of the task written as Markdown for the human to read on the review screen: for a question or audit, the answer and findings; for a code change, what you did and why and anything to check. Always write it — this is where the human reads your work, not the terminal."`
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "finish_task",
 		Description: "Call this ONCE when the task is fully complete. It sends the work to review and " +
 			"ENDS your session — you do not need to keep the terminal open or wait. Do not call it before " +
-			"the task is actually done. If you changed anything VISUAL, first save screenshots (PNG) into " +
-			".ultraflow/shots/ in your working directory so the human sees them on the review screen.",
+			"the task is actually done. ALWAYS pass `report`: a Markdown writeup of the result — it is shown " +
+			"natively on the review screen and is how the human reads your work (the terminal is not kept). " +
+			"For a question or audit task the report IS the deliverable. If you changed anything VISUAL, also " +
+			"save screenshots (PNG) into .ultraflow/shots/ in your working directory so they show on review.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, a finishArgs) (*mcp.CallToolResult, any, error) {
 		summary := a.Summary
 		if summary == "" {
 			summary = "agent reported the task complete"
+		}
+		// Report first so the one-line summary stays the task's latest non-empty
+		// event — that's what the board card's activity strip shows, and a full
+		// Markdown report there would swamp it.
+		if a.Report != "" {
+			svc.AppendTaskEvent(a.TaskID, "report", a.Report)
 		}
 		svc.AppendTaskEvent(a.TaskID, "result", summary)
 		if err := svc.UpdateStatus(a.TaskID, model.StatusReview); err != nil {

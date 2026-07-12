@@ -25,10 +25,14 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
   const live = task?.status === "running" || task?.status === "needs_human";
   // Send-back is available whenever the agent has parked the task for a decision.
   const canRevise = task?.status === "review" || task?.status === "failed";
-  // Review is a real screen now: once the agent has parked a task that still has
-  // an inspectable worktree, show what it did (screenshots + diff). Excludes a
-  // merged `done` task whose worktree was already torn down.
-  const showReview = canRevise && !!task?.worktree;
+  // The agent's Markdown writeup from finish_task (latest wins after a rework).
+  // For a question/audit task this is the whole deliverable — there's no diff.
+  const report = events.filter((e) => e.kind === "report").pop()?.data;
+  // Review is a real screen: once the agent parks a task, show what it did — its
+  // report and, when it touched a worktree, the diff. A question task has a report
+  // but no worktree; a code task may have either or both. Excludes a merged `done`
+  // task whose worktree was torn down and that left no report.
+  const showReview = canRevise && (!!task?.worktree || !!report);
   // We only surface errors now — the terminal shows tool activity live, so the
   // old event thread was redundant. Errors matter for a failed card (no terminal).
   const errors = events.filter((e) => e.kind === "error");
@@ -78,9 +82,11 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                 <h2 className="mt-1 truncate text-[19px] font-semibold leading-snug text-ink">
                   {task.title}
                 </h2>
-                <div className="mt-3">
-                  <FlowStepper flow={task.flow} status={task.status} size="lg" />
-                </div>
+                {flowOf(task.flow).steps.length > 1 && (
+                  <div className="mt-3">
+                    <FlowStepper flow={task.flow} status={task.status} size="lg" />
+                  </div>
+                )}
               </div>
               <button
                 onClick={onClose}
@@ -113,11 +119,14 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                   <>
                     <div className="mb-2 flex items-center gap-2">
                       <span className="h-1.5 w-1.5 rounded-full bg-moss" />
-                      <h3 className="eyebrow text-muted">
-                        What the agent did — review the changes
-                      </h3>
+                      <h3 className="eyebrow text-muted">What the agent did</h3>
                     </div>
-                    <ReviewPanel taskId={task.id} sig={activitySig} />
+                    <ReviewPanel
+                      taskId={task.id}
+                      sig={activitySig}
+                      report={report}
+                      hasWorktree={!!task.worktree}
+                    />
                   </>
                 ) : (
                   <div className="grid flex-1 place-items-center rounded-xl border border-dashed border-hairline text-center">
