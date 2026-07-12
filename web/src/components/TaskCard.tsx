@@ -215,6 +215,23 @@ function StatusLabel({ task, now }: { task: Task; now: number }) {
   switch (task.status) {
     case "running":
     case "planning":
+      // Self-heal sub-state: an agent that errored is auto-diagnosing and retrying.
+      // It STAYS running (never a red card) — surface "fixing itself · k/N" instead
+      // of a plain "Running" so the human sees it working through the problem.
+      if (task.status === "running" && task.attempt > 0) {
+        return (
+          <span className="flex items-center gap-1.5">
+            <motion.span
+              className="h-2.5 w-2.5 rounded-full border-[1.5px] border-steel border-t-transparent"
+              animate={{ rotate: 360 }}
+              transition={{ repeat: Infinity, ease: "linear", duration: 0.9 }}
+            />
+            <span className="text-[12px] font-semibold text-steel">
+              Fixing itself · {task.attempt}/{task.maxAttempts}
+            </span>
+          </span>
+        );
+      }
       return (
         <Label dot="bg-steel" text="text-steel">
           {task.status === "planning" ? "Planning" : "Running"}

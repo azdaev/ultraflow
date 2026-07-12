@@ -22,6 +22,53 @@ func newTestService(t *testing.T) *Service {
 	return NewService(st)
 }
 
+// TestSelfHealAttemptFields covers the self-heal sub-state on the model: a new task
+// gets the default retry budget and starts at attempt 0, and SetAttempt persists the
+// counter the board renders as "fixing itself · k/N".
+func TestSelfHealAttemptFields(t *testing.T) {
+	svc := newTestService(t)
+	task, err := svc.CreateTask("t", "", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if task.MaxAttempts != DefaultMaxAttempts {
+		t.Fatalf("new task MaxAttempts = %d; want %d", task.MaxAttempts, DefaultMaxAttempts)
+	}
+	if task.Attempt != 0 {
+		t.Fatalf("new task Attempt = %d; want 0", task.Attempt)
+	}
+
+	svc.SetAttempt(task.ID, 2)
+	got, _ := svc.GetTask(task.ID)
+	if got.Attempt != 2 {
+		t.Fatalf("after SetAttempt(2), Attempt = %d; want 2", got.Attempt)
+	}
+	if got.MaxAttempts != DefaultMaxAttempts {
+		t.Fatalf("SetAttempt must not disturb MaxAttempts, got %d", got.MaxAttempts)
+	}
+}
+
+// TestAnswerEscalationReengages covers the self-heal escalation answer: when the
+// answered checkpoint's agent is no longer live, AnswerHuman re-engages the agent
+// with the human's guidance (rather than stranding the task) — captured here by a
+// stub reengager.
+func TestAnswerEscalationReengages(t *testing.T) {
+	svc := newTestService(t)
+	svc.UseTerminal(&fakeTerm{dead: true}) // no live agent to take the answer
+	re := &fakeReengager{}
+	svc.UseReengager(re)
+	task, _ := svc.CreateTask("t", "", "")
+
+	req, _ := svc.AskHuman(task.ID, "tried 3×, stuck — replan or guide me?",
+		[]string{"Replan from scratch", "I'll guide you"}, "Stuck on: boom")
+	if err := svc.AnswerHuman(req.ID, "use the other API"); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if re.taskID != task.ID || re.guidance != "use the other API" {
+		t.Fatalf("expected re-engage(%s, %q), got (%s, %q)", task.ID, "use the other API", re.taskID, re.guidance)
+	}
+}
+
 func TestMaxConcurrentClampAndPersist(t *testing.T) {
 	svc := newTestService(t)
 
@@ -181,6 +228,18 @@ func (f *fakeTerm) WriteTo(id string, p []byte) (bool, error) {
 	}
 	f.writes[id] = append(f.writes[id], p...)
 	return true, nil
+}
+
+// fakeReengager records the last re-engage so a test can assert an answer to a
+// self-heal escalation (a checkpoint whose agent has stopped) re-launches the agent.
+type fakeReengager struct {
+	taskID   string
+	guidance string
+}
+
+func (f *fakeReengager) Reengage(taskID, guidance string) error {
+	f.taskID, f.guidance = taskID, guidance
+	return nil
 }
 
 // TestAskHumanPostsAndDelivers exercises the core loop: AskHuman posts a question

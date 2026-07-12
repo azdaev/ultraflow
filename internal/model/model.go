@@ -40,8 +40,16 @@ type Task struct {
 	Flow      string     `json:"flow"`  // flow preset name
 	Status    TaskStatus `json:"status"`
 	Worktree  string     `json:"worktree"`
-	CreatedAt time.Time  `json:"createdAt"`
-	UpdatedAt time.Time  `json:"updatedAt"`
+	// Self-heal sub-state. On an agent error the orchestrator auto-diagnoses and
+	// re-runs the task up to MaxAttempts times while it STAYS `running` — Attempt is
+	// how many auto-retries it has spent (0 = the original run, no sub-state; k>0 =
+	// on its k-th retry, shown as "fixing itself · k/N"). Only when the budget is
+	// exhausted does it escalate to the human; failure is a card state, not a
+	// destination (see spec.md "Failure self-heals").
+	Attempt     int       `json:"attempt"`
+	MaxAttempts int       `json:"maxAttempts"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 // HumanRequest is a blocking question an agent raised via ask_human. The agent's

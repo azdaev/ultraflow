@@ -50,6 +50,7 @@ func Open(path string) (*Store, error) {
 var migrations = []string{
 	schema,
 	settingsSchema,
+	selfHealSchema,
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -138,22 +139,31 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `
 
+// selfHealSchema (migration 3) records a task's self-heal state: how many auto-
+// retries the orchestrator has spent on a failing agent (attempt) and the per-task
+// retry budget (max_attempts, default 3). The board renders "fixing itself · k/N"
+// from these while the task keeps running. Existing rows default to a fresh budget.
+const selfHealSchema = `
+ALTER TABLE tasks ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3;
+`
+
 // --- tasks ---
 
 func (s *Store) CreateTask(t model.Task) error {
 	_, err := s.db.Exec(
-		`INSERT INTO tasks (id,title,body,project,agent,flow,status,worktree,created_at,updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.Title, t.Body, t.Project, t.Agent, t.Flow, string(t.Status), t.Worktree, t.CreatedAt, t.UpdatedAt)
+		`INSERT INTO tasks (id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,created_at,updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.Title, t.Body, t.Project, t.Agent, t.Flow, string(t.Status), t.Worktree, t.Attempt, t.MaxAttempts, t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
-const taskCols = `id,title,body,project,agent,flow,status,worktree,created_at,updated_at`
+const taskCols = `id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,created_at,updated_at`
 
 func scanTask(sc interface{ Scan(...any) error }) (model.Task, error) {
 	var t model.Task
 	var status string
-	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.CreatedAt, &t.UpdatedAt)
+	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Attempt, &t.MaxAttempts, &t.CreatedAt, &t.UpdatedAt)
 	t.Status = model.TaskStatus(status)
 	return t, err
 }
@@ -224,6 +234,16 @@ func (s *Store) SwapStatusFrom(id string, from []model.TaskStatus, to model.Task
 func (s *Store) SetWorktree(id, wt string) error {
 	_, err := s.db.Exec(`UPDATE tasks SET worktree=?, updated_at=? WHERE id=?`, wt, time.Now(), id)
 	return err
+}
+
+// SetTaskAttempt persists a task's self-heal retry counter and returns the new
+// updated_at so the caller can broadcast it and keep the card's live timer honest.
+func (s *Store) SetTaskAttempt(id string, attempt int) (time.Time, error) {
+	now := time.Now()
+	if _, err := s.db.Exec(`UPDATE tasks SET attempt=?, updated_at=? WHERE id=?`, attempt, now, id); err != nil {
+		return time.Time{}, err
+	}
+	return now, nil
 }
 
 // RecoverInFlight cleans up work stranded by a previous daemon exit. A restart

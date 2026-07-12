@@ -1,9 +1,11 @@
 package orchestrator
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +15,98 @@ import (
 	"ultraflow/internal/terminal"
 	"ultraflow/internal/worktree"
 )
+
+// crashingAgent is an interactiveAgent whose every run exits non-zero, so the
+// self-heal loop treats each attempt as an error. It counts how many commands it
+// handed out (initial + retries).
+type crashingAgent struct{ cmds int }
+
+func crashCmd() (*exec.Cmd, func(), error) {
+	return exec.Command("sh", "-c", "exit 1"), func() {}, nil
+}
+
+func (c *crashingAgent) Name() string { return "claude" }
+func (c *crashingAgent) Command(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error) {
+	c.cmds++
+	return crashCmd()
+}
+func (c *crashingAgent) ResumeCommand(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error) {
+	c.cmds++
+	return crashCmd()
+}
+
+// TestSelfHealRetriesThenEscalates is the acceptance test for the feature: an agent
+// that keeps erroring is auto-retried up to its budget while the task STAYS running
+// (attempt climbing), and only when the budget is spent does it escalate as a plain-
+// language needs_human checkpoint — never a red failed card.
+func TestSelfHealRetriesThenEscalates(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	svc := newTestSvc(t)
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), "http://mcp", 2)
+	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
+
+	ia := &crashingAgent{}
+	cmd, cleanup, _ := ia.Command(context.Background(), "", "")
+	o.runWithSelfHeal(context.Background(), task, t.TempDir(), ia, cmd, cleanup, "running")
+
+	got, _ := svc.GetTask(task.ID)
+	// Never a raw failed card — it escalates as an ordinary needs_human item.
+	if got.Status != model.StatusNeedsHuman {
+		t.Fatalf("after exhausting self-heal, want needs_human, got %s", got.Status)
+	}
+	if got.Attempt != task.MaxAttempts {
+		t.Fatalf("attempt counter = %d; want the full budget %d", got.Attempt, task.MaxAttempts)
+	}
+	reqs, _ := svc.PendingRequests()
+	if len(reqs) != 1 {
+		t.Fatalf("want exactly one escalation checkpoint on the rail, got %d", len(reqs))
+	}
+	if !strings.Contains(strings.ToLower(reqs[0].Question), "stuck") {
+		t.Fatalf("escalation must be plain language, got %q", reqs[0].Question)
+	}
+	// The agent ran once, then retried MaxAttempts times.
+	if ia.cmds != task.MaxAttempts+1 {
+		t.Fatalf("agent ran %d times; want %d (initial + %d retries)", ia.cmds, task.MaxAttempts+1, task.MaxAttempts)
+	}
+}
+
+// TestSelfHealSucceedsMidRetry: an agent that errors once then succeeds ends in
+// review (the normal finish path), not escalated — self-heal is transparent.
+func TestSelfHealSucceedsMidRetry(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	svc := newTestSvc(t)
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), "http://mcp", 2)
+	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
+
+	ia := &flakyAgent{}
+	cmd, cleanup, _ := ia.Command(context.Background(), "", "")
+	o.runWithSelfHeal(context.Background(), task, t.TempDir(), ia, cmd, cleanup, "running")
+
+	// A clean exit with no finish_task (as here) resolves to review, not failed.
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusReview {
+		t.Fatalf("a run that recovered should end in review, got %s", got.Status)
+	}
+	if reqs, _ := svc.PendingRequests(); len(reqs) != 0 {
+		t.Fatalf("a recovered run must not escalate, got %d pending", len(reqs))
+	}
+}
+
+// flakyAgent crashes on the first run and exits cleanly on every retry.
+type flakyAgent struct{ runs int }
+
+func (a *flakyAgent) Name() string { return "claude" }
+func (a *flakyAgent) Command(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error) {
+	a.runs++
+	return exec.Command("sh", "-c", "exit 1"), func() {}, nil
+}
+func (a *flakyAgent) ResumeCommand(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error) {
+	a.runs++
+	return exec.Command("true"), func() {}, nil
+}
 
 func newTestSvc(t *testing.T) *core.Service {
 	t.Helper()

@@ -24,13 +24,31 @@ type termInput interface {
 	WriteTo(taskID string, p []byte) (bool, error)
 }
 
+// reengager re-launches a task's agent after the human answers a checkpoint whose
+// agent is no longer live — the self-heal escalation ("tried N×, stuck"): the
+// orchestrator resumes the worktree with the human's guidance seeded. Kept as an
+// interface so core need not import the orchestrator; nil in API-only/test setups,
+// where an answer to a dead agent is simply a recorded no-op. *Orchestrator
+// satisfies it (wired via UseReengager).
+type reengager interface {
+	Reengage(taskID, guidance string) error
+}
+
+// DefaultMaxAttempts is the self-heal retry budget a task gets when its flow
+// doesn't pin one. On an agent error the orchestrator auto-diagnoses and re-runs
+// the task up to this many times — staying `running` with a "fixing itself · k/N"
+// sub-state — before escalating to the human. See spec.md "Failure self-heals;
+// it is a card state, not a destination."
+const DefaultMaxAttempts = 3
+
 // Service is the central coordinator shared by the MCP server, web API and
 // orchestrator.
 type Service struct {
-	store  *store.Store
-	Broker *Broker
-	wt     *worktree.Manager // set via UseWorktrees; nil = merge/teardown disabled
-	term   termInput         // set via UseTerminal; nil = answers aren't delivered
+	store    *store.Store
+	Broker   *Broker
+	wt       *worktree.Manager // set via UseWorktrees; nil = merge/teardown disabled
+	term     termInput         // set via UseTerminal; nil = answers aren't delivered
+	reengage reengager         // set via UseReengager; nil = escalation answers aren't re-run
 }
 
 // UseWorktrees gives the service the worktree manager it needs to merge a task's
@@ -41,6 +59,11 @@ func (s *Service) UseWorktrees(m *worktree.Manager) { s.wt = m }
 // UseTerminal gives the service the terminal manager it uses to deliver a human's
 // answer into the parked agent's stdin. Shares the orchestrator's manager.
 func (s *Service) UseTerminal(t termInput) { s.term = t }
+
+// UseReengager wires the orchestrator so an answer to a self-heal escalation (a
+// needs_human checkpoint whose agent has already stopped) re-launches the agent
+// with the human's guidance instead of stranding the task in `running`.
+func (s *Service) UseReengager(r reengager) { s.reengage = r }
 
 func NewService(st *store.Store) *Service {
 	return &Service{
@@ -95,15 +118,16 @@ func (s *Service) CreateTaskFull(title, body, project, agent, flow string) (mode
 	}
 	now := time.Now()
 	t := model.Task{
-		ID:        NewID(),
-		Title:     title,
-		Body:      body,
-		Project:   project,
-		Agent:     agent,
-		Flow:      flow,
-		Status:    model.StatusBacklog,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          NewID(),
+		Title:       title,
+		Body:        body,
+		Project:     project,
+		Agent:       agent,
+		Flow:        flow,
+		Status:      model.StatusBacklog,
+		MaxAttempts: DefaultMaxAttempts,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	if err := s.store.CreateTask(t); err != nil {
 		return t, err
@@ -157,6 +181,18 @@ func (s *Service) SetWorktree(id, wt string) {
 		return
 	}
 	s.publish("task_updated", map[string]any{"taskId": id, "worktree": wt})
+}
+
+// SetAttempt persists a task's self-heal retry counter and broadcasts it, so the
+// board can render the "fixing itself · k/N" sub-state on the running card. 0 is
+// the original run (no sub-state); k>0 means the agent is on its k-th auto-retry.
+func (s *Service) SetAttempt(id string, attempt int) {
+	updatedAt, err := s.store.SetTaskAttempt(id, attempt)
+	if err != nil {
+		log.Printf("task %s: set attempt %d: %v", id, attempt, err)
+		return
+	}
+	s.publish("task_updated", map[string]any{"taskId": id, "attempt": attempt, "updatedAt": updatedAt})
 }
 
 // RetryTask re-queues a task by moving it back to the backlog; the orchestrator
@@ -408,10 +444,24 @@ func (s *Service) AnswerHuman(reqID, answer string) error {
 	// path fails the task — so the log is just a diagnostic.
 	if s.term != nil {
 		line := strings.NewReplacer("\r", " ", "\n", " ").Replace(answer)
-		if live, werr := s.term.WriteTo(req.TaskID, []byte(line+"\r")); werr != nil {
+		live, werr := s.term.WriteTo(req.TaskID, []byte(line+"\r"))
+		if werr != nil {
 			log.Printf("task %s: delivering answer to terminal: %v", req.TaskID, werr)
-		} else if !live {
-			log.Printf("task %s: answered but the agent terminal is gone", req.TaskID)
+		}
+		if !live {
+			// No live agent to take the answer. Normally this is a self-heal
+			// escalation ("tried N×, stuck") — the agent stopped after exhausting its
+			// retries — so re-launch it in place with the human's guidance rather than
+			// stranding the task in `running`. Reengage no-ops if a self-heal loop is
+			// still live for the task (an agent that died in the checkpoint gap), so it
+			// can never race a second agent onto the same worktree.
+			if s.reengage != nil {
+				if err := s.reengage.Reengage(req.TaskID, answer); err != nil {
+					log.Printf("task %s: re-engage after answer: %v", req.TaskID, err)
+				}
+			} else {
+				log.Printf("task %s: answered but the agent terminal is gone", req.TaskID)
+			}
 		}
 	}
 	return nil

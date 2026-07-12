@@ -6,11 +6,13 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"ultraflow/internal/agent"
@@ -44,6 +46,12 @@ type Orchestrator struct {
 	cond   *sync.Cond
 	active int
 	limit  int
+
+	// healing tracks tasks with a live self-heal loop (a runWithSelfHeal goroutine
+	// mid-flight). It's how an answer-driven re-engage knows NOT to launch a second
+	// agent: if a loop is still running for the task, it owns the crash resolution.
+	// Guarded by mu.
+	healing map[string]bool
 }
 
 func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal.Manager, mcpURL string, maxConcurrent int) *Orchestrator {
@@ -60,6 +68,7 @@ func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal
 		wt:      wt,
 		term:    term,
 		limit:   maxConcurrent,
+		healing: map[string]bool{},
 	}
 	o.cond = sync.NewCond(&o.mu)
 	return o
@@ -166,42 +175,180 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 			o.fail(t.ID, "couldn't build the agent command: "+err.Error())
 			return
 		}
-		o.launch(t.ID, cmd, cleanup, "running — open the card to watch progress (Ctrl-C to interrupt)")
+		o.runWithSelfHeal(ctx, t, dir, ia, cmd, cleanup, "running — open the card to watch progress (Ctrl-C to interrupt)")
 	}()
 }
 
-// launch runs cmd as the task's live PTY agent: it registers the session (so the
-// board can attach and watch/type/Ctrl-C), flips the card to running only once
-// the terminal exists (never a 404), waits for the process to exit, then hands
-// the outcome to the service to resolve. The normal finish is the agent calling
-// finish_task, which moves the task to review and closes the session; anything
-// still in-flight when the process exits is resolved by ResolveAgentExit (with
-// guarded transitions, so a human answer racing in can't strand the task).
-// Shared by a fresh start and a review send-back (Revise).
-func (o *Orchestrator) launch(taskID string, cmd *exec.Cmd, cleanup func(), runningMsg string) {
+// runWithSelfHeal runs a task's agent and, on an unexpected error, AUTO-DIAGNOSES
+// and re-runs it up to its retry budget — the task STAYS `running` the whole time
+// with a "fixing itself · k/N" sub-state (never a red failed card). Retries resume
+// the SAME worktree conversation, so the agent keeps its memory of what it built
+// and can fix its own mistake. Only when the budget is exhausted does it ESCALATE
+// as a plain-language needs_human checkpoint. A clean exit resolves normally
+// (finish_task → review, or an ended session → review); a signalled exit is a
+// human stop → terminal `failed`. See spec.md "Failure self-heals".
+//
+// It owns the task's execution end-to-end, so while its goroutine is live it marks
+// the task `healing`: an answer-driven re-engage checks that flag and stands down,
+// which is what keeps a checkpoint-gap crash from ever racing two agents onto one
+// worktree. `cmd`/`cleanup` are the first attempt; further attempts are built here.
+func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, dir string, ia interactiveAgent, cmd *exec.Cmd, cleanup func(), runningMsg string) {
+	o.beginHeal(t.ID)
+	defer o.endHeal(t.ID)
+
+	budget := t.MaxAttempts
+	if budget < 1 {
+		budget = core.DefaultMaxAttempts
+	}
+	retries := 0
+	o.svc.SetAttempt(t.ID, retries) // 0 = the original run, no sub-state
+
+	for {
+		werr, started := o.runAgent(t.ID, cmd, cleanup, runningMsg)
+		if !started {
+			return // runAgent already failed the task (couldn't start the terminal)
+		}
+		if ctx.Err() != nil {
+			return // daemon shutting down — startup recovery requeues it next boot
+		}
+		// An intentional end, not a crash: finish_task and the idle-watcher both send
+		// the task to `review` and then Close the session (SIGKILL), so the exit here
+		// looks like a non-nil crash error. If the task already reached review, the
+		// agent was ended on purpose — resolve, don't self-heal into a spurious retry.
+		if cur, _ := o.svc.GetTask(t.ID); cur.Status == model.StatusReview {
+			return
+		}
+		if werr == nil {
+			// Clean exit: finished via finish_task (already review), the human ended
+			// the session, or a parked clean-exit. The guarded resolver handles all,
+			// race-safe against an answer landing in the same instant.
+			o.svc.ResolveAgentExit(t.ID, false, "")
+			return
+		}
+		if stoppedByHuman(werr) {
+			o.gaveUp(t.ID, "you stopped this task") // Ctrl-C = you-said-stop → terminal
+			return
+		}
+
+		// The agent errored. If the budget is spent, escalate to the human as an
+		// ordinary needs_human item — never a raw red dump.
+		if retries >= budget {
+			o.escalate(t.ID, budget, werr.Error())
+			return
+		}
+
+		retries++
+		// The raw error is a COLLAPSED disclosure in the thread ("Why it failed"),
+		// never the headline; the friendly sub-state line is what leads the card.
+		o.svc.AppendTaskEvent(t.ID, "error", fmt.Sprintf("attempt failed: %s", truncateErr(werr.Error())))
+		// A stale checkpoint (agent died parked) would otherwise linger on the rail.
+		o.svc.AbandonRequests(t.ID)
+		o.svc.SetAttempt(t.ID, retries)
+		o.svc.AppendTaskEvent(t.ID, "status",
+			fmt.Sprintf("fixing itself · %d/%d — diagnosing the error and retrying", retries, budget))
+
+		next, ncleanup, berr := ia.ResumeCommand(ctx, dir, buildSelfHealPrompt(t, retries, budget, werr.Error()))
+		if berr != nil {
+			o.escalate(t.ID, budget, "couldn't relaunch the agent to retry: "+berr.Error())
+			return
+		}
+		cmd, cleanup, runningMsg = next, ncleanup, fmt.Sprintf("fixing itself · %d/%d (Ctrl-C to interrupt)", retries, budget)
+	}
+}
+
+// runAgent runs cmd as the task's live PTY agent for a single attempt: it registers
+// the session (so the board can attach and watch/type/Ctrl-C), flips the card to
+// running only once the terminal exists (never a 404), waits for the process to
+// exit, and returns the exit error (nil = clean). started is false only when the
+// terminal couldn't be started, in which case the task is already failed.
+func (o *Orchestrator) runAgent(taskID string, cmd *exec.Cmd, cleanup func(), runningMsg string) (werr error, started bool) {
 	defer cleanup()
 
 	sess, err := o.term.Start(taskID, cmd)
 	if err != nil {
 		o.fail(taskID, "couldn't start the agent terminal: "+err.Error())
-		return
+		return nil, false
 	}
 	o.svc.UpdateStatus(taskID, model.StatusRunning)
 	o.svc.AppendTaskEvent(taskID, "status", runningMsg)
 
 	// Free the slot when the agent ends its turn without finish_task: an interactive
 	// TUI never exits on its own, so without this it would idle at its prompt holding
-	// the slot forever. Runs for the session's whole life so it also catches a second
-	// idle after an ask_human answer resumes the agent.
+	// the slot forever. Started per attempt; it sends an idle turn-end to `review`
+	// and kills the session — which the self-heal loop treats as an intentional end
+	// (the task is now in review), not a crash to retry. Runs for the attempt's whole
+	// life so it also catches a second idle after an ask_human answer resumes.
 	go o.watchIdle(sess, taskID, idleTimeout, idlePoll)
 
-	werr := sess.Wait()
-	detail := ""
+	werr = sess.Wait()
 	if werr != nil {
-		detail = werr.Error()
 		log.Printf("task %s: agent exited before finishing: %v", taskID, werr)
 	}
-	o.svc.ResolveAgentExit(taskID, werr != nil, detail)
+	return werr, true
+}
+
+// beginHeal / endHeal / isHealing track whether a self-heal loop is live for a task
+// (see the healing field). isHealing gates the answer-driven re-engage so it never
+// launches a second agent onto a worktree a loop still owns.
+func (o *Orchestrator) beginHeal(id string) {
+	o.mu.Lock()
+	o.healing[id] = true
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) endHeal(id string) {
+	o.mu.Lock()
+	delete(o.healing, id)
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) isHealing(id string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.healing[id]
+}
+
+// stoppedByHuman reports whether an agent exit was a deliberate interrupt (the
+// human hit Ctrl-C, or the process got SIGTERM) rather than an internal crash — a
+// stop is terminal, a crash self-heals.
+func stoppedByHuman(werr error) bool {
+	var ee *exec.ExitError
+	if errors.As(werr, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			switch ws.Signal() {
+			case syscall.SIGINT, syscall.SIGTERM:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// truncateErr collapses an error to a single readable line for a thread event or a
+// checkpoint's context, so a chatty stack trace never becomes a wall of red.
+func truncateErr(s string) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	r := []rune(s)
+	if len(r) > 200 {
+		return string(r[:199]) + "…"
+	}
+	return s
+}
+
+// escalate hands a stuck task to the human after self-heal is exhausted. It posts
+// an ORDINARY needs_human checkpoint phrased in plain language ("tried N×, stuck on
+// X — replan, or guide me?"), so the task lands in the attention rail like any
+// other decision — not a raw error dump. The raw error stays a collapsed thread
+// disclosure. Answering it re-engages the agent (via AnswerHuman → Reengage).
+func (o *Orchestrator) escalate(taskID string, budget int, lastErr string) {
+	o.svc.AppendTaskEvent(taskID, "error",
+		fmt.Sprintf("self-heal exhausted after %d retries: %s", budget, truncateErr(lastErr)))
+	q := fmt.Sprintf("I tried %d times to fix this myself and I'm still stuck. "+
+		"Want me to replan from scratch, or will you guide me?", budget)
+	stuck := "Stuck on: " + truncateErr(lastErr)
+	if _, err := o.svc.AskHuman(taskID, q, []string{"Replan from scratch", "I'll guide you"}, stuck); err != nil {
+		log.Printf("task %s: escalate: %v", taskID, err)
+	}
 }
 
 // Idle-watcher tuning. A working Claude TUI streams a spinner/elapsed-timer
@@ -301,7 +448,49 @@ func (o *Orchestrator) Revise(taskID, feedback string) error {
 			o.fail(taskID, "couldn't build the agent command: "+err.Error())
 			return
 		}
-		o.launch(taskID, cmd, cleanup, "reworking on your feedback (Ctrl-C to interrupt)")
+		o.runWithSelfHeal(o.ctx(), t, dir, ia, cmd, cleanup, "reworking on your feedback (Ctrl-C to interrupt)")
+	}()
+	return nil
+}
+
+// Reengage re-launches a task's agent after the human answered its self-heal
+// escalation checkpoint (the "tried N×, stuck — replan, or guide me?" item). It
+// resumes the same worktree conversation with the human's guidance seeded and a
+// FRESH retry budget, so the agent can act on the steer and, if it stumbles again,
+// self-heal anew. Driven from AnswerHuman when the answered checkpoint's agent is
+// no longer live. It is a no-op when a self-heal loop is still running for the task
+// (an agent that died in the checkpoint gap) — that loop already owns the recovery,
+// so this can't race a second agent onto the worktree.
+func (o *Orchestrator) Reengage(taskID, guidance string) error {
+	if o.isHealing(taskID) {
+		return nil
+	}
+	t, err := o.svc.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	ag := o.agents[t.Agent]
+	if ag == nil {
+		ag = o.agents["claude"]
+	}
+	ia, ok := ag.(interactiveAgent)
+	if !ok {
+		return fmt.Errorf("agent %s can't run interactively", ag.Name())
+	}
+	dir := t.Worktree
+	if dir == "" {
+		dir = o.workdir // ran in place (non-git / shared-workdir project)
+	}
+
+	go func() {
+		o.acquire()
+		defer o.release()
+		cmd, cleanup, err := ia.ResumeCommand(o.ctx(), dir, buildReengagePrompt(t, guidance))
+		if err != nil {
+			o.fail(taskID, "couldn't relaunch the agent: "+err.Error())
+			return
+		}
+		o.runWithSelfHeal(o.ctx(), t, dir, ia, cmd, cleanup, "back on it with your guidance (Ctrl-C to interrupt)")
 	}()
 	return nil
 }
@@ -316,10 +505,22 @@ func (o *Orchestrator) ctx() context.Context {
 }
 
 // fail records a reason on the task thread and marks it failed, so a failed card
-// always explains why instead of just showing "Gave up".
+// always explains why instead of just showing "Gave up". Reserved for genuine
+// dead-ends (couldn't build/start the agent at all) — an agent that ran and errored
+// self-heals instead. `failed` is terminal: gave-up or you-said-stop.
 func (o *Orchestrator) fail(taskID, reason string) {
 	o.svc.AppendTaskEvent(taskID, "error", reason)
 	o.svc.UpdateStatus(taskID, model.StatusFailed)
+}
+
+// gaveUp marks a task terminally failed because the human stopped it (Ctrl-C). The
+// guarded swap retires any parked checkpoint and won't clobber a task an answer has
+// already moved on, mirroring the crash resolver's race-safety.
+func (o *Orchestrator) gaveUp(taskID, reason string) {
+	if o.svc.SwapStatus(taskID, []model.TaskStatus{model.StatusRunning, model.StatusQueued, model.StatusNeedsHuman}, model.StatusFailed) {
+		o.svc.AbandonRequests(taskID)
+		o.svc.AppendTaskEvent(taskID, "error", reason)
+	}
 }
 
 // prepareWorkdir resolves where a task's agent should run. In order of
@@ -403,4 +604,43 @@ address the feedback. %s
 WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-
 line summary to send it back to review.`,
 		t.ID, t.Title, feedback, screenshotInstruction, t.ID)
+}
+
+// buildSelfHealPrompt is seeded when the agent's previous run ended in an ERROR and
+// the orchestrator resumes it to auto-diagnose. Because it resumes the same
+// conversation (`claude --continue`), the agent still remembers what it was doing;
+// this re-states the error and the finish contract so the diagnosis is grounded.
+func buildSelfHealPrompt(t model.Task, retry, budget int, errText string) string {
+	return fmt.Sprintf(`Your last run on this Ultraflow task ended with an ERROR before you finished — the process exited unexpectedly.
+
+Task ID: %s
+Title: %s
+
+The error:
+%s
+
+This is self-heal retry %d of %d. Work out what went wrong, fix the root cause, and
+carry on with the task — your earlier work is still here in this working directory.
+Don't just repeat what failed; diagnose it first.
+
+WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-line summary.`,
+		t.ID, t.Title, truncateErr(errText), retry, budget, t.ID)
+}
+
+// buildReengagePrompt is seeded when the human answers a self-heal escalation — the
+// agent gave up after N tries and asked whether to replan or be guided. It resumes
+// the conversation with that answer and the finish contract.
+func buildReengagePrompt(t model.Task, guidance string) string {
+	return fmt.Sprintf(`You got stuck on this Ultraflow task after several self-heal attempts and asked the human for help. They have responded.
+
+Task ID: %s
+Title: %s
+
+Their guidance:
+%s
+
+Use it to get unstuck. Your earlier work is still here in this working directory. %s
+
+WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-line summary.`,
+		t.ID, t.Title, guidance, screenshotInstruction, t.ID)
 }

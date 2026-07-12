@@ -67,6 +67,9 @@ func main() {
 	wt := worktree.New(*wtRoot)
 	svc.UseWorktrees(wt)
 	orch := orchestrator.New(svc, *workdir, wt, term, mcpURL, *maxConc)
+	// So an answer to a self-heal escalation (a needs_human checkpoint whose agent
+	// has already stopped) re-launches the agent with the human's guidance.
+	svc.UseReengager(orch)
 
 	// The -max-concurrent flag is only the default; a value the human set in
 	// Settings (persisted) wins across restarts, so apply it over the flag here.

@@ -29,6 +29,11 @@ export interface Task {
   flow: string;
   status: TaskStatus;
   worktree: string;
+  // Self-heal sub-state: attempt is how many auto-retries the agent has spent on an
+  // error (0 = the original run; k>0 renders "fixing itself · k/N" on the running
+  // card), maxAttempts is the retry budget before it escalates to the human.
+  attempt: number;
+  maxAttempts: number;
   createdAt: string;
   updatedAt: string;
 }

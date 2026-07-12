@@ -95,6 +95,7 @@ function applyEvent(
         status?: Task["status"];
         updatedAt?: string;
         worktree?: string;
+        attempt?: number;
       };
       setTasks((prev) =>
         prev.map((t) => {
@@ -103,6 +104,7 @@ function applyEvent(
           if (d.status !== undefined) next.status = d.status;
           if (d.updatedAt !== undefined) next.updatedAt = d.updatedAt;
           if (d.worktree !== undefined) next.worktree = d.worktree;
+          if (d.attempt !== undefined) next.attempt = d.attempt;
           return next;
         }),
       );
