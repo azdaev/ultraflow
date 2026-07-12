@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.4 — 2026-07-12
+
+- Ultraflow: hotkeys are broken in claude pty. maybe in codex too. for example cmd + delete.
+
 ## v0.10.3 — 2026-07-12
 
 - Ultraflow: Audit core agentic logic & MCP
