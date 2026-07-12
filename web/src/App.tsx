@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { useBoard, useNow } from "./useBoard";
+import { useAttentionNotifications } from "./useNotifications";
 import { useLayout } from "./useSettings";
 import type { Task } from "./api";
 import { Topbar } from "./components/Topbar";
@@ -60,6 +61,10 @@ export function App() {
     }
     return items;
   }, [requests, tasks, byId, activity, activityKind]);
+
+  // OS notifications for a backgrounded tab: a new rail item raises one, clicking
+  // it focuses Ultraflow on that task, answering it clears it.
+  useAttentionNotifications(attention, setOpenTaskId);
 
   // Orange strictly for needs_human; failures counted (and shown) separately.
   const needCount = requests.length;

@@ -71,8 +71,10 @@ when roasting v1. **This supersedes the "Needs you column" layout above.**
     needs the human's *action*, unified: **checkpoints** (orange), **visual
     reviews** (orange, mini-preview + Review), and **failures** (red, error +
     Retry / View log). Empty → "You're all caught up". This is the one place to
-    look. (Push/OS-notification still needed so it works when the tab is unfocused
-    — the rail alone is passive; see open issue.)
+    look. Backed by an **OS notification** so it works when the tab is unfocused:
+    a new rail item (checkpoint or failure) fired while the tab is unfocused raises
+    a Web Notification (title = task, body = the question/error); clicking it
+    focuses Ultraflow on that task, and answering it clears the notification.
   - **Pipeline board** — pure stages only: Backlog · Running · Review · Done. A
     task that needs you STAYS in its real stage (e.g. Running) with an orange
     "Needs you · answer above ↑" flag; it also mirrors into the rail.
@@ -100,11 +102,11 @@ distinct hue so "broken" never reads as "needs a choice". Free-reply is an expli
 `Other…` chip, not a `···` glyph. The board columns **grow to fill the full width**
 so the pipeline aligns edge-to-edge with the rail (no dead gutter on the right).
 
-Still open (from the roast, not yet designed): OS/push notification for
-unfocused-tab, long-wait `ask_human` timeout handling, before/after + on-image
-annotation for visual review, per-task token cost, swimlanes for many projects.
-(Resolved since: merge-conflict / stale-vs-main → **auto-rebase self-heal**, a card
-state not a screen; answer/thread history → the **Task Detail thread**.)
+Still open (from the roast, not yet designed): long-wait `ask_human` timeout
+handling, before/after + on-image annotation for visual review, per-task token
+cost, swimlanes for many projects. (Resolved since: merge-conflict / stale-vs-main
+→ **auto-rebase self-heal**, a card state not a screen; answer/thread history →
+the **Task Detail thread**; unfocused-tab alerting → **OS notifications**.)
 
 ## Other screens (Paper frames)
 
