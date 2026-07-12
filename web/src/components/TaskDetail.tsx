@@ -29,9 +29,17 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
   const live = task?.status === "running" || task?.status === "needs_human";
   // Send-back is available whenever the agent has parked the task for a decision.
   const canRevise = task?.status === "review" || task?.status === "failed";
+  const done = task?.status === "done";
   // The agent's Markdown writeup from finish_task (latest wins after a rework).
   // For a question/audit task this is the whole deliverable — there's no diff.
   const report = events.filter((e) => e.kind === "report").pop()?.data;
+  // A one-line outcome for a finished task: the agent's last result summary, or
+  // failing that the last status note (e.g. "merged and cleaned up the worktree"
+  // / "marked done by human"). Gives a done task a human sentence even when the
+  // worktree — and its diff/shots — are gone.
+  const outcome =
+    events.filter((e) => e.kind === "result").pop()?.data ??
+    events.filter((e) => e.kind === "status").pop()?.data;
   // Review is a real screen: once the agent parks a task, show what it did — its
   // report and, when it touched a worktree, the diff. A question task has a report
   // but no worktree; a code task may have either or both. Excludes a merged `done`
@@ -153,6 +161,40 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                       report={report}
                       hasWorktree={!!task.worktree}
                     />
+                  </>
+                ) : done ? (
+                  <>
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <span className="h-1.5 w-1.5 rounded-full bg-moss" />
+                        <h3 className="eyebrow text-muted">Completed</h3>
+                      </div>
+                      <span className="text-[11px] text-muted/70">
+                        {ago(task.updatedAt, now)}
+                      </span>
+                    </div>
+                    {outcome && (
+                      <p className="mb-3 shrink-0 text-[13px] leading-relaxed text-ink/80">
+                        {outcome}
+                      </p>
+                    )}
+                    {report ? (
+                      // Report-only: the merged worktree (and its diff/shots) is
+                      // gone, so pass hasWorktree={false} — no Changes tab to 404.
+                      <ReviewPanel
+                        taskId={task.id}
+                        sig={activitySig}
+                        report={report}
+                        hasWorktree={false}
+                      />
+                    ) : (
+                      <div className="grid flex-1 place-items-center rounded-xl border border-dashed border-hairline text-center">
+                        <p className="max-w-sm px-6 text-[13px] leading-relaxed text-muted">
+                          This task finished and left no writeup. Its worktree, if
+                          any, has been merged and cleaned up.
+                        </p>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="grid flex-1 place-items-center rounded-xl border border-dashed border-hairline text-center">
