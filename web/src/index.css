@@ -22,6 +22,9 @@
   --color-rust: #a9432b; /* failed */
   --color-rust-tint: #f6e7e2;
 
+  --color-amber: #9a6b1f; /* stale · behind main */
+  --color-amber-tint: #f6ecd7;
+
   --color-claude: #d97757;
   --color-codex: #10a37f;
   --color-opencode: #7a5af8;

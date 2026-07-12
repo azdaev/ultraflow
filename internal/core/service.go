@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -20,6 +21,12 @@ import (
 	"ultraflow/internal/store"
 	"ultraflow/internal/worktree"
 )
+
+// ErrRebaseConflict is returned by MergeTask when bringing the branch up to date
+// with main stops on conflicts the auto-rebase can't resolve mechanically. It's a
+// signal (not a dead-end): the caller re-engages the agent to resolve the rebase
+// with the same self-heal policy, rather than silently returning to review.
+var ErrRebaseConflict = errors.New("branch is behind main and the rebase hit conflicts the agent must resolve")
 
 // termInput delivers a human's board reply into a task's live agent terminal
 // (its stdin). *terminal.Manager satisfies it; kept as an interface so core need
@@ -265,7 +272,27 @@ func (s *Service) MergeTask(id string) error {
 	_ = s.UpdateStatus(id, model.StatusMerging)
 	s.appendEvent(id, "status", "merging into "+p.Name)
 
-	if _, err := s.wt.Merge(p.RepoPath, id, "Ultraflow: "+t.Title); err != nil {
+	// Rebase-then-merge: bring the branch on top of whatever landed on main since
+	// it forked, so what merges is what the human reviewed against the latest base
+	// (spec.md "Failure self-heals" → stale branch). A clean/no-op rebase falls
+	// straight through to the merge; conflicts the auto-rebase can't resolve are
+	// escalated to the agent (ErrRebaseConflict), never a silent abort.
+	msg := "Ultraflow: " + t.Title
+	conflicted, _, rerr := s.wt.Rebase(p.RepoPath, id, msg)
+	if rerr != nil {
+		_ = s.UpdateStatus(id, model.StatusReview) // keep the worktree for a retry
+		s.appendEvent(id, "merge_failed", "couldn't rebase onto main (your repo was left clean): "+rerr.Error())
+		return rerr
+	}
+	if conflicted {
+		// Leave it in review; the caller (web) hands the rebase to the agent's
+		// self-heal. Record it as "stale" so the card shows the branch needs a rebase.
+		_ = s.UpdateStatus(id, model.StatusReview)
+		s.appendEvent(id, "stale", "behind main — auto-rebase hit conflicts; handing to the agent to resolve")
+		return ErrRebaseConflict
+	}
+
+	if _, err := s.wt.Merge(p.RepoPath, id, msg); err != nil {
 		_ = s.UpdateStatus(id, model.StatusReview) // keep the worktree for a retry
 		// "merge_failed" (not "status") so the board can lift this into the
 		// attention rail instead of letting it read as a quiet status line.
@@ -303,6 +330,32 @@ func (s *Service) FinishReview(id string) error {
 
 // AppendTaskEvent records an agent-produced event and fans it out live.
 func (s *Service) AppendTaskEvent(taskID, kind, text string) { s.appendEvent(taskID, kind, text) }
+
+// NoteFreshness checks whether a task's branch has fallen behind main and, if so,
+// records a "stale · N behind main" event so the board can warn on the card
+// (roadmap M4). Best-effort and side-effect-light: a no-op for tasks with no
+// worktree / non-git project, and it never changes status — staleness is a card
+// warning, not a state transition. Callers run it when a task enters review (the
+// point where landing an out-of-date branch matters); safe to call from a
+// goroutine so a slow git call doesn't block the caller.
+func (s *Service) NoteFreshness(taskID string) {
+	if s.wt == nil {
+		return
+	}
+	t, err := s.store.GetTask(taskID)
+	if err != nil || t.Worktree == "" {
+		return
+	}
+	p, err := s.store.ProjectByName(t.Project)
+	if err != nil || p.RepoPath == "" {
+		return
+	}
+	behind, _, err := s.wt.Freshness(p.RepoPath, taskID)
+	if err != nil || behind == 0 {
+		return
+	}
+	s.appendEvent(taskID, "stale", fmt.Sprintf("stale · %d behind main", behind))
+}
 
 // TaskDiff returns the changes a task made in its worktree, for the review diff
 // viewer. Requires a worktree manager and a task with a worktree on a registered
@@ -610,6 +663,7 @@ func (s *Service) ResolveAgentExit(taskID string, crashed bool, detail string) {
 	// Clean exit (exit 0 without finish_task — e.g. the human ended the session at
 	// the prompt): a running/queued agent that finished its turn goes to review.
 	if s.SwapStatus(taskID, []model.TaskStatus{model.StatusQueued, model.StatusRunning}, model.StatusReview) {
+		go s.NoteFreshness(taskID) // warn on the card if the branch fell behind main
 		return
 	}
 	// Otherwise it was still parked — or a late answer resumed it into `running`

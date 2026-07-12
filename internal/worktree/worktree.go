@@ -85,14 +85,8 @@ func (m *Manager) Merge(repoPath, taskID, message string) (string, error) {
 		message = "Merge " + branch
 	}
 
-	// Commit whatever the agent left uncommitted in the worktree. `diff --cached
-	// --quiet` exits non-zero exactly when there is something staged to commit.
-	if _, err := run(wtPath, "add", "-A"); err == nil {
-		if _, err := run(wtPath, "diff", "--cached", "--quiet"); err != nil {
-			if out, cerr := run(wtPath, "commit", "-m", message); cerr != nil {
-				return out, fmt.Errorf("committing worktree changes: %w: %s", cerr, out)
-			}
-		}
+	if err := commitPending(wtPath, message); err != nil {
+		return err.Error(), err
 	}
 
 	if out, err := run(repoPath, "merge", "--no-ff", "-m", message, branch); err != nil {
@@ -100,6 +94,102 @@ func (m *Manager) Merge(repoPath, taskID, message string) (string, error) {
 		return out, fmt.Errorf("git merge: %w: %s", err, out)
 	}
 	return "merged " + branch, nil
+}
+
+// baseBranch is the branch a task forks from and merges into: the repo's
+// currently checked-out branch (what Merge lands onto). Empty when the repo is
+// in a detached HEAD, in which case there's no named "main" to measure freshness
+// against or rebase onto.
+func baseBranch(repoPath string) string {
+	if b, err := run(repoPath, "rev-parse", "--abbrev-ref", "HEAD"); err == nil && b != "" && b != "HEAD" {
+		return b
+	}
+	return ""
+}
+
+// commitPending stages and commits any uncommitted work an agent left in the
+// worktree, so an operation that acts on commits (merge, rebase) sees the latest
+// edits. A no-op when the tree is clean. `diff --cached --quiet` exits non-zero
+// exactly when there is something staged to commit.
+func commitPending(wtPath, message string) error {
+	if _, err := run(wtPath, "add", "-A"); err != nil {
+		return nil // not a worktree / nothing to add — leave it to the caller's next step
+	}
+	if _, err := run(wtPath, "diff", "--cached", "--quiet"); err != nil {
+		if out, cerr := run(wtPath, "commit", "-m", message); cerr != nil {
+			return fmt.Errorf("committing worktree changes: %w: %s", cerr, out)
+		}
+	}
+	return nil
+}
+
+// Freshness reports how many commits the task's branch is behind the project's
+// base branch — commits that landed on base (the branch this task will merge
+// into) since the task forked and that the task doesn't have yet. behind == 0
+// means the branch is up to date; base is the branch it measured against ("" when
+// the repo is detached, in which case there is nothing to be behind).
+//
+// It measures against the LOCAL base branch on purpose: that is the exact ref
+// Merge lands onto, so "behind" reflects what an auto-rebase would actually
+// replay onto and what will really change when the work merges — not a remote we
+// don't merge into.
+func (m *Manager) Freshness(repoPath, taskID string) (behind int, base string, err error) {
+	base = baseBranch(repoPath)
+	if base == "" {
+		return 0, "", nil
+	}
+	branch := branchFor(taskID)
+	out, err := run(repoPath, "rev-list", "--count", branch+".."+base)
+	if err != nil {
+		return 0, base, fmt.Errorf("counting commits behind %s: %w: %s", base, err, out)
+	}
+	behind, _ = strconv.Atoi(strings.TrimSpace(out))
+	return behind, base, nil
+}
+
+// Rebase replays the task's branch onto the latest base branch so the work sits
+// on top of everything that landed since it forked — then a merge reflects what
+// will actually land (spec.md "Failure self-heals" → stale branch). Any pending
+// agent edits are committed first (same as Merge).
+//
+// Returns:
+//   - conflicted == true when the replay stops on conflicts git can't resolve
+//     mechanically. The rebase is ABORTED (the worktree is left clean, on the
+//     original branch tip) so the caller can hand the whole rebase to the agent's
+//     self-heal instead of leaving a half-finished rebase wedged in the checkout.
+//   - conflicted == false, err == nil on a clean replay, when already up to date,
+//     or when the base is detached (nothing to rebase onto).
+//
+// A non-conflict failure is returned as err (the rebase, if any, is aborted).
+func (m *Manager) Rebase(repoPath, taskID, message string) (conflicted bool, out string, err error) {
+	base := baseBranch(repoPath)
+	if base == "" {
+		return false, "", nil
+	}
+	wtPath := m.pathFor(taskID)
+	if cerr := commitPending(wtPath, message); cerr != nil {
+		return false, cerr.Error(), cerr
+	}
+
+	out, err = run(wtPath, "rebase", base)
+	if err == nil {
+		return false, out, nil
+	}
+	// The replay stopped. Unmerged paths mean genuine conflicts (agent-resolvable);
+	// anything else is a real error. Either way, abort so the worktree is left clean.
+	conflicted = hasConflicts(wtPath)
+	_, _ = run(wtPath, "rebase", "--abort")
+	if conflicted {
+		return true, out, nil
+	}
+	return false, out, fmt.Errorf("git rebase onto %s: %w: %s", base, err, out)
+}
+
+// hasConflicts reports whether the worktree currently has unmerged (conflicted)
+// paths — true while a rebase/merge is stopped on a conflict.
+func hasConflicts(wtPath string) bool {
+	out, err := run(wtPath, "diff", "--name-only", "--diff-filter=U")
+	return err == nil && strings.TrimSpace(out) != ""
 }
 
 // DiffFile is one changed path in a task's worktree with its line magnitude.

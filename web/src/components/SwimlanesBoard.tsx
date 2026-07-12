@@ -6,6 +6,7 @@ import { PipelineBoard } from "./PipelineBoard";
 interface Props {
   tasks: Task[];
   activity: Record<string, string>;
+  activityKind: Record<string, string>;
   now: number;
   onOpen: (taskId: string) => void;
   projects: Project[];
@@ -16,7 +17,7 @@ interface Props {
 // under a lane header (swatch, name, repo path, task count). Cards carry no
 // chip — the lane names the project. Tasks with no registered project fall into
 // a trailing "Unassigned" lane. Best for a few projects.
-export function SwimlanesBoard({ tasks, activity, now, onOpen, projects, onExpandComposer }: Props) {
+export function SwimlanesBoard({ tasks, activity, activityKind, now, onOpen, projects, onExpandComposer }: Props) {
   const registered = new Set(projects.map((p) => p.name));
   const orphans = tasks.filter((t) => !registered.has(t.project));
 
@@ -31,6 +32,7 @@ export function SwimlanesBoard({ tasks, activity, now, onOpen, projects, onExpan
           project={p}
           tasks={tasks.filter((t) => t.project === p.name)}
           activity={activity}
+          activityKind={activityKind}
           now={now}
           onOpen={onOpen}
           projects={projects}
@@ -45,6 +47,7 @@ export function SwimlanesBoard({ tasks, activity, now, onOpen, projects, onExpan
           repoPath="no project — add one in Settings"
           tasks={orphans}
           activity={activity}
+          activityKind={activityKind}
           now={now}
           onOpen={onOpen}
           projects={projects}
@@ -66,6 +69,7 @@ function Lane({
   project,
   tasks,
   activity,
+  activityKind,
   now,
   onOpen,
   projects,
@@ -78,6 +82,7 @@ function Lane({
   project?: Project; // absent for the trailing "Unassigned" lane
   tasks: Task[];
   activity: Record<string, string>;
+  activityKind: Record<string, string>;
   now: number;
   onOpen: (taskId: string) => void;
   projects: Project[];
@@ -116,6 +121,7 @@ function Lane({
       <PipelineBoard
         tasks={tasks}
         activity={activity}
+        activityKind={activityKind}
         now={now}
         onOpen={onOpen}
         projects={projects}

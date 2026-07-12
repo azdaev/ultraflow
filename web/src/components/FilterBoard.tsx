@@ -5,6 +5,7 @@ import { PipelineBoard } from "./PipelineBoard";
 interface Props {
   tasks: Task[];
   activity: Record<string, string>;
+  activityKind: Record<string, string>;
   now: number;
   onOpen: (taskId: string) => void;
   projects: Project[];
@@ -14,7 +15,7 @@ interface Props {
 // FilterBoard is one unified pipeline with a project switcher (All · …) and a
 // colored project chip on every card. Scales to many projects. The attention
 // rail above stays global regardless of the filter.
-export function FilterBoard({ tasks, activity, now, onOpen, projects, onExpandComposer }: Props) {
+export function FilterBoard({ tasks, activity, activityKind, now, onOpen, projects, onExpandComposer }: Props) {
   const [selected, setSelected] = useState<string>("all"); // "all" | project name
 
   // If the selected project is removed in Settings, fall back to "All" rather
@@ -52,6 +53,7 @@ export function FilterBoard({ tasks, activity, now, onOpen, projects, onExpandCo
       <PipelineBoard
         tasks={shown}
         activity={activity}
+        activityKind={activityKind}
         now={now}
         onOpen={onOpen}
         projects={projects}

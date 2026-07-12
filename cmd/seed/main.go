@@ -57,6 +57,12 @@ func main() {
 	mk("Migrate answer store to WAL", "", "ultraflow", "claude", "solo", model.StatusFailed, "go build ./... : undefined: foo")
 	mk("Add keyboard shortcuts help", "", "worktrees", "claude", "solo", model.StatusQueued, "")
 
+	// A reviewed task whose branch fell behind main: the card shows a "stale ·
+	// N behind main" warning (the auto-rebase runs at merge). The freshness event
+	// is the task's latest activity, so LatestActivityKind reports "stale".
+	stale := mk("Refactor the worktree merge flow", "", "ultraflow", "claude", "solo", model.StatusReview, "")
+	svc.AppendTaskEvent(stale.ID, "stale", "stale · 3 behind main")
+
 	// A task waiting on the human. AskHuman just persists the request row and
 	// flips the task to needs_human — no goroutine to park — so the pending row
 	// exists for the visual check.
