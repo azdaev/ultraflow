@@ -8,6 +8,11 @@
 web/node_modules/
 web/dist/
 web/node_modules/.tmp/
+# copied from the repo-root CHANGELOG.md at build time, served as a static asset
+web/public/changelog.md
+
+# Private, local-only changelog (the public one is CHANGELOG.md)
+CHANGELOG.internal.md
 
 # Editor / tooling
 .playwright-mcp/

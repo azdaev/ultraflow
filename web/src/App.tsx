@@ -10,6 +10,7 @@ import { FilterBoard } from "./components/FilterBoard";
 import { SwimlanesBoard } from "./components/SwimlanesBoard";
 import { Composer } from "./components/Composer";
 import { Settings } from "./components/Settings";
+import { Changelog } from "./components/Changelog";
 import { TaskDetail } from "./components/TaskDetail";
 import type { AttentionItem } from "./components/RailCard";
 import { RunsContext } from "./runsContext";
@@ -25,6 +26,7 @@ export function App() {
     setComposer({ open: true, title, project });
   const closeComposer = () => setComposer((c) => ({ ...c, open: false }));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
   // Pressing "n" opens the composer (Linear/GitHub style). ⌘N is a browser-chrome
@@ -105,6 +107,7 @@ export function App() {
         connected={connected}
         onNewTask={() => openComposer()}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenChangelog={() => setChangelogOpen(true)}
       />
 
       <AttentionRail items={attention} now={now} onOpen={setOpenTaskId} />
@@ -149,6 +152,7 @@ export function App() {
         layout={layout}
         setLayout={setLayout}
       />
+      <Changelog open={changelogOpen} onClose={() => setChangelogOpen(false)} />
       <TaskDetail
         task={openTask}
         request={openRequest}

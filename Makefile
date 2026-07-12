@@ -1,6 +1,6 @@
 # Ultraflow — local dev + release build helpers.
 
-.PHONY: dev build test frontend clean
+.PHONY: dev build test frontend clean changelog
 
 # dev: run the daemon against the on-disk frontend (live edits to web/ show up
 # after a `make frontend`). No embedding — fastest iteration.
@@ -20,6 +20,12 @@ build: frontend
 
 test:
 	go test ./... -race -count=1
+
+# changelog: fill the public (CHANGELOG.md) + private (CHANGELOG.internal.md)
+# entries for VERSION from the commits since the last tag, laconically, via the
+# Claude Code CLI. Run at a release cut, before tagging: `make changelog VERSION=v0.11.0`.
+changelog:
+	@scripts/gen-changelog.sh $(VERSION)
 
 clean:
 	rm -f ultraflow

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "cp ../CHANGELOG.md public/changelog.md 2>/dev/null || echo '# Changelog' > public/changelog.md",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

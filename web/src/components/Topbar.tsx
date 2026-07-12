@@ -6,6 +6,7 @@ interface Props {
   connected: boolean;
   onNewTask: () => void;
   onOpenSettings: () => void;
+  onOpenChangelog: () => void;
 }
 
 export function Topbar({
@@ -16,6 +17,7 @@ export function Topbar({
   connected,
   onNewTask,
   onOpenSettings,
+  onOpenChangelog,
 }: Props) {
   return (
     <header className="sticky top-0 z-30 flex items-center gap-4 border-b border-hairline bg-board/85 px-6 py-3 backdrop-blur">
@@ -63,6 +65,13 @@ export function Topbar({
           className={`h-2 w-2 rounded-full ${connected ? "bg-moss" : "bg-muted/50"}`}
         />
         <button
+          onClick={onOpenChangelog}
+          title="What's new"
+          className="grid h-8 w-8 place-items-center rounded-lg border border-hairline bg-surface text-muted transition hover:border-ink/30 hover:text-ink"
+        >
+          <SparkIcon />
+        </button>
+        <button
           onClick={onOpenSettings}
           title="Settings"
           className="grid h-8 w-8 place-items-center rounded-lg border border-hairline bg-surface text-muted transition hover:border-ink/30 hover:text-ink"
@@ -71,6 +80,24 @@ export function Topbar({
         </button>
       </div>
     </header>
+  );
+}
+
+function SparkIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
+    </svg>
   );
 }
 
