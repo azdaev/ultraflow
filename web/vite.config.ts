@@ -13,6 +13,7 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:7787",
         changeOrigin: true,
+        ws: true, // proxy the terminal WebSocket (/api/tasks/{id}/terminal) too
       },
     },
   },

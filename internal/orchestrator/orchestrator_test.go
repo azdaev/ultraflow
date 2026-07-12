@@ -8,6 +8,7 @@ import (
 
 	"ultraflow/internal/core"
 	"ultraflow/internal/store"
+	"ultraflow/internal/terminal"
 	"ultraflow/internal/worktree"
 )
 
@@ -48,7 +49,7 @@ func TestPrepareWorkdirCreatesWorktree(t *testing.T) {
 	task, _ := svc.CreateTaskFull("t", "", "proj", "claude", "solo")
 
 	wtRoot := filepath.Join(t.TempDir(), "worktrees")
-	o := New(svc, "/shared", worktree.New(wtRoot), "http://mcp", 2)
+	o := New(svc, "/shared", worktree.New(wtRoot), terminal.NewManager(), "http://mcp", 2)
 
 	dir := o.prepareWorkdir(task)
 	if filepath.Dir(dir) != wtRoot {
@@ -68,7 +69,7 @@ func TestPrepareWorkdirCreatesWorktree(t *testing.T) {
 // workdir; a non-git project folder → that folder directly (no worktree).
 func TestPrepareWorkdirFallsBack(t *testing.T) {
 	svc := newTestSvc(t)
-	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), "http://mcp", 2)
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), "http://mcp", 2)
 
 	noProj, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
 	if dir := o.prepareWorkdir(noProj); dir != "/shared" {

@@ -4,6 +4,7 @@ import { api, type HumanRequest, type Task, type TaskEvent } from "../api";
 import { agentColor, agentLabel, ago, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { AnswerBox } from "./AnswerBox";
+import { AgentTerminal } from "./AgentTerminal";
 
 interface Props {
   task: Task | null;
@@ -129,6 +130,22 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                   </p>
                 )}
               </div>
+
+              {/* live terminal — a real interactive session while the agent runs */}
+              {(task.status === "running" || task.status === "needs_human") && (
+                <div className="mb-5">
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-moss opacity-60" />
+                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-moss" />
+                    </span>
+                    <h3 className="eyebrow text-muted">Terminal · live — type to steer, Ctrl-C to interrupt</h3>
+                  </div>
+                  <div className="h-[380px] overflow-hidden rounded-xl border border-hairline bg-[#17171A] p-2">
+                    <AgentTerminal taskId={task.id} />
+                  </div>
+                </div>
+              )}
 
               {/* thread */}
               <h3 className="eyebrow mb-3 text-muted">Thread</h3>

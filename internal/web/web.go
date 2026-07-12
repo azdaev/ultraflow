@@ -13,18 +13,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"ultraflow/internal/core"
 	"ultraflow/internal/model"
+	"ultraflow/internal/terminal"
 )
 
-type server struct{ svc *core.Service }
+type server struct {
+	svc  *core.Service
+	term *terminal.Manager
+}
 
 // New returns the HTTP handler for the board. The frontend is served at the root
 // from, in order of preference: staticDir (an explicit on-disk build, for dev);
 // otherwise the embedded assets FS (a self-contained release binary); otherwise
 // nothing (API-only). Pass "" and nil to run API-only.
-func New(svc *core.Service, staticDir string, assets fs.FS) http.Handler {
-	s := &server{svc: svc}
+func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.FS) http.Handler {
+	s := &server{svc: svc, term: term}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/board", s.board)
 	mux.HandleFunc("GET /api/projects", s.listProjects)
@@ -37,6 +43,7 @@ func New(svc *core.Service, staticDir string, assets fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/events", s.taskEvents)
 	mux.HandleFunc("POST /api/tasks/{id}/retry", s.retryTask)
 	mux.HandleFunc("POST /api/tasks/{id}/merge", s.mergeTask)
+	mux.HandleFunc("GET /api/tasks/{id}/terminal", s.terminal)
 	mux.HandleFunc("GET /api/human_requests", s.pendingRequests)
 	mux.HandleFunc("POST /api/human_requests/{id}/answer", s.answer)
 	mux.HandleFunc("GET /api/events", s.events)
@@ -210,6 +217,66 @@ func (s *server) mergeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// terminal upgrades to a WebSocket bridged to the task's live PTY session: it
+// replays the scrollback, streams new output to the browser (binary frames), and
+// writes the browser's keystrokes back to the PTY. A text frame carries a resize
+// control message. This is what makes the card's terminal a real, interactive
+// terminal (input, output, Ctrl-C) rather than a read-only log.
+func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.term.Get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "no live terminal for this task", http.StatusNotFound)
+		return
+	}
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	if err != nil {
+		return
+	}
+	defer c.CloseNow()
+	ctx := r.Context()
+
+	scrollback, out, detach := sess.Attach()
+	defer detach()
+	if len(scrollback) > 0 {
+		if err := c.Write(ctx, websocket.MessageBinary, scrollback); err != nil {
+			return
+		}
+	}
+
+	// Browser → PTY: binary frames are keystrokes; a text frame is a control
+	// message (resize).
+	go func() {
+		for {
+			typ, data, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			switch typ {
+			case websocket.MessageBinary:
+				_ = sess.Write(data)
+			case websocket.MessageText:
+				var msg struct {
+					Resize *struct {
+						Rows uint16 `json:"rows"`
+						Cols uint16 `json:"cols"`
+					} `json:"resize"`
+				}
+				if json.Unmarshal(data, &msg) == nil && msg.Resize != nil {
+					_ = sess.Resize(msg.Resize.Rows, msg.Resize.Cols)
+				}
+			}
+		}
+	}()
+
+	// PTY → browser, until the session ends or the client falls behind.
+	for chunk := range out {
+		if err := c.Write(ctx, websocket.MessageBinary, chunk); err != nil {
+			return
+		}
+	}
+	_ = c.Close(websocket.StatusNormalClosure, "session ended")
 }
 
 func (s *server) taskEvents(w http.ResponseWriter, r *http.Request) {

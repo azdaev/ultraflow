@@ -13,6 +13,7 @@ import (
 	"ultraflow/internal/core"
 	"ultraflow/internal/model"
 	"ultraflow/internal/store"
+	"ultraflow/internal/terminal"
 )
 
 func newTestServer(t *testing.T) (*httptest.Server, *core.Service) {
@@ -22,7 +23,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *core.Service) {
 		t.Fatalf("store: %v", err)
 	}
 	svc := core.NewService(st)
-	return httptest.NewServer(New(svc, "", nil)), svc
+	return httptest.NewServer(New(svc, terminal.NewManager(), "", nil)), svc
 }
 
 func TestCreateAndBoard(t *testing.T) {

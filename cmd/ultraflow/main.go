@@ -21,6 +21,7 @@ import (
 	mcpserver "ultraflow/internal/mcp"
 	"ultraflow/internal/orchestrator"
 	"ultraflow/internal/store"
+	"ultraflow/internal/terminal"
 	"ultraflow/internal/web"
 	"ultraflow/internal/worktree"
 )
@@ -58,7 +59,11 @@ func main() {
 	// the service merges and tears them down (same root, so they agree on paths).
 	wt := worktree.New(*wtRoot)
 	svc.UseWorktrees(wt)
-	orch := orchestrator.New(svc, *workdir, wt, mcpURL, *maxConc)
+
+	// Live PTY sessions: the orchestrator runs each agent in a terminal, the web
+	// layer attaches the browser to it over a WebSocket.
+	term := terminal.NewManager()
+	orch := orchestrator.New(svc, *workdir, wt, term, mcpURL, *maxConc)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -67,7 +72,7 @@ func main() {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpSrv }, nil)
 	// staticDir (the -static flag) wins for dev; otherwise a release binary built
 	// with `-tags embed` serves the frontend it baked in; otherwise API-only.
-	webMux := web.New(svc, resolveStatic(*staticDir), webassets.Assets())
+	webMux := web.New(svc, term, resolveStatic(*staticDir), webassets.Assets())
 
 	root := http.NewServeMux()
 	root.Handle("/mcp", mcpHandler)
@@ -80,6 +85,7 @@ func main() {
 	srv := &http.Server{Addr: addr, Handler: root}
 	go func() {
 		<-ctx.Done()
+		term.CloseAll() // don't leak agent processes past the daemon
 		_ = srv.Close()
 	}()
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

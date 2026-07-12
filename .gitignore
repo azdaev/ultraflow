@@ -15,3 +15,7 @@ web/node_modules/.tmp/
 
 # GoReleaser output
 /dist/
+
+# Ultraflow local runtime state (when run from the repo dir)
+.ultraflow/
+web/tsconfig.tsbuildinfo

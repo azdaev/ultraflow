@@ -8,23 +8,32 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/exec"
 	"time"
 
 	"ultraflow/internal/agent"
 	"ultraflow/internal/core"
 	"ultraflow/internal/model"
+	"ultraflow/internal/terminal"
 	"ultraflow/internal/worktree"
 )
+
+// interactiveAgent is an adapter that can run as a live PTY session (a real
+// terminal the human can watch and type into), as opposed to headless.
+type interactiveAgent interface {
+	Command(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error)
+}
 
 type Orchestrator struct {
 	svc     *core.Service
 	agents  map[string]agent.Agent
 	workdir string
 	wt      *worktree.Manager
+	term    *terminal.Manager
 	sem     chan struct{}
 }
 
-func New(svc *core.Service, workdir string, wt *worktree.Manager, mcpURL string, maxConcurrent int) *Orchestrator {
+func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal.Manager, mcpURL string, maxConcurrent int) *Orchestrator {
 	if maxConcurrent < 1 {
 		maxConcurrent = 1
 	}
@@ -33,6 +42,7 @@ func New(svc *core.Service, workdir string, wt *worktree.Manager, mcpURL string,
 		agents:  map[string]agent.Agent{"claude": agent.NewClaude(mcpURL)},
 		workdir: workdir,
 		wt:      wt,
+		term:    term,
 		sem:     make(chan struct{}, maxConcurrent),
 	}
 }
@@ -90,27 +100,42 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		if ag == nil {
 			ag = o.agents["claude"]
 		}
+		ia, ok := ag.(interactiveAgent)
+		if !ok {
+			o.fail(t.ID, "agent "+ag.Name()+" can't run as an interactive terminal")
+			return
+		}
 
-		out := make(chan agent.Event, 64)
-		go func() {
-			for ev := range out {
-				o.svc.AppendTaskEvent(t.ID, ev.Kind, ev.Text)
-			}
-		}()
-
-		err := ag.Run(ctx, dir, buildPrompt(t), out)
-		close(out)
-
+		cmd, cleanup, err := ia.Command(ctx, dir, buildPrompt(t))
 		if err != nil {
+			o.fail(t.ID, "couldn't build the agent command: "+err.Error())
+			return
+		}
+		defer cleanup()
+
+		// Run the agent inside a real PTY and register the session so the board can
+		// attach live (watch + type + Ctrl-C). Wait blocks until the agent exits.
+		sess, err := o.term.Start(t.ID, cmd)
+		if err != nil {
+			o.fail(t.ID, "couldn't start the agent terminal: "+err.Error())
+			return
+		}
+		o.svc.AppendTaskEvent(t.ID, "status", "running — open the card to watch or type in the live terminal")
+
+		if err := sess.Wait(); err != nil {
 			log.Printf("task %s failed: %v", t.ID, err)
-			// Record WHY on the thread — otherwise a failed card shows "Gave up"
-			// with no reason and the error is only in the daemon's stderr.
-			o.svc.AppendTaskEvent(t.ID, "error", "agent failed: "+err.Error())
-			o.svc.UpdateStatus(t.ID, model.StatusFailed)
+			o.fail(t.ID, "agent exited with an error: "+err.Error())
 			return
 		}
 		o.svc.UpdateStatus(t.ID, model.StatusReview)
 	}()
+}
+
+// fail records a reason on the task thread and marks it failed, so a failed card
+// always explains why instead of just showing "Gave up".
+func (o *Orchestrator) fail(taskID, reason string) {
+	o.svc.AppendTaskEvent(taskID, "error", reason)
+	o.svc.UpdateStatus(taskID, model.StatusFailed)
 }
 
 // prepareWorkdir resolves where a task's agent should run. In order of

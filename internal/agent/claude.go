@@ -22,6 +22,52 @@ func NewClaude(mcpURL string) *Claude { return &Claude{mcpURL: mcpURL} }
 
 func (c *Claude) Name() string { return "claude" }
 
+// Command builds an INTERACTIVE claude session (a real TUI, not headless) for
+// running inside a PTY so the human can watch and type. It seeds the initial
+// task prompt but leaves the session live. Returns a cleanup that removes the
+// temp MCP config; call it once the process has exited.
+func (c *Claude) Command(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error) {
+	cfgPath, err := c.writeMCPConfig()
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup := func() { os.Remove(cfgPath) }
+
+	cmd := exec.CommandContext(ctx, "claude",
+		prompt, // positional prompt: seed the task, then stay interactive
+		"--mcp-config", cfgPath,
+		"--strict-mcp-config",
+		"--permission-mode", "bypassPermissions",
+	)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	// A PTY needs a TERM so claude's TUI renders (colors, cursor moves).
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	return cmd, cleanup, nil
+}
+
+// writeMCPConfig writes a throwaway MCP config pointing Claude Code at the
+// Ultraflow daemon, returning its path.
+func (c *Claude) writeMCPConfig() (string, error) {
+	cfg := map[string]any{
+		"mcpServers": map[string]any{
+			"ultraflow": map[string]any{"type": "http", "url": c.mcpURL},
+		},
+	}
+	f, err := os.CreateTemp("", "ultraflow-mcp-*.json")
+	if err != nil {
+		return "", err
+	}
+	if err := json.NewEncoder(f).Encode(cfg); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	f.Close()
+	return f.Name(), nil
+}
+
 func (c *Claude) Run(ctx context.Context, dir, prompt string, out chan<- Event) error {
 	// Write a throwaway MCP config pointing Claude Code at the Ultraflow daemon.
 	cfg := map[string]any{
