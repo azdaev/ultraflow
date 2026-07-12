@@ -62,6 +62,36 @@ func (m *Manager) Create(repoPath, taskID string) (Worktree, error) {
 	return Worktree{Path: path, Branch: branch}, nil
 }
 
+// Merge brings a task's work into repoPath's currently checked-out branch. The
+// agent may have edited files in the worktree without committing, so any pending
+// changes are committed onto the task branch first, then that branch is merged
+// with a merge commit. On any failure (notably a conflict) the merge is aborted
+// so the human's repo is left clean, and the git output is returned to explain
+// why. Does NOT tear down the worktree — the caller does that only on success.
+func (m *Manager) Merge(repoPath, taskID, message string) (string, error) {
+	branch := branchFor(taskID)
+	wtPath := m.pathFor(taskID)
+	if message == "" {
+		message = "Merge " + branch
+	}
+
+	// Commit whatever the agent left uncommitted in the worktree. `diff --cached
+	// --quiet` exits non-zero exactly when there is something staged to commit.
+	if _, err := run(wtPath, "add", "-A"); err == nil {
+		if _, err := run(wtPath, "diff", "--cached", "--quiet"); err != nil {
+			if out, cerr := run(wtPath, "commit", "-m", message); cerr != nil {
+				return out, fmt.Errorf("committing worktree changes: %w: %s", cerr, out)
+			}
+		}
+	}
+
+	if out, err := run(repoPath, "merge", "--no-ff", "-m", message, branch); err != nil {
+		_, _ = run(repoPath, "merge", "--abort") // leave the repo clean, not half-merged
+		return out, fmt.Errorf("git merge: %w: %s", err, out)
+	}
+	return "merged " + branch, nil
+}
+
 // Remove tears down a task's worktree and deletes its branch. Safe to call even
 // if nothing exists (e.g. the task never got a worktree).
 func (m *Manager) Remove(repoPath, taskID string) error {

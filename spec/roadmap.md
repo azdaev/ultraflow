@@ -36,7 +36,11 @@ Remaining M0 polish: Gin/goccy refactor; agent-session resume; the sessions tabl
 - [x] Startup reconciliation: a daemon restart requeues tasks left mid-flight
       (queued/running/needs_human) to backlog and retires their orphaned human
       checkpoints, so nothing is stranded with no recovery path.
-- [ ] Teardown on merge (kept until then so the diff survives review).
+- [x] Merge + teardown: a reviewed task's worktree changes are committed and its
+      branch merged into the project repo (`worktree.Merge`), then the worktree is
+      torn down and the task marked done (`Service.MergeTask`, `POST
+      /api/tasks/{id}/merge`, "Merge → done" button on review cards). A conflict
+      aborts cleanly and returns the task to review with its worktree intact.
 - [ ] Ports / dev-server allocation, diff+screenshot captured into ask_human
       context, freshness-vs-main / auto-rebase.
 

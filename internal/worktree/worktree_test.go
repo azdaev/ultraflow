@@ -67,6 +67,36 @@ func TestCreateAndRemove(t *testing.T) {
 	}
 }
 
+// TestMerge verifies the review→done merge: work left in the worktree (even
+// uncommitted) lands on the origin repo's checked-out branch.
+func TestMerge(t *testing.T) {
+	repo := initRepo(t)
+	m := New(filepath.Join(t.TempDir(), "worktrees"))
+
+	w, err := m.Create(repo, "feat")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Agent-style edit in the worktree, deliberately NOT committed.
+	if err := os.WriteFile(filepath.Join(w.Path, "feature.txt"), []byte("done"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := m.Merge(repo, "feat", "add feature"); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	// The file must now exist in the origin repo's working tree.
+	if _, err := os.Stat(filepath.Join(repo, "feature.txt")); err != nil {
+		t.Fatalf("merged file missing from origin: %v", err)
+	}
+
+	// Teardown after a successful merge removes the worktree and branch.
+	m.Remove(repo, "feat")
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Fatal("worktree dir still present after Remove")
+	}
+}
+
 // TestCreateIdempotentForRetry verifies Create cleans up a prior attempt so a
 // retried task (same id → same branch) starts fresh instead of erroring on a
 // branch/worktree that already exists.

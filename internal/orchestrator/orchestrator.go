@@ -24,7 +24,7 @@ type Orchestrator struct {
 	sem     chan struct{}
 }
 
-func New(svc *core.Service, workdir, worktreeRoot, mcpURL string, maxConcurrent int) *Orchestrator {
+func New(svc *core.Service, workdir string, wt *worktree.Manager, mcpURL string, maxConcurrent int) *Orchestrator {
 	if maxConcurrent < 1 {
 		maxConcurrent = 1
 	}
@@ -32,7 +32,7 @@ func New(svc *core.Service, workdir, worktreeRoot, mcpURL string, maxConcurrent 
 		svc:     svc,
 		agents:  map[string]agent.Agent{"claude": agent.NewClaude(mcpURL)},
 		workdir: workdir,
-		wt:      worktree.New(worktreeRoot),
+		wt:      wt,
 		sem:     make(chan struct{}, maxConcurrent),
 	}
 }

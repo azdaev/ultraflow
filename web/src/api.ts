@@ -93,6 +93,13 @@ export const api = {
       json<{ status: string }>(r),
     ),
 
+  // merge lands a reviewed task's worktree branch into the project repo and
+  // finishes it. Rejects (409) with the git explanation if it can't complete.
+  merge: (taskId: string) =>
+    fetch(`/api/tasks/${taskId}/merge`, { method: "POST" }).then((r) =>
+      json<{ status: string }>(r),
+    ),
+
   taskEvents: (taskId: string) =>
     fetch(`/api/tasks/${taskId}/events`).then((r) => json<TaskEvent[]>(r)),
 

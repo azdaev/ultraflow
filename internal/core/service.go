@@ -8,11 +8,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
 	"ultraflow/internal/model"
 	"ultraflow/internal/store"
+	"ultraflow/internal/worktree"
 )
 
 // Service is the central coordinator shared by the MCP server, web API and
@@ -20,10 +22,16 @@ import (
 type Service struct {
 	store  *store.Store
 	Broker *Broker
+	wt     *worktree.Manager // set via UseWorktrees; nil = merge/teardown disabled
 
 	mu      sync.Mutex
 	pending map[string]chan string // human_request id -> answer channel
 }
+
+// UseWorktrees gives the service the worktree manager it needs to merge a task's
+// branch and tear its checkout down. Shares the orchestrator's manager (same
+// root), so both agree on where a task's worktree lives.
+func (s *Service) UseWorktrees(m *worktree.Manager) { s.wt = m }
 
 func NewService(st *store.Store) *Service {
 	return &Service{
@@ -136,6 +144,44 @@ func (s *Service) RetryTask(id string) error {
 	}
 	s.UpdateStatus(t.ID, model.StatusBacklog)
 	s.appendEvent(t.ID, "status", "re-queued by human")
+	return nil
+}
+
+// MergeTask lands a reviewed task's work in the project repo and finishes it:
+// commit + merge the task's worktree branch into the repo's checked-out branch,
+// then tear the worktree down and mark the task done. A conflict (or any git
+// failure) is aborted so the repo stays clean, and the task returns to review
+// with the worktree intact so the human can retry or inspect it.
+func (s *Service) MergeTask(id string) error {
+	t, err := s.store.GetTask(id)
+	if err != nil {
+		return err
+	}
+	if t.Status != model.StatusReview {
+		return fmt.Errorf("only a task in review can be merged (this one is %s)", t.Status)
+	}
+	if s.wt == nil || t.Worktree == "" {
+		return fmt.Errorf("this task has no worktree to merge")
+	}
+	p, err := s.store.ProjectByName(t.Project)
+	if err != nil || p.RepoPath == "" {
+		return fmt.Errorf("couldn't find the project repo to merge into")
+	}
+
+	_ = s.UpdateStatus(id, model.StatusMerging)
+	s.appendEvent(id, "status", "merging into "+p.Name)
+
+	if _, err := s.wt.Merge(p.RepoPath, id, "Ultraflow: "+t.Title); err != nil {
+		_ = s.UpdateStatus(id, model.StatusReview) // keep the worktree for a retry
+		s.appendEvent(id, "status", "merge couldn't complete (your repo was left clean): "+err.Error())
+		return err
+	}
+
+	_ = s.wt.Remove(p.RepoPath, id)
+	if err := s.UpdateStatus(id, model.StatusDone); err != nil {
+		return err
+	}
+	s.appendEvent(id, "status", "merged and cleaned up the worktree")
 	return nil
 }
 

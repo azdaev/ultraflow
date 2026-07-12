@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { motion } from "motion/react";
-import type { Project, Task } from "../api";
+import { api, type Project, type Task } from "../api";
 import { agentColor, agentLabel, ago, elapsed, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { ProjectChip } from "./ProjectChip";
@@ -68,6 +69,11 @@ export function TaskCard({ task, activity, now, onOpen, project, showChip }: Pro
         </div>
       )}
 
+      {/* review → merge: land the worktree branch and finish the task. Only
+          shown when there's an isolated worktree to merge (a non-git project
+          runs in place, so there's nothing to land). */}
+      {task.status === "review" && task.worktree && <MergeAction taskId={task.id} />}
+
       {/* flow stepper */}
       <div className="mt-3">
         <FlowStepper flow={task.flow} status={task.status} />
@@ -85,6 +91,48 @@ export function TaskCard({ task, activity, now, onOpen, project, showChip }: Pro
         <span className="font-mono text-[11px] text-muted">{flowOf(task.flow).label}</span>
       </div>
     </motion.button>
+  );
+}
+
+// MergeAction is a review-card control. It lives inside the card's <button>, so
+// it renders as a role="button" span and stops click propagation (a nested
+// <button> is invalid, and the click must not open the drawer). SSE moves the
+// card to "done" on success; a conflict surfaces the git message inline.
+function MergeAction({ taskId }: { taskId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function merge(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.merge(taskId);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "merge failed");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2.5">
+      <span
+        role="button"
+        tabIndex={0}
+        aria-disabled={busy}
+        onClick={merge}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") merge(e as unknown as React.MouseEvent);
+        }}
+        className={`inline-flex items-center gap-1.5 rounded-lg bg-moss px-3 py-1.5 text-[13px] font-semibold text-white transition hover:brightness-105 ${
+          busy ? "opacity-60" : ""
+        }`}
+      >
+        {busy ? "Merging…" : "Merge → done"}
+      </span>
+      {err && <p className="mt-1.5 line-clamp-2 text-[12px] text-rust">{err}</p>}
+    </div>
   );
 }
 

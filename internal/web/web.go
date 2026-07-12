@@ -36,6 +36,7 @@ func New(svc *core.Service, staticDir string, assets fs.FS) http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}", s.getTask)
 	mux.HandleFunc("GET /api/tasks/{id}/events", s.taskEvents)
 	mux.HandleFunc("POST /api/tasks/{id}/retry", s.retryTask)
+	mux.HandleFunc("POST /api/tasks/{id}/merge", s.mergeTask)
 	mux.HandleFunc("GET /api/human_requests", s.pendingRequests)
 	mux.HandleFunc("POST /api/human_requests/{id}/answer", s.answer)
 	mux.HandleFunc("GET /api/events", s.events)
@@ -195,6 +196,17 @@ func pickFolder() (path string, ok bool, err error) {
 func (s *server) retryTask(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.RetryTask(r.PathValue("id")); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// mergeTask lands a reviewed task's worktree branch into the project repo and
+// finishes it. A merge that can't complete (e.g. a conflict) returns 409 with the
+// git explanation; the task is left in review with its worktree intact.
+func (s *server) mergeTask(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.MergeTask(r.PathValue("id")); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

@@ -22,6 +22,7 @@ import (
 	"ultraflow/internal/orchestrator"
 	"ultraflow/internal/store"
 	"ultraflow/internal/web"
+	"ultraflow/internal/worktree"
 )
 
 func main() {
@@ -53,7 +54,11 @@ func main() {
 	mcpSrv := mcpserver.New(svc)
 	mcpURL := fmt.Sprintf("http://localhost:%d/mcp", *port)
 
-	orch := orchestrator.New(svc, *workdir, *wtRoot, mcpURL, *maxConc)
+	// One worktree manager, shared: the orchestrator creates per-task worktrees,
+	// the service merges and tears them down (same root, so they agree on paths).
+	wt := worktree.New(*wtRoot)
+	svc.UseWorktrees(wt)
+	orch := orchestrator.New(svc, *workdir, wt, mcpURL, *maxConc)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

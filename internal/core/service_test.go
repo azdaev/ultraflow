@@ -2,12 +2,15 @@ package core
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"ultraflow/internal/model"
 	"ultraflow/internal/store"
+	"ultraflow/internal/worktree"
 )
 
 func newTestService(t *testing.T) *Service {
@@ -239,6 +242,69 @@ func TestAnswerHumanDoubleAnswerNoop(t *testing.T) {
 	// Answering an unknown id is also a clean no-op.
 	if err := svc.AnswerHuman("does-not-exist", "x"); err != nil {
 		t.Fatalf("unknown-id answer should be a no-op, got %v", err)
+	}
+}
+
+// TestMergeTask covers the review→done merge: a reviewed task's worktree work is
+// merged into the project repo, the worktree is torn down, and the task finishes.
+func TestMergeTask(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	// A project repo with one commit.
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"}, {"config", "user.email", "t@t.dev"},
+		{"config", "user.name", "t"}, {"commit", "--allow-empty", "-q", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	svc := newTestService(t)
+	wt := worktree.New(filepath.Join(t.TempDir(), "wt"))
+	svc.UseWorktrees(wt)
+	if _, err := svc.CreateProject("proj", repo); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, _ := svc.CreateTaskFull("ship it", "", "proj", "claude", "solo")
+
+	// Simulate the orchestrator: give the task a worktree and put it in review
+	// with some agent work left in the checkout.
+	w, err := wt.Create(repo, task.ID)
+	if err != nil {
+		t.Fatalf("worktree create: %v", err)
+	}
+	svc.SetWorktree(task.ID, w.Path)
+	if err := os.WriteFile(filepath.Join(w.Path, "shipped.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	svc.UpdateStatus(task.ID, model.StatusReview)
+
+	if err := svc.MergeTask(task.ID); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusDone {
+		t.Fatalf("expected done after merge, got %s", got.Status)
+	}
+	// Work landed in the origin repo, and the worktree is gone.
+	if _, err := os.Stat(filepath.Join(repo, "shipped.txt")); err != nil {
+		t.Fatalf("merged work missing from repo: %v", err)
+	}
+	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
+		t.Fatal("worktree should be torn down after a successful merge")
+	}
+}
+
+// TestMergeTaskRejectsNonReview guards the precondition: only a reviewed task
+// can be merged.
+func TestMergeTaskRejectsNonReview(t *testing.T) {
+	svc := newTestService(t)
+	svc.UseWorktrees(worktree.New(filepath.Join(t.TempDir(), "wt")))
+	task, _ := svc.CreateTask("t", "", "")
+	if err := svc.MergeTask(task.ID); err == nil {
+		t.Fatal("expected merge of a backlog task to be rejected")
 	}
 }
 
