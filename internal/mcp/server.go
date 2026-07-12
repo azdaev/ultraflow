@@ -10,7 +10,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"ultraflow/internal/core"
-	"ultraflow/internal/model"
 	"ultraflow/internal/terminal"
 )
 
@@ -111,12 +110,9 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 			svc.AppendTaskEvent(a.TaskID, "report", a.Report)
 		}
 		svc.AppendTaskEvent(a.TaskID, "result", summary)
-		if err := svc.UpdateStatus(a.TaskID, model.StatusReview); err != nil {
-			return nil, nil, err
+		if !svc.FinishForReview(a.TaskID) {
+			return nil, nil, fmt.Errorf("task is no longer running")
 		}
-		// If the branch fell behind main while the agent worked, warn on the card
-		// (roadmap M4). Async so the git check doesn't slow this tool's response.
-		go svc.NoteFreshness(a.TaskID)
 		// End the live session so the slot frees. Close asynchronously: closing kills
 		// this agent's own process, and we want this tool call to return first.
 		if sess, ok := term.Get(a.TaskID); ok {
