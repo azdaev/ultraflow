@@ -1,4 +1,6 @@
-import type { Project, Task } from "../api";
+import { api, type Project, type Task } from "../api";
+import { copyText } from "../util";
+import { ContextMenu, useContextMenu, type MenuItem } from "./ContextMenu";
 import { PipelineBoard } from "./PipelineBoard";
 
 interface Props {
@@ -26,6 +28,7 @@ export function SwimlanesBoard({ tasks, activity, now, onOpen, projects, onExpan
           swatch={p.color}
           name={p.name}
           repoPath={p.repoPath}
+          project={p}
           tasks={tasks.filter((t) => t.project === p.name)}
           activity={activity}
           now={now}
@@ -60,6 +63,7 @@ function Lane({
   swatch,
   name,
   repoPath,
+  project,
   tasks,
   activity,
   now,
@@ -71,6 +75,7 @@ function Lane({
   swatch: string;
   name: string;
   repoPath: string;
+  project?: Project; // absent for the trailing "Unassigned" lane
   tasks: Task[];
   activity: Record<string, string>;
   now: number;
@@ -79,9 +84,24 @@ function Lane({
   addProject: string;
   onExpandComposer?: (title: string, project: string) => void;
 }) {
+  const menu = useContextMenu();
+
+  // Only real (registered) projects get a lane menu — "Unassigned" has no repo
+  // to copy or registration to remove.
+  const items: MenuItem[] = project
+    ? [
+        { label: "Copy repo path", onSelect: () => copyText(project.repoPath) },
+        { separator: true },
+        { label: "Remove project", danger: true, onSelect: () => api.deleteProject(project.id).catch(() => {}) },
+      ]
+    : [];
+
   return (
     <section>
-      <div className="mb-3 flex items-baseline gap-2.5 border-b border-hairline pb-2">
+      <div
+        onContextMenu={project ? menu.openMenu : undefined}
+        className="mb-3 flex items-baseline gap-2.5 border-b border-hairline pb-2"
+      >
         <span
           className="h-3 w-3 shrink-0 translate-y-0.5 rounded-[4px]"
           style={{ backgroundColor: swatch }}
@@ -91,6 +111,7 @@ function Lane({
         <span className="ml-auto shrink-0 font-mono text-[11px] text-muted">
           {tasks.length} {tasks.length === 1 ? "task" : "tasks"}
         </span>
+        {project && <ContextMenu menu={menu} items={items} />}
       </div>
       <PipelineBoard
         tasks={tasks}

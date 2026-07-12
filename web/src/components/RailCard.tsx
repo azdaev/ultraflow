@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { motion } from "motion/react";
 import { api, type HumanRequest, type Task } from "../api";
-import { agentLabel, ago } from "../util";
+import { agentLabel, ago, copyText } from "../util";
 import { AnswerBox } from "./AnswerBox";
+import { ContextMenu, useContextMenu, type MenuItem } from "./ContextMenu";
 
 export type AttentionItem =
   | { type: "needs_human"; request: HumanRequest; task?: Task }
@@ -16,9 +17,24 @@ interface Props {
 }
 
 export function RailCard({ item, now, onOpen }: Props) {
+  const menu = useContextMenu();
+  const taskId = item.type === "needs_human" ? item.request.taskId : item.task.id;
+
+  // Rail actions echo each card's primary buttons so a right-click reaches them
+  // without hunting for the small controls at the bottom of the card.
+  const items: MenuItem[] = [{ label: "Open thread", onSelect: () => onOpen(taskId) }];
+  if (item.type === "merge_failed") {
+    items.push({ label: "Try merge again", onSelect: () => api.merge(taskId).catch(() => {}) });
+  } else if (item.type === "failed") {
+    items.push({ label: "Retry", onSelect: () => api.retry(taskId).catch(() => {}) });
+  }
+  items.push({ separator: true });
+  items.push({ label: "Copy task ID", onSelect: () => copyText(taskId) });
+
   return (
     <motion.div
       layout
+      onContextMenu={menu.openMenu}
       initial={{ opacity: 0, y: 8, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.97 }}
@@ -32,6 +48,7 @@ export function RailCard({ item, now, onOpen }: Props) {
       ) : (
         <FailedCard item={item} now={now} onOpen={onOpen} />
       )}
+      <ContextMenu menu={menu} items={items} />
     </motion.div>
   );
 }

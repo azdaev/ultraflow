@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { motion } from "motion/react";
 import { api, type Project, type Task } from "../api";
-import { agentColor, agentLabel, ago, elapsed, flowOf } from "../util";
+import { agentColor, agentLabel, ago, copyText, elapsed, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { ProjectChip } from "./ProjectChip";
+import { ContextMenu, useContextMenu, type MenuItem } from "./ContextMenu";
 
 interface Props {
   task: Task;
@@ -16,11 +17,37 @@ interface Props {
 
 export function TaskCard({ task, activity, now, onOpen, project, showChip }: Props) {
   const needsHuman = task.status === "needs_human";
+  const menu = useContextMenu();
+
+  // Right-click actions mirror a card's primary controls, keyed off its status,
+  // so they're reachable without aiming at the small inline buttons. SSE
+  // reflects merge/mark-done/retry results, so we fire and let a conflict
+  // resurface via the attention rail instead of blocking here.
+  const items: MenuItem[] = [
+    { label: "Open details", onSelect: () => onOpen(task.id) },
+  ];
+  if (task.status === "review") {
+    items.push(
+      task.worktree
+        ? { label: "Merge → done", onSelect: () => api.merge(task.id).catch(() => {}) }
+        : { label: "Mark done", onSelect: () => api.markDone(task.id).catch(() => {}) },
+    );
+  }
+  if (task.status === "failed") {
+    items.push({ label: "Retry", onSelect: () => api.retry(task.id).catch(() => {}) });
+  }
+  items.push({ separator: true });
+  items.push({ label: "Copy task ID", onSelect: () => copyText(task.id) });
+  if (task.worktree) {
+    items.push({ label: "Copy worktree path", onSelect: () => copyText(task.worktree) });
+  }
 
   return (
+    <>
     <motion.button
       layout
       onClick={() => onOpen(task.id)}
+      onContextMenu={menu.openMenu}
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 320, damping: 30 }}
@@ -96,6 +123,8 @@ export function TaskCard({ task, activity, now, onOpen, project, showChip }: Pro
         <span className="font-mono text-[11px] text-muted">{flowOf(task.flow).label}</span>
       </div>
     </motion.button>
+    <ContextMenu menu={menu} items={items} />
+    </>
   );
 }
 
