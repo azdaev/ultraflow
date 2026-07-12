@@ -216,7 +216,15 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		// an agent up on it; that would revive a task the human deliberately stopped.
 		// Re-read here so we also see the fresh resume marker RecoverInFlight may have set.
 		cur, err := o.svc.GetTask(t.ID)
-		if err != nil || cur.Status != model.StatusQueued {
+		if err != nil {
+			// Transient read failure after we already claimed it out of backlog. Put it
+			// back — guarded, so we can't clobber a concurrent stop — so a later poll
+			// re-picks it, rather than stranding it in `queued` with no agent until a
+			// daemon restart (BacklogTasks never re-picks a queued task).
+			o.svc.SwapStatus(t.ID, []model.TaskStatus{model.StatusQueued}, model.StatusBacklog)
+			return
+		}
+		if cur.Status != model.StatusQueued {
 			return
 		}
 
@@ -904,7 +912,7 @@ func buildRevisePrompt(t model.Task, feedback string, prt int) string {
 	return fmt.Sprintf(`The human reviewed your work on this Ultraflow task and is sending it back for changes.
 
 Task ID: %s
-Title: %s
+Title: %s%s
 
 Their feedback:
 %s
@@ -914,7 +922,22 @@ address the feedback. %s
 
 %sWHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-
 line summary to send it back to review.`,
-		t.ID, t.Title, feedback, screenshotInstruction, portInstruction(prt), t.ID)
+		t.ID, t.Title, taskBrief(t), feedback, screenshotInstruction, portInstruction(prt), t.ID)
+}
+
+// taskBrief restates a task's full instructions for a re-entry prompt. The
+// self-heal / revise / reengage / rebase paths lean on the prior conversation
+// still being in memory — true for claude (`--continue`) but NOT for codex, whose
+// ResumeCommand starts a FRESH session. Without the body restated, a codex agent
+// resuming any of those paths would see only the short title and the immediate
+// error/feedback, having lost the actual task. Redundant (harmless) for claude.
+// Empty when the task has no body.
+func taskBrief(t model.Task) string {
+	body := strings.TrimSpace(t.Body)
+	if body == "" {
+		return ""
+	}
+	return "\n\nThe task, in full:\n" + body
 }
 
 // buildSelfHealPrompt is seeded when the agent's previous run ended in an ERROR and
@@ -925,7 +948,7 @@ func buildSelfHealPrompt(t model.Task, retry, budget int, errText string) string
 	return fmt.Sprintf(`Your last run on this Ultraflow task ended with an ERROR before you finished — the process exited unexpectedly.
 
 Task ID: %s
-Title: %s
+Title: %s%s
 
 The error:
 %s
@@ -935,7 +958,7 @@ carry on with the task — your earlier work is still here in this working direc
 Don't just repeat what failed; diagnose it first.
 
 WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-line summary.`,
-		t.ID, t.Title, truncateErr(errText), retry, budget, t.ID)
+		t.ID, t.Title, taskBrief(t), truncateErr(errText), retry, budget, t.ID)
 }
 
 // buildReengagePrompt is seeded when the human answers a self-heal escalation — the
@@ -945,7 +968,7 @@ func buildReengagePrompt(t model.Task, guidance string) string {
 	return fmt.Sprintf(`You got stuck on this Ultraflow task after several self-heal attempts and asked the human for help. They have responded.
 
 Task ID: %s
-Title: %s
+Title: %s%s
 
 Their guidance:
 %s
@@ -953,7 +976,7 @@ Their guidance:
 Use it to get unstuck. Your earlier work is still here in this working directory. %s
 
 WHEN YOU ARE DONE: call the MCP tool "finish_task" with task_id="%s" and a one-line summary.`,
-		t.ID, t.Title, guidance, screenshotInstruction, t.ID)
+		t.ID, t.Title, taskBrief(t), guidance, screenshotInstruction, t.ID)
 }
 
 // buildRebasePrompt is seeded when a task's branch has fallen behind main and the
@@ -972,7 +995,7 @@ hit merge conflicts it could not resolve on its own. Bring the branch up to date
 so it can land cleanly.
 
 Task ID: %s
-Title: %s
+Title: %s%s
 
 Do this in your working directory (your earlier changes are already here):
   1. Run: git rebase %s
@@ -993,5 +1016,5 @@ options. Then STOP and wait for the answer.
 WHEN THE REBASE IS COMPLETE and your work is healthy on top of %s: call the MCP
 tool "finish_task" with task_id="%s" and a one-line summary. That returns it to
 review, now up to date and ready to merge.`,
-		behindStr, t.ID, t.Title, base, base, base, t.ID, screenshotInstruction, base, t.ID)
+		behindStr, t.ID, t.Title, taskBrief(t), base, base, base, t.ID, screenshotInstruction, base, t.ID)
 }
