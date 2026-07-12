@@ -111,6 +111,45 @@ func TestRebaseClean(t *testing.T) {
 	}
 }
 
+// TestCreateResumePreservesCommits is the regression guard for the data-loss bug:
+// re-Creating a task's worktree (a resume after a daemon restart / in-flight
+// recovery) must REUSE the existing branch and keep every commit the agent already
+// made — not prune the branch and re-create it at main's HEAD, silently wiping the
+// work. It also confirms a genuinely new task still branches fresh off HEAD.
+func TestCreateResumePreservesCommits(t *testing.T) {
+	repo := initRepo(t)
+	m := New(filepath.Join(t.TempDir(), "worktrees"))
+
+	// First run: fresh worktree, then the agent commits its work on the task branch.
+	w, err := m.Create(repo, "resume")
+	if err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	commitFile(t, w.Path, "feature.txt", "the agent's work", "agent work")
+
+	// Main advances independently (as it does while the task runs).
+	commitFile(t, repo, "unrelated.txt", "x", "main moves on")
+
+	// Second run for the SAME task — this is what a restart/recovery triggers.
+	w2, err := m.Create(repo, "resume")
+	if err != nil {
+		t.Fatalf("resume create: %v", err)
+	}
+	// The agent's commit must still be checked out — the bug wiped it back to main.
+	if _, err := os.Stat(filepath.Join(w2.Path, "feature.txt")); err != nil {
+		t.Fatalf("resume lost the agent's committed work (branch was reset to main): %v", err)
+	}
+
+	// A different, never-seen task must still branch fresh (no leftover files).
+	fresh, err := m.Create(repo, "brand-new")
+	if err != nil {
+		t.Fatalf("fresh create: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fresh.Path, "feature.txt")); err == nil {
+		t.Fatalf("a brand-new task should not carry another task's files")
+	}
+}
+
 // TestRebaseConflict verifies that when the branch and main both change the SAME
 // lines, the rebase reports a conflict and leaves the worktree CLEAN (aborted, no
 // half-finished rebase) so the caller can hand it to the agent's self-heal.

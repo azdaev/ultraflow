@@ -50,26 +50,43 @@ func IsGitRepo(repoPath string) bool {
 	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
-// Create makes a fresh worktree for taskID branched off repoPath's current HEAD.
-// It is idempotent: any stale worktree/branch from a previous run of the same
-// task is removed first, so a retry starts clean.
+// Create checks out taskID's worktree. A brand-new task branches fresh off
+// repoPath's current HEAD; a task that already has a branch (a resume after a
+// daemon restart, or a retry) REUSES it, preserving every commit the agent
+// already made. It is idempotent: a stale worktree checkout from a prior run is
+// detached first, but — unlike before — the branch itself is never destroyed
+// here, so recovering an in-flight task no longer wipes its work back to main.
 func (m *Manager) Create(repoPath, taskID string) (Worktree, error) {
 	branch := branchFor(taskID)
 	path := m.pathFor(taskID)
 
-	// Prune any leftovers from a prior attempt (ignore errors — they just mean
-	// nothing was there to clean up).
-	m.pruneTask(repoPath, taskID)
+	// Detach any leftover worktree checkout for this task (ignore errors — they
+	// just mean nothing was there). Crucially this KEEPS the branch: its commits
+	// are the resumed task's work.
+	m.pruneWorktree(repoPath, taskID)
 
 	if err := os.MkdirAll(m.root, 0o755); err != nil {
 		return Worktree{}, fmt.Errorf("worktree root: %w", err)
 	}
 
-	// -b creates the branch at HEAD and checks it out into path in one step.
-	if out, err := run(repoPath, "worktree", "add", "-b", branch, path); err != nil {
+	// Reuse the existing branch on a resume/retry (preserve its commits); only a
+	// genuinely new task creates the branch fresh at HEAD with -b.
+	args := []string{"worktree", "add", "-b", branch, path}
+	if branchExists(repoPath, branch) {
+		args = []string{"worktree", "add", path, branch}
+	}
+	if out, err := run(repoPath, args...); err != nil {
 		return Worktree{}, fmt.Errorf("git worktree add: %w: %s", err, out)
 	}
 	return Worktree{Path: path, Branch: branch}, nil
+}
+
+// branchExists reports whether repoPath already has the task's local branch — the
+// signal that Create is resuming a task (reuse its commits) rather than starting a
+// fresh one (branch off HEAD).
+func branchExists(repoPath, branch string) bool {
+	_, err := run(repoPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
 }
 
 // Merge brings a task's work into repoPath's currently checked-out branch. The
@@ -283,13 +300,20 @@ func (m *Manager) Remove(repoPath, taskID string) error {
 	return nil
 }
 
-// pruneTask force-removes the worktree, its registration, the leftover dir, and
-// the branch — each step best-effort so a partial prior state still gets cleaned.
-func (m *Manager) pruneTask(repoPath, taskID string) {
+// pruneWorktree force-removes the worktree checkout, its registration, and the
+// leftover dir — but LEAVES the branch intact. Used when re-checking-out a task
+// (Create): a resumed task's commits live on that branch and must survive.
+func (m *Manager) pruneWorktree(repoPath, taskID string) {
 	path := m.pathFor(taskID)
 	_, _ = run(repoPath, "worktree", "remove", "--force", path)
 	_, _ = run(repoPath, "worktree", "prune")
 	_ = os.RemoveAll(path)
+}
+
+// pruneTask does pruneWorktree AND deletes the branch — the full teardown for a
+// task whose work has landed (Remove, post-merge), where the branch is spent.
+func (m *Manager) pruneTask(repoPath, taskID string) {
+	m.pruneWorktree(repoPath, taskID)
 	_, _ = run(repoPath, "branch", "-D", branchFor(taskID))
 }
 
