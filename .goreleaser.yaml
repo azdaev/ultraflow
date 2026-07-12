@@ -15,7 +15,8 @@ builds:
     main: ./cmd/ultraflow
     binary: ultraflow
     flags:
-      - -tags=embed
+      # embed bakes in web/dist; go_json routes gin's JSON through goccy/go-json.
+      - -tags=embed,go_json
     ldflags:
       - -s -w
     env:

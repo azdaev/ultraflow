@@ -12,9 +12,10 @@ frontend:
 	cd web && npm install && npm run build
 
 # build: the self-contained release binary — frontend baked in via `-tags embed`,
-# so ./ultraflow is a single file that needs no web/dist alongside it.
+# so ./ultraflow is a single file that needs no web/dist alongside it. `go_json`
+# routes gin's JSON serialization through goccy/go-json (the fast path).
 build: frontend
-	go build -tags embed -o ultraflow ./cmd/ultraflow
+	go build -tags embed,go_json -o ultraflow ./cmd/ultraflow
 	@echo "built ./ultraflow (self-contained) — run it from anywhere"
 
 test:

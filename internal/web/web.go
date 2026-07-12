@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
 
 	"ultraflow/internal/core"
 	"ultraflow/internal/model"
@@ -60,78 +61,85 @@ func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.
 	if r, ok := conc.(reviser); ok {
 		s.reviser = r
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/board", s.board)
-	mux.HandleFunc("GET /api/settings", s.getSettings)
-	mux.HandleFunc("POST /api/settings/concurrency", s.setConcurrencyHandler)
-	mux.HandleFunc("GET /api/projects", s.listProjects)
-	mux.HandleFunc("POST /api/projects", s.createProject)
-	mux.HandleFunc("POST /api/projects/pick", s.pickProject)
-	mux.HandleFunc("DELETE /api/projects/{id}", s.deleteProject)
-	mux.HandleFunc("GET /api/tasks", s.listTasks)
-	mux.HandleFunc("POST /api/tasks", s.createTask)
-	mux.HandleFunc("GET /api/tasks/{id}", s.getTask)
-	mux.HandleFunc("GET /api/tasks/{id}/events", s.taskEvents)
-	mux.HandleFunc("GET /api/tasks/{id}/diff", s.diff)
-	mux.HandleFunc("POST /api/tasks/{id}/revise", s.revise)
-	mux.HandleFunc("GET /api/tasks/{id}/shots", s.listShots)
-	mux.HandleFunc("GET /api/tasks/{id}/shots/{name}", s.getShot)
-	mux.HandleFunc("POST /api/tasks/{id}/retry", s.retryTask)
-	mux.HandleFunc("POST /api/tasks/{id}/merge", s.mergeTask)
-	mux.HandleFunc("POST /api/tasks/{id}/done", s.finishReview)
-	mux.HandleFunc("GET /api/tasks/{id}/terminal", s.terminal)
-	mux.HandleFunc("GET /api/human_requests", s.pendingRequests)
-	mux.HandleFunc("POST /api/human_requests/{id}/answer", s.answer)
-	mux.HandleFunc("GET /api/events", s.events)
+	// Release mode silences gin's debug banner/route dump; the daemon was previously
+	// silent on startup and we keep it that way.
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.GET("/api/board", s.board)
+	r.GET("/api/settings", s.getSettings)
+	r.POST("/api/settings/concurrency", s.setConcurrencyHandler)
+	r.GET("/api/projects", s.listProjects)
+	r.POST("/api/projects", s.createProject)
+	r.POST("/api/projects/pick", s.pickProject)
+	r.DELETE("/api/projects/:id", s.deleteProject)
+	r.GET("/api/tasks", s.listTasks)
+	r.POST("/api/tasks", s.createTask)
+	r.GET("/api/tasks/:id", s.getTask)
+	r.GET("/api/tasks/:id/events", s.taskEvents)
+	r.GET("/api/tasks/:id/diff", s.diff)
+	r.POST("/api/tasks/:id/revise", s.revise)
+	r.GET("/api/tasks/:id/shots", s.listShots)
+	r.GET("/api/tasks/:id/shots/:name", s.getShot)
+	r.POST("/api/tasks/:id/retry", s.retryTask)
+	r.POST("/api/tasks/:id/merge", s.mergeTask)
+	r.POST("/api/tasks/:id/done", s.finishReview)
+	r.GET("/api/tasks/:id/terminal", s.terminal)
+	r.GET("/api/human_requests", s.pendingRequests)
+	r.POST("/api/human_requests/:id/answer", s.answer)
+	r.GET("/api/events", s.events)
+	// The React build (and its assets) is everything that isn't an API route; serve
+	// it as the fallback so client-side paths reach index.html.
 	switch {
 	case staticDir != "":
-		mux.Handle("/", http.FileServer(http.Dir(staticDir)))
+		r.NoRoute(gin.WrapH(http.FileServer(http.Dir(staticDir))))
 	case assets != nil:
-		mux.Handle("/", http.FileServer(http.FS(assets)))
+		r.NoRoute(gin.WrapH(http.FileServer(http.FS(assets))))
 	}
-	return mux
+	return r
 }
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+// writeJSON renders v as JSON through gin, which under the `go_json` build tag
+// serializes via goccy/go-json (the fast path). Kept as a helper so every handler
+// emits the same shape the encoding/json version did.
+func writeJSON(c *gin.Context, code int, v any) {
+	c.JSON(code, v)
 }
 
-func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {
+func (s *server) listTasks(c *gin.Context) {
 	tasks, err := s.svc.ListTasks()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if tasks == nil {
-		writeJSON(w, http.StatusOK, []any{})
+		writeJSON(c, http.StatusOK, []any{})
 		return
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	writeJSON(c, http.StatusOK, tasks)
 }
 
 // board returns everything the board needs in one round trip: tasks, the pending
 // ask_human requests (the attention rail), and the latest activity line per task.
-func (s *server) board(w http.ResponseWriter, r *http.Request) {
+func (s *server) board(c *gin.Context) {
 	tasks, err := s.svc.ListTasks()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	reqs, err := s.svc.PendingRequests()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	activity, err := s.svc.LatestActivity()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	activityKind, err := s.svc.LatestActivityKind()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if tasks == nil {
@@ -142,13 +150,13 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 	}
 	projects, err := s.svc.ListProjects()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if projects == nil {
 		projects = []model.Project{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(c, http.StatusOK, map[string]any{
 		"tasks":        tasks,
 		"requests":     reqs,
 		"activity":     activity,
@@ -171,8 +179,8 @@ func (s *server) currentConcurrency() int {
 }
 
 // getSettings returns the daemon-wide preferences the board can edit.
-func (s *server) getSettings(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+func (s *server) getSettings(c *gin.Context) {
+	writeJSON(c, http.StatusOK, map[string]any{
 		"maxConcurrent":    s.currentConcurrency(),
 		"maxConcurrentMin": core.MinConcurrent,
 		"maxConcurrentMax": core.MaxConcurrentCap,
@@ -186,64 +194,64 @@ func (s *server) getSettings(w http.ResponseWriter, r *http.Request) {
 // setConcurrencyHandler validates and persists a new parallel-agent limit, then
 // applies it to the live orchestrator so queued tasks can start immediately when
 // it's raised. Returns the effective (clamped) value.
-func (s *server) setConcurrencyHandler(w http.ResponseWriter, r *http.Request) {
+func (s *server) setConcurrencyHandler(c *gin.Context) {
 	var body struct {
 		Value int `json:"value"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if body.Value < core.MinConcurrent || body.Value > core.MaxConcurrentCap {
-		http.Error(w, fmt.Sprintf("value must be between %d and %d", core.MinConcurrent, core.MaxConcurrentCap), http.StatusBadRequest)
+		http.Error(c.Writer, fmt.Sprintf("value must be between %d and %d", core.MinConcurrent, core.MaxConcurrentCap), http.StatusBadRequest)
 		return
 	}
 	n, err := s.svc.SetMaxConcurrent(body.Value)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if s.conc != nil {
 		s.conc.SetLimit(n)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"maxConcurrent": n})
+	writeJSON(c, http.StatusOK, map[string]any{"maxConcurrent": n})
 }
 
-func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
+func (s *server) listProjects(c *gin.Context) {
 	projects, err := s.svc.ListProjects()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if projects == nil {
 		projects = []model.Project{}
 	}
-	writeJSON(w, http.StatusOK, projects)
+	writeJSON(c, http.StatusOK, projects)
 }
 
 // createProject registers a project from a pasted absolute path — the fallback
 // used where the native folder picker isn't available (non-macOS, see
 // pickFolder). The path is validated to be an existing git repo and its basename
 // becomes the project name, matching the native picker flow (pickProject).
-func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
+func (s *server) createProject(c *gin.Context) {
 	var body struct {
 		Path string `json:"path"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
 		return
 	}
 	path := strings.TrimRight(strings.TrimSpace(body.Path), "/")
 	if err := validateRepoPath(path); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
 		return
 	}
 	p, err := s.svc.CreateProject(filepath.Base(path), path)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		http.Error(c.Writer, err.Error(), http.StatusConflict)
 		return
 	}
-	writeJSON(w, http.StatusCreated, p)
+	writeJSON(c, http.StatusCreated, p)
 }
 
 // validateRepoPath checks a pasted project path points at an existing directory
@@ -269,33 +277,33 @@ func validateRepoPath(path string) error {
 	return nil
 }
 
-func (s *server) deleteProject(w http.ResponseWriter, r *http.Request) {
-	if err := s.svc.DeleteProject(r.PathValue("id")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+func (s *server) deleteProject(c *gin.Context) {
+	if err := s.svc.DeleteProject(c.Param("id")); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // pickProject opens the OS-native folder chooser on the daemon's machine (this is
 // a local single-user tool) and registers the picked directory as a project,
 // naming it after the folder. Returns 204 if the user cancels the dialog.
-func (s *server) pickProject(w http.ResponseWriter, r *http.Request) {
+func (s *server) pickProject(c *gin.Context) {
 	path, ok, err := pickFolder()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if !ok {
-		w.WriteHeader(http.StatusNoContent) // cancelled
+		c.Writer.WriteHeader(http.StatusNoContent) // cancelled
 		return
 	}
 	p, err := s.svc.CreateProject(filepath.Base(path), path)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		http.Error(c.Writer, err.Error(), http.StatusConflict)
 		return
 	}
-	writeJSON(w, http.StatusCreated, p)
+	writeJSON(c, http.StatusCreated, p)
 }
 
 // pickFolder shows a native directory picker and returns the chosen absolute
@@ -321,90 +329,90 @@ func pickFolder() (path string, ok bool, err error) {
 	return path, true, nil
 }
 
-func (s *server) retryTask(w http.ResponseWriter, r *http.Request) {
-	if err := s.svc.RetryTask(r.PathValue("id")); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+func (s *server) retryTask(c *gin.Context) {
+	if err := s.svc.RetryTask(c.Param("id")); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // mergeTask lands a reviewed task's worktree branch into the project repo and
 // finishes it. A merge that can't complete (e.g. a conflict) returns 409 with the
 // git explanation; the task is left in review with its worktree intact.
-func (s *server) mergeTask(w http.ResponseWriter, r *http.Request) {
-	if err := s.svc.MergeTask(r.PathValue("id")); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+func (s *server) mergeTask(c *gin.Context) {
+	if err := s.svc.MergeTask(c.Param("id")); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusConflict)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // finishReview marks a reviewed task done without a merge — for tasks that ran in
 // place (no worktree to land), where "merge" doesn't apply.
-func (s *server) finishReview(w http.ResponseWriter, r *http.Request) {
-	if err := s.svc.FinishReview(r.PathValue("id")); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+func (s *server) finishReview(c *gin.Context) {
+	if err := s.svc.FinishReview(c.Param("id")); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusConflict)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // diff returns the changes a reviewed task made in its worktree (magnitude +
 // unified patch) for the review diff viewer. 404 when the task has no worktree
 // to diff (ran in place, or already merged and torn down).
-func (s *server) diff(w http.ResponseWriter, r *http.Request) {
-	d, err := s.svc.TaskDiff(r.PathValue("id"))
+func (s *server) diff(c *gin.Context) {
+	d, err := s.svc.TaskDiff(c.Param("id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(c.Writer, err.Error(), http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+	writeJSON(c, http.StatusOK, d)
 }
 
 // revise re-engages the task's agent with the human's feedback (the review
 // "send it back" action). 409 if the task isn't in a state that can be sent back;
 // 503 if there's no live orchestrator to run the agent (API-only).
-func (s *server) revise(w http.ResponseWriter, r *http.Request) {
+func (s *server) revise(c *gin.Context) {
 	if s.reviser == nil {
-		http.Error(w, "sending back to the agent isn't available here", http.StatusServiceUnavailable)
+		http.Error(c.Writer, "sending back to the agent isn't available here", http.StatusServiceUnavailable)
 		return
 	}
 	var body struct {
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.reviser.Revise(r.PathValue("id"), body.Message); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+	if err := s.reviser.Revise(c.Param("id"), body.Message); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusConflict)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // listShots returns the screenshot filenames the agent left for a task, if any.
 // Absent dir / no worktree is not an error — it's simply an empty gallery. Same
 // capture the daemon snapshots onto an ask_human request (see core.TaskShots).
-func (s *server) listShots(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.svc.TaskShots(r.PathValue("id")))
+func (s *server) listShots(c *gin.Context) {
+	writeJSON(c, http.StatusOK, s.svc.TaskShots(c.Param("id")))
 }
 
 // getShot serves one screenshot image by name. The name is validated to a bare
 // image filename (no path separators or "..") so it can't escape the shots dir.
-func (s *server) getShot(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+func (s *server) getShot(c *gin.Context) {
+	name := c.Param("name")
 	if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") || !core.IsImageFile(name) {
-		http.Error(w, "bad screenshot name", http.StatusBadRequest)
+		http.Error(c.Writer, "bad screenshot name", http.StatusBadRequest)
 		return
 	}
-	dir, err := s.svc.ShotsDir(r.PathValue("id"))
+	dir, err := s.svc.ShotsDir(c.Param("id"))
 	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		http.Error(c.Writer, "not found", http.StatusNotFound)
 		return
 	}
-	http.ServeFile(w, r, filepath.Join(dir, name))
+	http.ServeFile(c.Writer, c.Request, filepath.Join(dir, name))
 }
 
 // terminal upgrades to a WebSocket bridged to the task's live PTY session: it
@@ -412,34 +420,34 @@ func (s *server) getShot(w http.ResponseWriter, r *http.Request) {
 // writes the browser's keystrokes back to the PTY. A text frame carries a resize
 // control message. This is what makes the card's terminal a real, interactive
 // terminal (input, output, Ctrl-C) rather than a read-only log.
-func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.term.Get(r.PathValue("id"))
+func (s *server) terminal(c *gin.Context) {
+	sess, ok := s.term.Get(c.Param("id"))
 	if !ok {
-		http.Error(w, "no live terminal for this task", http.StatusNotFound)
+		http.Error(c.Writer, "no live terminal for this task", http.StatusNotFound)
 		return
 	}
 	// This terminal drives an agent running with bypassPermissions, so only allow
 	// connections from the local board itself (dev :5173, the built app :7787).
 	// A remote page's Origin is its own host, which the browser won't let it forge,
 	// so this blocks cross-site WebSocket hijacking.
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+	conn, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{
 		OriginPatterns: []string{"localhost:*", "127.0.0.1:*", "[::1]:*"},
 	})
 	if err != nil {
 		return
 	}
-	defer c.CloseNow()
+	defer conn.CloseNow()
 
 	// Cancel when either direction fails, so a browser disconnect (which the reader
 	// goroutine notices) also unblocks the writer loop below — otherwise the handler
 	// leaks, blocked on a quiet session until the agent exits.
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 
 	scrollback, out, detach := sess.Attach()
 	defer detach()
 	if len(scrollback) > 0 {
-		if err := c.Write(ctx, websocket.MessageBinary, scrollback); err != nil {
+		if err := conn.Write(ctx, websocket.MessageBinary, scrollback); err != nil {
 			return
 		}
 	}
@@ -449,7 +457,7 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer cancel()
 		for {
-			typ, data, err := c.Read(ctx)
+			typ, data, err := conn.Read(ctx)
 			if err != nil {
 				return
 			}
@@ -478,29 +486,29 @@ func (s *server) terminal(w http.ResponseWriter, r *http.Request) {
 			return
 		case chunk, ok := <-out:
 			if !ok {
-				_ = c.Close(websocket.StatusNormalClosure, "session ended")
+				_ = conn.Close(websocket.StatusNormalClosure, "session ended")
 				return
 			}
-			if err := c.Write(ctx, websocket.MessageBinary, chunk); err != nil {
+			if err := conn.Write(ctx, websocket.MessageBinary, chunk); err != nil {
 				return
 			}
 		}
 	}
 }
 
-func (s *server) taskEvents(w http.ResponseWriter, r *http.Request) {
-	evs, err := s.svc.TaskEvents(r.PathValue("id"))
+func (s *server) taskEvents(c *gin.Context) {
+	evs, err := s.svc.TaskEvents(c.Param("id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if evs == nil {
 		evs = []model.Event{}
 	}
-	writeJSON(w, http.StatusOK, evs)
+	writeJSON(c, http.StatusOK, evs)
 }
 
-func (s *server) createTask(w http.ResponseWriter, r *http.Request) {
+func (s *server) createTask(c *gin.Context) {
 	var body struct {
 		Title   string `json:"title"`
 		Body    string `json:"body"`
@@ -508,75 +516,75 @@ func (s *server) createTask(w http.ResponseWriter, r *http.Request) {
 		Agent   string `json:"agent"`
 		Flow    string `json:"flow"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if strings.TrimSpace(body.Title) == "" {
-		http.Error(w, "title is required", http.StatusBadRequest)
+		http.Error(c.Writer, "title is required", http.StatusBadRequest)
 		return
 	}
 	t, err := s.svc.CreateTaskFull(body.Title, body.Body, body.Project, body.Agent, body.Flow)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusCreated, t)
+	writeJSON(c, http.StatusCreated, t)
 }
 
-func (s *server) getTask(w http.ResponseWriter, r *http.Request) {
-	t, err := s.svc.GetTask(r.PathValue("id"))
+func (s *server) getTask(c *gin.Context) {
+	t, err := s.svc.GetTask(c.Param("id"))
 	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		http.Error(c.Writer, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	writeJSON(c, http.StatusOK, t)
 }
 
-func (s *server) pendingRequests(w http.ResponseWriter, r *http.Request) {
+func (s *server) pendingRequests(c *gin.Context) {
 	reqs, err := s.svc.PendingRequests()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if reqs == nil {
-		writeJSON(w, http.StatusOK, []any{})
+		writeJSON(c, http.StatusOK, []any{})
 		return
 	}
-	writeJSON(w, http.StatusOK, reqs)
+	writeJSON(c, http.StatusOK, reqs)
 }
 
-func (s *server) answer(w http.ResponseWriter, r *http.Request) {
+func (s *server) answer(c *gin.Context) {
 	var body struct {
 		Answer string `json:"answer"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.svc.AnswerHuman(r.PathValue("id"), body.Answer); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.svc.AnswerHuman(c.Param("id"), body.Answer); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *server) events(w http.ResponseWriter, r *http.Request) {
-	f, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
+func (s *server) events(c *gin.Context) {
+	// gin's ResponseWriter is itself an http.Flusher, which is what keeps the SSE
+	// stream pushing each event instead of buffering the whole response.
+	w := c.Writer
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	w.Flush()
 
 	ch := s.svc.Broker.Subscribe()
 	defer s.svc.Broker.Unsubscribe(ch)
 
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-c.Request.Context().Done():
 			return
 		case msg, ok := <-ch:
 			if !ok {
@@ -585,10 +593,10 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte("data: "))
 			_, _ = w.Write(msg)
 			_, _ = w.Write([]byte("\n\n"))
-			f.Flush()
+			w.Flush()
 		case <-time.After(30 * time.Second):
 			_, _ = w.Write([]byte(": ping\n\n"))
-			f.Flush()
+			w.Flush()
 		}
 	}
 }
