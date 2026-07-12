@@ -107,6 +107,13 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// errMsg unwraps a caught value into a display string, falling back to `fallback`
+// when it isn't an Error. Centralizes the `e instanceof Error ? e.message : "…"`
+// idiom every action component's catch block would otherwise repeat.
+export function errMsg(e: unknown, fallback = "something went wrong"): string {
+  return e instanceof Error ? e.message : fallback;
+}
+
 export const api = {
   board: () => fetch("/api/board").then((r) => json<BoardSnapshot>(r)),
 

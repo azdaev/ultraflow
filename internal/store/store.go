@@ -539,9 +539,18 @@ func (s *Store) SetSetting(key, value string) error {
 	return err
 }
 
-// LatestActivity returns, per task, the text of its most recent event — the
-// board's live activity strip. Empty-text events are ignored.
-func (s *Store) LatestActivity() (map[string]string, error) {
+// ActivityLine is a task's most recent non-empty event: the text the board's
+// activity strip shows and the kind it uses to lift certain events (e.g.
+// merge_failed) into the attention rail. Both come from one query.
+type ActivityLine struct {
+	Data string
+	Kind string
+}
+
+// LatestActivity returns, per task, its most recent non-empty event — text and
+// kind together. A single grouped MAX(id) join feeds both the live activity strip
+// and the attention-rail promotion, rather than running the same join twice.
+func (s *Store) LatestActivity() (map[string]ActivityLine, error) {
 	rows, err := s.db.Query(`
 		SELECT e.task_id, e.kind, e.data
 		FROM events e
@@ -551,38 +560,13 @@ func (s *Store) LatestActivity() (map[string]string, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make(map[string]string)
+	out := make(map[string]ActivityLine)
 	for rows.Next() {
 		var taskID, kind, data string
 		if err := rows.Scan(&taskID, &kind, &data); err != nil {
 			return nil, err
 		}
-		out[taskID] = data
-	}
-	return out, rows.Err()
-}
-
-// LatestActivityKind returns, per task, the kind of its most recent non-empty
-// event (parallel to LatestActivity's text). The board uses it to lift a
-// "merge_failed" event into the attention rail rather than showing it as a quiet
-// status line.
-func (s *Store) LatestActivityKind() (map[string]string, error) {
-	rows, err := s.db.Query(`
-		SELECT e.task_id, e.kind
-		FROM events e
-		JOIN (SELECT task_id, MAX(id) AS mid FROM events WHERE data <> '' GROUP BY task_id) m
-		  ON e.task_id = m.task_id AND e.id = m.mid`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[string]string)
-	for rows.Next() {
-		var taskID, kind string
-		if err := rows.Scan(&taskID, &kind); err != nil {
-			return nil, err
-		}
-		out[taskID] = kind
+		out[taskID] = ActivityLine{Data: data, Kind: kind}
 	}
 	return out, rows.Err()
 }

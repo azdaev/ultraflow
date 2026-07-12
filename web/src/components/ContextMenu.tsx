@@ -21,7 +21,6 @@ export type MenuItem =
       onSelect: () => void;
       danger?: boolean;
       disabled?: boolean;
-      hint?: string; // trailing muted note (e.g. a shortcut or "review only")
     };
 
 // useContextMenu wires an element's onContextMenu to a cursor-anchored floating
@@ -162,9 +161,6 @@ export function ContextMenu({ menu, items }: Props) {
                   } outline-none`}
                 >
                   <span>{it.label}</span>
-                  {it.hint && (
-                    <span className="font-mono text-[11px] text-muted">{it.hint}</span>
-                  )}
                 </button>
               ),
             )}

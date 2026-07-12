@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 
 // ReviseBox turns review from a merge-or-nothing dead-end into a conversation:
 // the human types what's wrong ("you made X shit, redo it") and the agent is
@@ -21,7 +21,7 @@ export function ReviseBox({ taskId }: { taskId: string }) {
       // SSE flips the card to running; the terminal takes over this drawer so the
       // human watches the rework live. Nothing more to do here.
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "couldn't send it back");
+      setErr(errMsg(e, "couldn't send it back"));
     } finally {
       setBusy(false);
     }

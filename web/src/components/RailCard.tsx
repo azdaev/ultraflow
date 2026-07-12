@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { api, type HumanRequest, type Task } from "../api";
+import { api, errMsg, type HumanRequest, type Task } from "../api";
 import { agentLabel, ago, copyText } from "../util";
 import { AnswerBox } from "./AnswerBox";
 import { CheckpointContext } from "./CheckpointContext";
@@ -127,7 +127,7 @@ function MergeFailedCard({
     try {
       await api.merge(task.id);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "merge failed");
+      setErr(errMsg(e, "merge failed"));
     } finally {
       setBusy(false);
     }

@@ -5,10 +5,9 @@ import "@xterm/xterm/css/xterm.css";
 
 // The imperative handle a parent uses to drive the terminal without owning its
 // WebSocket: `interrupt` sends a bare Esc to the agent (the soft "stop what you're
-// doing" a Claude/Codex TUI understands), `focus` puts the cursor in it.
+// doing" a Claude/Codex TUI understands) and refocuses so the user can keep typing.
 export interface AgentTerminalHandle {
   interrupt: () => void;
-  focus: () => void;
 }
 
 // AgentTerminal is a real, interactive terminal bound to the task's live agent
@@ -37,7 +36,6 @@ export const AgentTerminal = forwardRef<AgentTerminalHandle, { taskId: string }>
         send("\x1b");
         termRef.current?.focus();
       },
-      focus: () => termRef.current?.focus(),
     }));
 
     useEffect(() => {

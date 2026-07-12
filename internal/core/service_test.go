@@ -785,11 +785,14 @@ func TestLatestActivity(t *testing.T) {
 	svc.AppendTaskEvent(task.ID, "tool", "Edit main.go")
 	svc.AppendTaskEvent(task.ID, "tool", "Bash go test ./...")
 
-	act, err := svc.LatestActivity()
+	act, kind, err := svc.LatestActivity()
 	if err != nil {
 		t.Fatalf("activity: %v", err)
 	}
 	if act[task.ID] != "Bash go test ./..." {
 		t.Fatalf("expected latest activity, got %q", act[task.ID])
+	}
+	if kind[task.ID] != "tool" {
+		t.Fatalf("expected latest activity kind, got %q", kind[task.ID])
 	}
 }
