@@ -17,9 +17,7 @@ export function TopBar({ running, queued, onNewTask, onOpenSettings, onOpenChang
       {/* Brand wordmark (not interactive — "What's new" lives in its own button on
           the right, so the logo doesn't hijack clicks). */}
       <div className="flex grow basis-0 items-center gap-2.25">
-        <span className="grid size-6 shrink-0 place-items-center rounded-[7px] bg-accent">
-          <span className="size-2 rounded-[3px] bg-white" />
-        </span>
+        <img src="/logo.png" alt="Ultraflow" className="h-[22px] w-auto shrink-0" />
         <span className="text-[15px] font-bold leading-[18px] tracking-[-0.3px] text-ink">Ultraflow</span>
       </div>
 

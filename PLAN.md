@@ -1,57 +1,50 @@
-# Plan — Codex tasks show the wrong (Claude) logo
+# Plan — use the real Ultraflow logo
 
-## Problem
-Every task card renders the same brand glyph — the Claude four-line asterisk —
-and only tints it by the agent's colour. So a Codex task shows the **Claude
-shape** in Codex green (`#10a37f`), which reads as "the wrong logo". The backend
-already dispatches Codex correctly; the bug is purely in the frontend glyph.
+## Task
+Attachment `23cb81f1e80684b6.png` is the Ultraflow logo: a solid‑black "rewind/flow"
+glyph — a small rounded left‑pointing triangle beside a larger rounded left‑pointing
+trapezoid/triangle. Replace the current **placeholder** brand mark with this logo and
+use it as the favicon.
 
-## Root cause
-- `web/src/board/icons.tsx:13-22` — `AgentMark({ size, color })` hardcodes the
-  Claude asterisk. It ignores which agent it's for; the comment even says so
-  ("the Claude wordmark glyph, reused for every agent").
-- `web/src/board/Card.tsx:276` — the only call site, inside `AgentFooter`,
-  passes `color={agentColor(agent)}` but never tells `AgentMark` which agent it
-  is, so it can't pick a shape.
-- No Codex/OpenAI logo asset exists anywhere in `web/`.
+## Current state (what to replace)
+- `web/src/board/TopBar.tsx:23-25` — brand mark is a placeholder: an `bg-accent`
+  (safety‑orange) rounded square containing a small white square. Sits left of the
+  "Ultraflow" wordmark; the whole button opens the changelog.
+- `web/index.html` — has `<title>Ultraflow</title>` but **no favicon** (browser shows
+  a blank/default icon).
+- Icons live in `web/src/board/icons.tsx` as inline SVGs on a 24×24 viewBox, tinted via
+  `currentColor` — the established pattern to follow.
 
-The `agent` string (`"claude"` / `"codex"`) is already in hand at the call site
-(`Card.tsx:270`, from `run?.agent ?? task.agent`) and drives colour+label via
-`AGENTS` in `web/src/util.ts:128-140`. We just need it to drive the glyph too.
-
-## Approach (minimal — one glyph added, one prop threaded)
-1. **`web/src/board/icons.tsx`** — teach `AgentMark` to select a glyph by agent:
-   - Add an `agent?: string` prop.
-   - Keep the existing Claude asterisk as the `"claude"` glyph and as the default
-     for unknown agents (default task agent is claude).
-   - Add a Codex glyph = the **OpenAI logomark** (the monochrome "blossom" knot),
-     as a single `<path fill={color}>` so the existing colour-tint (`agentColor`,
-     and the muted `#C99180` on closed cards) keeps working unchanged. Build step
-     drops in the complete official single-path OpenAI mark on a 24×24 viewBox,
-     rendered with `fill={color}` and no stroke.
-   - Switch shape on the `agent` key (small `switch`/map). A local switch in
-     `icons.tsx` keeps the change minimal; only fold glyph choice into the
-     `AGENTS` registry (`util.ts`) if it stays clean.
-2. **`web/src/board/Card.tsx:276`** — pass `agent={agent}` to `AgentMark`
-   alongside the existing `size`/`color`. No other call sites exist.
-
-Colour/label already work per-agent, so no change to `util.ts` colours or
-`index.css` is required.
+## Approach (smallest change that solves it)
+1. **Add a `LogoIcon`** to `web/src/board/icons.tsx`, matching the file's inline‑SVG
+   convention (`{ size?, className? }`, `fill="currentColor"`, `aria-hidden`). Trace the
+   two rounded shapes from the PNG as `<path>` elements on a viewBox sized to the glyph.
+   Default `fill="currentColor"` so it inherits `text-ink`.
+2. **Swap the placeholder** in `TopBar.tsx`: replace the `bg-accent` square + inner white
+   square (lines 23‑25) with `<LogoIcon />` rendered in `text-ink` (the logo is black;
+   this also honors the design rule that `--color-accent` orange is reserved for
+   `needs_human` only). Keep it inside the existing changelog button, keep `gap-2.25` and
+   the "Ultraflow" wordmark, size the mark to ~size‑6 (24px) to match today's footprint.
+3. **Favicon**: add an SVG favicon so the tab shows the logo. Simplest self‑contained
+   route: put `web/public/favicon.svg` (same paths as `LogoIcon`, `fill="#17171a"`) and
+   add `<link rel="icon" type="image/svg+xml" href="/favicon.svg" />` to
+   `web/index.html`. Vite serves `web/public/` at the web root, and `web/embed.go`
+   embeds the built `dist/` for the Go binary, so the favicon ships automatically.
 
 ## Files to change
-- `web/src/board/icons.tsx` — add Codex/OpenAI glyph + agent-based dispatch in `AgentMark`.
-- `web/src/board/Card.tsx` — thread `agent` into the `AgentMark` call at line 276.
+- `web/src/board/icons.tsx` — add `LogoIcon`.
+- `web/src/board/TopBar.tsx` — use `LogoIcon`, drop the placeholder square.
+- `web/index.html` — add favicon `<link>`.
+- `web/public/favicon.svg` — new asset (traced logo).
 
 ## Verification
-- Build the frontend to typecheck (node via nvm — prepend the nvm bin dir):
-  `cd web && npm run build`.
-- Run the dev server on `$PORT` (56226); with both a Claude task and a Codex task
-  on the board, confirm the Codex card shows the OpenAI blossom mark (green), the
-  Claude card shows the asterisk, and a closed Codex card fades correctly.
-- Capture before/after screenshots of the board cards into `.ultraflow/shots/`
-  for the review screen.
+- `cd web && npm run build` (Node via nvm — prepend the nvm bin dir) — typecheck + build clean.
+- Run the dev server bound to `$PORT` (54669) and load `http://localhost:54669`:
+  confirm the TopBar shows the black rewind glyph left of "Ultraflow", and the browser
+  tab shows the logo favicon. Verify it reads correctly at 24px.
+- Save a screenshot of the TopBar to `.ultraflow/shots/` for the review screen.
 
 ## Notes / open question
-- Exact Codex glyph is a visual call. Default assumption: the official OpenAI
-  logomark, tinted with `--color-codex`. If the human prefers a simpler custom
-  mark, it's a one-path swap — flag on review rather than block.
+- Rendering the mark in **ink (near‑black)** matches the provided logo and frees the
+  reserved orange. If the human wants the accent color instead, that's a one‑line tweak
+  (`text-accent`) — flag on review if unsure.
