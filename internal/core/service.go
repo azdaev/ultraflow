@@ -264,6 +264,16 @@ func (s *Service) SetPort(id string, port int) {
 	s.publish("task_updated", map[string]any{"taskId": id, "port": port})
 }
 
+// SetResume sets or clears a task's restart-resume marker (see model.Task.Resume).
+// The orchestrator clears it as it consumes the one-shot signal at pickup.
+func (s *Service) SetResume(id string, v bool) {
+	if err := s.store.SetResume(id, v); err != nil {
+		log.Printf("task %s: set resume=%v: %v", id, v, err)
+		return
+	}
+	s.publish("task_updated", map[string]any{"taskId": id, "resume": v})
+}
+
 // RetryTask re-queues a task by moving it back to the backlog; the orchestrator
 // picks it up on its next tick. Used by the board's "Retry" action on a task the
 // agent gave up on (self-heal exhausted). See spec.md "Failure self-heals".

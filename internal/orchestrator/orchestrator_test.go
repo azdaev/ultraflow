@@ -110,6 +110,58 @@ func (a *flakyAgent) ResumeCommand(ctx context.Context, dir, prompt string) (*ex
 	return exec.Command("true"), func() {}, nil
 }
 
+// resumeRecordingAgent records whether the orchestrator resumed the prior
+// conversation (ResumeCommand) or cold-started a fresh one (Command), so a test
+// can assert the restart-recovery path takes the resume branch. Both exit clean.
+type resumeRecordingAgent struct{ cmdCalls, resumeCalls int }
+
+func (a *resumeRecordingAgent) Name() string { return "claude" }
+func (a *resumeRecordingAgent) Command(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error) {
+	a.cmdCalls++
+	return exec.Command("true"), func() {}, nil
+}
+func (a *resumeRecordingAgent) ResumeCommand(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error) {
+	a.resumeCalls++
+	return exec.Command("true"), func() {}, nil
+}
+
+// TestResumeAfterRestartKeepsWorktree is the acceptance test for the restart fix:
+// a task interrupted mid-run is resumed IN PLACE — via ResumeCommand (so claude
+// reconnects the conversation), reusing the existing worktree WITHOUT pruning it,
+// so the agent's uncommitted work survives instead of being wiped and restarted.
+func TestResumeAfterRestartKeepsWorktree(t *testing.T) {
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skip("true not available")
+	}
+	o := newTestOrch(t, 2)
+	task, _ := o.svc.CreateTaskFull("t", "", "", "claude", "solo")
+
+	// A worktree with uncommitted work the agent left behind before the restart.
+	wtDir := t.TempDir()
+	sentinel := filepath.Join(wtDir, "work-in-progress.txt")
+	if err := os.WriteFile(sentinel, []byte("half-done edit"), 0o644); err != nil {
+		t.Fatalf("seed worktree: %v", err)
+	}
+	o.svc.SetWorktree(task.ID, wtDir)
+	o.svc.SetPort(task.ID, 54321)
+	task, _ = o.svc.GetTask(task.ID)
+
+	ia := &resumeRecordingAgent{}
+	o.resumeAfterRestart(context.Background(), task, ia)
+
+	if ia.resumeCalls != 1 || ia.cmdCalls != 0 {
+		t.Fatalf("resume must go through ResumeCommand, not a cold Command: resume=%d cmd=%d", ia.resumeCalls, ia.cmdCalls)
+	}
+	// The worktree (and the agent's in-progress work) must be untouched — never pruned.
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("resume must preserve the worktree's uncommitted work, sentinel gone: %v", err)
+	}
+	// A clean exit with no finish_task resolves to review (same as any bare turn-end).
+	if got, _ := o.svc.GetTask(task.ID); got.Status != model.StatusReview {
+		t.Fatalf("a clean resume run should end in review, got %s", got.Status)
+	}
+}
+
 func newTestSvc(t *testing.T) *core.Service {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))

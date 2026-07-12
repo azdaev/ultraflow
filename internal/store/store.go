@@ -53,6 +53,7 @@ var migrations = []string{
 	selfHealSchema,     // migration 3: tasks.attempt, tasks.max_attempts
 	portSchema,         // migration 4: tasks.port
 	humanContextSchema, // migration 5: human_requests added/removed/files/shots
+	resumeSchema,       // migration 6: tasks.resume
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -166,6 +167,14 @@ ALTER TABLE human_requests ADD COLUMN files   TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE human_requests ADD COLUMN shots   TEXT NOT NULL DEFAULT '[]';
 `
 
+// resumeSchema (migration 6) marks a task that a daemon restart interrupted while
+// it was running with a live worktree, so the orchestrator resumes it IN PLACE
+// (same checkout, and for claude the same conversation via --continue) instead of
+// pruning the worktree and restarting the task from scratch. Set by
+// RecoverInFlight, cleared when the resume launches. Default 0 keeps fresh tasks
+// and the human "Retry" action on the normal cold-start path.
+const resumeSchema = `ALTER TABLE tasks ADD COLUMN resume INTEGER NOT NULL DEFAULT 0;`
+
 // --- tasks ---
 
 func (s *Store) CreateTask(t model.Task) error {
@@ -176,13 +185,15 @@ func (s *Store) CreateTask(t model.Task) error {
 	return err
 }
 
-const taskCols = `id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,port,created_at,updated_at`
+const taskCols = `id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,port,resume,created_at,updated_at`
 
 func scanTask(sc interface{ Scan(...any) error }) (model.Task, error) {
 	var t model.Task
 	var status string
-	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Attempt, &t.MaxAttempts, &t.Port, &t.CreatedAt, &t.UpdatedAt)
+	var resume int
+	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Attempt, &t.MaxAttempts, &t.Port, &resume, &t.CreatedAt, &t.UpdatedAt)
 	t.Status = model.TaskStatus(status)
+	t.Resume = resume != 0
 	return t, err
 }
 
@@ -304,6 +315,18 @@ func (s *Store) SetPort(id string, port int) error {
 	return err
 }
 
+// SetResume sets (or clears) the restart-resume marker on a task. It deliberately
+// does NOT touch updated_at: consuming the one-shot flag at pickup isn't a
+// board-visible transition and shouldn't disturb the card's live timer.
+func (s *Store) SetResume(id string, v bool) error {
+	n := 0
+	if v {
+		n = 1
+	}
+	_, err := s.db.Exec(`UPDATE tasks SET resume=? WHERE id=?`, n, id)
+	return err
+}
+
 // RecoverInFlight cleans up work stranded by a previous daemon exit. A restart
 // kills every agent goroutine, so any task still marked in-flight
 // (queued/running/needs_human/planning/merging) has no executor behind it and
@@ -314,6 +337,16 @@ func (s *Store) SetPort(id string, port int) error {
 func (s *Store) RecoverInFlight() (int64, error) {
 	if _, err := s.db.Exec(
 		`UPDATE human_requests SET status='cancelled' WHERE status='pending'`); err != nil {
+		return 0, err
+	}
+	// Mark the requeued tasks that had a live worktree so the orchestrator resumes
+	// them in place (same checkout + conversation) rather than pruning and starting
+	// over. Scoped to the in-flight statuses so it never touches a task the human
+	// already sent back to the backlog via "Retry" (which wants a clean restart).
+	// Must run BEFORE the requeue below, while these rows still carry those statuses.
+	if _, err := s.db.Exec(
+		`UPDATE tasks SET resume=1
+		 WHERE status IN ('running','needs_human','planning','merging') AND worktree != ''`); err != nil {
 		return 0, err
 	}
 	res, err := s.db.Exec(
