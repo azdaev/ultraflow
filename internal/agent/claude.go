@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -47,7 +48,15 @@ func (c *Claude) Run(ctx context.Context, dir, prompt string, out chan<- Event) 
 		"--output-format", "stream-json",
 		"--verbose",
 		"--mcp-config", f.Name(),
-		"--permission-mode", "acceptEdits",
+		// Only the Ultraflow MCP server — not the user's whole personal MCP set
+		// (which would otherwise all load for every task, slow and failure-prone).
+		"--strict-mcp-config",
+		// Unattended: the agent runs in an isolated worktree, so it must not stall
+		// on permission prompts (which in headless mode are auto-denied, leaving the
+		// agent unable to run Bash/tests). This is the autonomous-orchestrator mode.
+		"--permission-mode", "bypassPermissions",
+		// Survive a momentarily overloaded primary model instead of failing the task.
+		"--fallback-model", "sonnet",
 	)
 	if dir != "" {
 		cmd.Dir = dir
@@ -56,9 +65,13 @@ func (c *Claude) Run(ctx context.Context, dir, prompt string, out chan<- Event) 
 	if err != nil {
 		return err
 	}
-	cmd.Stderr = os.Stderr
+	// Capture stderr (bounded) so a failure carries an explanation into the task
+	// thread, while still echoing to the daemon log for live debugging.
+	var errTail tailBuffer
+	errTail.max = 2000
+	cmd.Stderr = io.MultiWriter(os.Stderr, &errTail)
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("starting claude (is the CLI installed and logged in?): %w", err)
 	}
 
 	sc := bufio.NewScanner(stdout)
@@ -68,8 +81,31 @@ func (c *Claude) Run(ctx context.Context, dir, prompt string, out chan<- Event) 
 			out <- ev
 		}
 	}
-	return cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		if tail := strings.TrimSpace(errTail.String()); tail != "" {
+			return fmt.Errorf("%w — %s", err, truncate(tail, 300))
+		}
+		return err
+	}
+	return nil
 }
+
+// tailBuffer keeps only the last max bytes written to it — enough to explain a
+// crash without unbounded memory if the agent is chatty on stderr.
+type tailBuffer struct {
+	b   []byte
+	max int
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) > t.max {
+		t.b = t.b[len(t.b)-t.max:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return string(t.b) }
 
 // parseStreamLine turns one Claude Code stream-json line into friendly Events
 // (the activity strip / thread on the board). A single assistant message can

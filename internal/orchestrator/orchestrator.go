@@ -103,6 +103,9 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 
 		if err != nil {
 			log.Printf("task %s failed: %v", t.ID, err)
+			// Record WHY on the thread — otherwise a failed card shows "Gave up"
+			// with no reason and the error is only in the daemon's stderr.
+			o.svc.AppendTaskEvent(t.ID, "error", "agent failed: "+err.Error())
 			o.svc.UpdateStatus(t.ID, model.StatusFailed)
 			return
 		}

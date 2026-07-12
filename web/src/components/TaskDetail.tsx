@@ -180,7 +180,11 @@ function Thread({ events, now }: { events: TaskEvent[]; now: number }) {
           </div>
           <p
             className={`mt-0.5 text-[13px] leading-relaxed ${
-              e.kind === "tool" ? "font-mono text-[12px] text-muted" : "text-ink"
+              e.kind === "tool"
+                ? "font-mono text-[12px] text-muted"
+                : e.kind === "error"
+                  ? "font-mono text-[12px] text-rust"
+                  : "text-ink"
             }`}
           >
             {e.data}
@@ -200,6 +204,8 @@ function kindColor(kind: string): string {
       return "var(--color-moss)";
     case "tool":
       return "var(--color-steel)";
+    case "error":
+      return "var(--color-rust)";
     default:
       return "var(--color-muted)";
   }
@@ -217,6 +223,8 @@ function kindLabel(kind: string): string {
       return "result";
     case "message":
       return "note";
+    case "error":
+      return "failed";
     default:
       return kind;
   }
