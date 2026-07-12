@@ -7,11 +7,15 @@ interface Props {
   open: boolean;
   onClose: () => void;
   projects: Project[];
+  // When opened from the inline "+ Add task" via its "More…" button, the draft
+  // the user already typed is carried over so nothing is retyped.
+  initialTitle?: string;
+  initialProject?: string;
 }
 
 // Composer is the expanded New Task surface (project · flow · agent). It creates
 // a backlog task; the orchestrator starts it when a slot frees.
-export function Composer({ open, onClose, projects }: Props) {
+export function Composer({ open, onClose, projects, initialTitle, initialProject }: Props) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [project, setProject] = useState("");
@@ -26,7 +30,15 @@ export function Composer({ open, onClose, projects }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    if (submitted.current) {
+    // Opened from an inline draft: seed the carried-over title/project and start
+    // with a clean body. Otherwise keep the existing draft, only clearing after
+    // a prior submit so an Esc-close still preserves what you typed.
+    if (initialTitle || initialProject) {
+      setTitle(initialTitle ?? "");
+      setProject(initialProject ?? "");
+      setBody("");
+      submitted.current = false;
+    } else if (submitted.current) {
       setTitle("");
       setBody("");
       setProject("");
@@ -34,6 +46,9 @@ export function Composer({ open, onClose, projects }: Props) {
     }
     setErr(null);
     setBusy(false);
+    // Seeds from the initials captured at open time; re-running on their change
+    // would fight typing, so we intentionally key only on `open`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => {

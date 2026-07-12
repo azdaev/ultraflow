@@ -15,6 +15,9 @@ interface Props {
   // When provided, an inline "+ Add task" affordance renders under the cards
   // (Trello-style). Resolves once the task is created.
   onAdd?: (title: string) => Promise<void>;
+  // "More…" hands the current draft off to the full composer (project · flow ·
+  // agent · body), carrying whatever title has been typed so far.
+  onExpand?: (title: string) => void;
 }
 
 const dotColor: Record<string, string> = {
@@ -35,6 +38,7 @@ export function Column({
   projectsByName,
   showChip,
   onAdd,
+  onExpand,
 }: Props) {
   return (
     <div className="flex min-w-0 flex-1 basis-0 flex-col">
@@ -63,17 +67,25 @@ export function Column({
             Nothing here
           </div>
         )}
-        {onAdd && <AddTask onAdd={onAdd} />}
+        {onAdd && <AddTask onAdd={onAdd} onExpand={onExpand} />}
       </div>
     </div>
   );
 }
 
 // AddTask is the inline "+ Add task" affordance: a subtle button that expands
-// into a title input. Enter creates (reusing api.createTask via onAdd), Esc or
-// blur cancels, and after a successful create the input stays focused so
-// several can be added in a row.
-function AddTask({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
+// into a small draft card — a title input over a footer that pairs an "Add"
+// action with a "More…" hand-off to the full composer. Enter (or Add) creates
+// via onAdd, Esc cancels, and after a successful create the input stays focused
+// so several can be added in a row. "More…" carries the typed title into the
+// composer instead of throwing the draft away.
+function AddTask({
+  onAdd,
+  onExpand,
+}: {
+  onAdd: (title: string) => Promise<void>;
+  onExpand?: (title: string) => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
@@ -102,6 +114,11 @@ function AddTask({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
     }
   }
 
+  function expand() {
+    onExpand?.(title.trim());
+    cancel();
+  }
+
   if (!editing) {
     return (
       <button
@@ -114,7 +131,17 @@ function AddTask({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
   }
 
   return (
-    <div>
+    // Blur of the whole card cancels (a click outside dismisses), but not while
+    // an action inside runs or focus moves to another control in the card — a
+    // relatedTarget still inside means the user hit More/Add, not "away".
+    <div
+      className="rounded-xl border border-hairline bg-surface p-2 shadow-[0_1px_2px_rgba(23,23,26,0.04)] transition focus-within:border-ink/30"
+      onBlur={(e) => {
+        if (busy) return;
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+        cancel();
+      }}
+    >
       <input
         ref={inputRef}
         autoFocus
@@ -129,15 +156,31 @@ function AddTask({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
             cancel();
           }
         }}
-        // Blur cancels (a click elsewhere dismisses), but not mid-create — an
-        // in-flight submit keeps the input so it can refocus for the next one.
-        onBlur={() => {
-          if (!busy) cancel();
-        }}
-        placeholder="Task title…"
-        className="w-full rounded-xl border border-hairline bg-surface px-3 py-2 text-[13px] outline-none placeholder:text-muted/50 focus:border-ink/40"
+        placeholder="What should the agent do?"
+        className="w-full rounded-lg bg-transparent px-1.5 py-1 text-[13px] outline-none placeholder:text-muted/50"
       />
-      {err && <p className="mt-1 px-1 text-[11px] text-rust">{err}</p>}
+      {err && <p className="mt-1 px-1.5 text-[11px] text-rust">{err}</p>}
+      <div className="mt-1.5 flex items-center justify-between gap-2 border-t border-hairline pt-2">
+        {onExpand ? (
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={expand}
+            className="rounded-lg px-2 py-1 text-[12px] font-medium text-muted transition hover:bg-board hover:text-ink"
+          >
+            More…
+          </button>
+        ) : (
+          <span />
+        )}
+        <button
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={submit}
+          disabled={busy || !title.trim()}
+          className="rounded-lg bg-ink px-3 py-1 text-[12px] font-semibold text-white transition hover:brightness-110 disabled:opacity-40"
+        >
+          {busy ? "Adding…" : "Add"}
+        </button>
+      </div>
     </div>
   );
 }

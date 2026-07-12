@@ -8,12 +8,13 @@ interface Props {
   now: number;
   onOpen: (taskId: string) => void;
   projects: Project[];
+  onExpandComposer?: (title: string, project: string) => void;
 }
 
 // FilterBoard is one unified pipeline with a project switcher (All · …) and a
 // colored project chip on every card. Scales to many projects. The attention
 // rail above stays global regardless of the filter.
-export function FilterBoard({ tasks, activity, now, onOpen, projects }: Props) {
+export function FilterBoard({ tasks, activity, now, onOpen, projects, onExpandComposer }: Props) {
   const [selected, setSelected] = useState<string>("all"); // "all" | project name
 
   // If the selected project is removed in Settings, fall back to "All" rather
@@ -56,6 +57,7 @@ export function FilterBoard({ tasks, activity, now, onOpen, projects }: Props) {
         projects={projects}
         showChip
         addProject={effective === "all" ? "" : effective}
+        onExpandComposer={onExpandComposer}
       />
     </div>
   );
