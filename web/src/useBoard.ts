@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { api, type HumanRequest, type Project, type Task } from "./api";
+import { api, type HumanRequest, type Project, type RunProgress, type Task } from "./api";
 import { decodeBoardEvent, emptyBoardProjection, reduceBoardEvent } from "./boardProjection";
 
 export interface BoardState {
   tasks: Task[]; requests: HumanRequest[]; activity: Record<string, string>;
-  activityKind: Record<string, string>; projects: Project[]; connected: boolean; reload: () => void;
+  activityKind: Record<string, string>; projects: Project[];
+  // live flow progress per multi-step task, keyed by task id.
+  runs: Record<string, RunProgress>;
+  connected: boolean; reload: () => void;
 }
 
 export function useBoard(): BoardState {

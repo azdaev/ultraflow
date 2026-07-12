@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { api, type HumanRequest, type Task, type TaskEvent } from "../api";
 import { agentColor, agentLabel, ago, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
+import { useRun } from "../runsContext";
 import { AnswerBox } from "./AnswerBox";
 import { CheckpointContext } from "./CheckpointContext";
 import { AgentTerminal, type AgentTerminalHandle } from "./AgentTerminal";
@@ -21,6 +22,7 @@ interface Props {
 // the space (that IS the activity view — no duplicated tool-by-tool thread), with
 // task details and the decision panel in a side rail.
 export function TaskDetail({ task, request, activitySig, now, onClose }: Props) {
+  const run = useRun(task?.id ?? "");
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const termRef = useRef<AgentTerminalHandle>(null);
   const taskId = task?.id;
@@ -86,7 +88,10 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                 </h2>
                 {flowOf(task.flow).steps.length > 1 && (
                   <div className="mt-3">
-                    <FlowStepper flow={task.flow} status={task.status} size="lg" />
+                    <FlowStepper flow={task.flow} status={task.status} size="lg" run={run} />
+                    {run && run.caption && (
+                      <p className="mt-2 text-[12px] text-muted">{run.caption}</p>
+                    )}
                   </div>
                 )}
               </div>

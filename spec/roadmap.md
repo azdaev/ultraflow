@@ -101,7 +101,7 @@ have since been closed:
       (`Service.FinishReview`). (c) Composer's disabled "· soon" options are
       deliberate presentation honesty, not a dead-end.
 
-## M2 — Flow engine
+## M2 — Flow engine  ← core landed
 
 YAML config; preset `plan → build → critic → human-gate`. Steps share a worktree,
 human gates between steps. Flows are a **graph** (steps can loop back — e.g. TDD's
@@ -109,9 +109,28 @@ critic → redo-tests loop), not a strict line. Ship a set of **premade flow
 templates** (Solo, Plan→Build, Plan→Build→Critic→Gate, TDD-with-critic-loop,
 Frontend+visual-gate) that double as the starting points for new flows.
 
+- [x] `internal/flow` graph model + presets (Solo, Plan→Build, Plan→Build→Critic→
+      Gate) + per-project YAML (`.ultraflow/flows.yaml`, `flow.Load`). See
+      `spec/flows.md`.
+- [x] Orchestrator flow runner: walks the graph in ONE shared worktree (created
+      once at task start), a work step spawns its agent and advances on the turn's
+      end, a gate parks `needs_human` and the answer routes the graph. Solo keeps
+      its unchanged path so the default can't regress.
+- [x] Run persistence (`runs` table, migration 6) — cursor + completed steps; a
+      restart resumes mid-flow via `RecoverInFlight` rather than restarting the task.
+- [x] `finish_task` flow-aware (`core.CompleteTurn`): mid-flow steps advance
+      without flashing to review; the terminal step / solo still goes to review.
+- [x] Frontend: `FlowStepper` lights the LIVE active step + caption + sub-agent
+      from real progress over SSE; only wired flows selectable, rest show "· soon".
+- [ ] Remaining templates: TDD-with-critic-loop, Frontend+visual-gate (the engine
+      runs graph loops already; these are additional presets).
+- [ ] Composer: per-project flow picker sourced from `flow.Load` (today it lists
+      the in-code presets).
+
 **Failure self-heal:** on a step error the agent auto-diagnoses and retries up to
 N times (per-flow) before escalating as a `needs_human` item — see spec.md
 "Failure self-heals". No dedicated failure screen; it's a card sub-state.
+*(Implemented per step in the flow runner, reusing the solo self-heal policy.)*
 
 ## M3 — More adapters
 

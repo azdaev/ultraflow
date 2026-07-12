@@ -174,6 +174,9 @@ func (s *server) board(c *gin.Context) {
 		"activity":     activity,
 		"activityKind": activityKind,
 		"projects":     projects,
+		// Live flow progress per multi-step task, so the card's stepper can light the
+		// active step and caption it. Solo tasks (no run) are simply absent.
+		"runs": s.svc.RunsProgress(tasks),
 	})
 }
 

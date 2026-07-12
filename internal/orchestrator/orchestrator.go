@@ -19,6 +19,7 @@ import (
 	"ultraflow/internal/agent"
 	"ultraflow/internal/core"
 	"ultraflow/internal/devserver"
+	"ultraflow/internal/flow"
 	"ultraflow/internal/model"
 	"ultraflow/internal/port"
 	"ultraflow/internal/terminal"
@@ -237,6 +238,14 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		if cur.Resume {
 			o.svc.SetResume(cur.ID, false)
 			if cur.Worktree != "" && isDir(cur.Worktree) {
+				// A multi-step flow resumes IN PLACE too, but through its own graph
+				// walker (runFlow picks up at the persisted cursor); a solo task resumes
+				// its single conversation. Both reuse the existing worktree — falling
+				// through to prepareWorkdir would PRUNE the earlier steps' uncommitted work.
+				if fl := flow.ResolveFor(o.repoPath(cur), cur.Flow); fl.Multi() {
+					o.resumeFlowAfterRestart(ctx, cur, fl)
+					return
+				}
 				o.resumeAfterRestart(ctx, cur, ia)
 				return
 			}
@@ -253,6 +262,14 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 		// dev-server hook, boot it — so parallel tasks never collide and the human can
 		// open the task's live app from its card.
 		prt := o.setupPort(cur, dir)
+
+		// A multi-step flow walks a graph of steps sharing this one worktree; solo
+		// (the default) stays on the unchanged single-agent execute() path below so it
+		// can't regress. Overrides in the project's .ultraflow/flows.yaml are honored.
+		if fl := flow.ResolveFor(o.repoPath(cur), cur.Flow); fl.Multi() {
+			o.runFlow(ctx, cur, dir, prt, fl)
+			return
+		}
 
 		o.execute(ctx, launchIntent{task: cur, dir: dir, agent: ia, prompt: buildPrompt(cur, prt), port: prt, fresh: true,
 			runningMsg: "running — open the card to watch progress (Ctrl-C to interrupt)", buildErr: "couldn't build the agent command: "})
@@ -273,20 +290,35 @@ func (o *Orchestrator) resumeAfterRestart(ctx context.Context, t model.Task, ia 
 	o.svc.AppendTaskEvent(t.ID, "status",
 		"resuming after an Ultraflow restart — same worktree, picking up where it left off")
 
-	// Restart the dev server on the port already reserved for this task (recovery
-	// killed it); reserve a fresh one only if the task never had a port.
-	prt := t.Port
-	if prt > 0 {
-		if o.ports != nil {
-			o.ports.Reserve(prt) // idempotent with main.go's startup re-reservation
-		}
-		o.startDevServer(t, t.Worktree, prt)
-	} else {
-		prt = o.setupPort(t, t.Worktree)
-	}
-
+	prt := o.restorePort(t)
 	o.execute(ctx, launchIntent{task: t, dir: t.Worktree, agent: ia, prompt: buildResumePrompt(t, prt), port: prt, fresh: false,
 		runningMsg: "resuming after restart (Ctrl-C to interrupt)", buildErr: "couldn't relaunch the agent to resume: "})
+}
+
+// resumeFlowAfterRestart resumes a multi-step FLOW task a daemon restart cut short.
+// Like resumeAfterRestart it reuses the EXISTING worktree (no prune, so the earlier
+// steps' uncommitted work survives) and restores the dev-server port, but it hands
+// off to the flow runner, which picks up at the persisted cursor — the step it was
+// on, or the gate it was parked at — instead of the solo single-conversation resume.
+func (o *Orchestrator) resumeFlowAfterRestart(ctx context.Context, t model.Task, fl flow.Flow) {
+	o.svc.AppendTaskEvent(t.ID, "status",
+		"resuming flow after an Ultraflow restart — same worktree, picking up at the current step")
+	prt := o.restorePort(t)
+	o.runFlow(ctx, t, t.Worktree, prt, fl)
+}
+
+// restorePort brings a resumed task's dev server back up on its already-reserved
+// port (a restart killed it), reserving a fresh one only if it never had a port.
+// Shared by the solo and flow restart-resume paths.
+func (o *Orchestrator) restorePort(t model.Task) int {
+	if t.Port > 0 {
+		if o.ports != nil {
+			o.ports.Reserve(t.Port) // idempotent with main.go's startup re-reservation
+		}
+		o.startDevServer(t, t.Worktree, t.Port)
+		return t.Port
+	}
+	return o.setupPort(t, t.Worktree)
 }
 
 // runWithSelfHeal runs a task's agent and, on an unexpected error, AUTO-DIAGNOSES
@@ -595,6 +627,20 @@ func (o *Orchestrator) Reengage(taskID, guidance string) error {
 	if err != nil {
 		return err
 	}
+	// A multi-step flow task answered mid-flow re-enters its graph, not a solo
+	// resume: a gate answer routes the graph (resumeGate), and an answer to a work
+	// step's self-heal escalation resumes that step and keeps walking (resumeStep).
+	// Only a genuinely solo task falls through to the conversation resume below.
+	if run, ok := o.svc.Run(taskID); ok && run.Cursor != "" {
+		fl := flow.ResolveFor(o.repoPath(t), run.Flow)
+		if step, ok := fl.Step(run.Cursor); ok {
+			if step.Gate {
+				return o.resumeGate(t, fl, step, guidance)
+			}
+			return o.resumeStep(t, fl, step, guidance)
+		}
+	}
+
 	ia, err := o.interactiveAgent(t)
 	if err != nil {
 		return err

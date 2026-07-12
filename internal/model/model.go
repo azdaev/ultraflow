@@ -59,6 +59,36 @@ type Task struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
+// Run is a task's progress through a multi-step flow: which flow it's walking,
+// the id of the step it's currently on (the cursor), and the steps it has already
+// completed. Solo tasks have no Run — they take the orchestrator's unchanged
+// single-agent path — so a Run existing is itself the signal that a task is a
+// multi-step flow. TurnDone is a transient per-step flag: the step's agent has
+// ended its turn (finish_task or an idle turn-end), so the orchestrator should
+// advance the graph rather than treat the agent's exit as a crash. Persisting
+// Cursor is what lets a daemon restart resume mid-flow instead of from step one.
+type Run struct {
+	TaskID    string    `json:"taskId"`
+	Flow      string    `json:"flow"`
+	Cursor    string    `json:"cursor"` // current step id; "" once the flow is complete
+	Completed []string  `json:"completed"`
+	TurnDone  bool      `json:"-"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// RunProgress is the board-facing view of a task's flow run: enough for the card's
+// stepper to light the LIVE active step and caption it, derived server-side from
+// the Run cursor plus the flow graph so the frontend needn't re-walk the graph.
+type RunProgress struct {
+	Flow    string `json:"flow"`
+	Step    string `json:"step"`    // current step id ("" when complete)
+	Index   int    `json:"index"`   // 0-based position in the flow's step order (-1 = none)
+	Total   int    `json:"total"`   // number of steps in the flow
+	Agent   string `json:"agent"`   // the current step's sub-agent
+	Gate    bool   `json:"gate"`    // the current step is a human gate
+	Caption string `json:"caption"` // e.g. "Build · step 2 of 4 · critic + your gate next"
+}
+
 // ChangedFile is one path a task touched, with its line magnitude — the
 // at-a-glance signal the board leads with (see spec.md "What to surface").
 type ChangedFile struct {

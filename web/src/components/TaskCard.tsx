@@ -16,6 +16,7 @@ import {
 import { FlowStepper } from "./FlowStepper";
 import { ProjectChip } from "./ProjectChip";
 import { ContextMenu, useContextMenu, type MenuItem } from "./ContextMenu";
+import { useRun } from "../runsContext";
 
 interface Props {
   task: Task;
@@ -28,6 +29,7 @@ interface Props {
 }
 
 export function TaskCard({ task, activity, activityKind, now, onOpen, project, showChip }: Props) {
+  const run = useRun(task.id);
   const needsHuman = task.status === "needs_human";
   // A reviewed branch that has fallen behind main. The auto-rebase runs at merge,
   // but we warn up front so the human knows the branch isn't current (roadmap M4).
@@ -143,19 +145,24 @@ export function TaskCard({ task, activity, activityKind, now, onOpen, project, s
           <MarkDoneAction taskId={task.id} />
         ))}
 
-      {/* flow stepper */}
+      {/* flow stepper — with the live step caption for a multi-step run */}
       <div className="mt-3">
-        <FlowStepper flow={task.flow} status={task.status} />
+        <FlowStepper flow={task.flow} status={task.status} run={run} />
+        {run && run.caption && !CLOSED.has(task.status) && (
+          <p className="mt-1.5 truncate text-[11px] text-muted">{run.caption}</p>
+        )}
       </div>
 
       {/* footer meta */}
       <div className="mt-3 flex items-center justify-between border-t border-hairline pt-2.5">
         <span className="flex items-center gap-1.5">
+          {/* the live sub-agent for the active step (a flow step can override the
+              task's agent); falls back to the task's own agent for solo. */}
           <span
             className="h-2 w-2 rounded-full"
-            style={{ backgroundColor: agentColor(task.agent) }}
+            style={{ backgroundColor: agentColor(run?.agent ?? task.agent) }}
           />
-          <span className="text-[12px] text-muted">{agentLabel(task.agent)}</span>
+          <span className="text-[12px] text-muted">{agentLabel(run?.agent ?? task.agent)}</span>
         </span>
         <span className="font-mono text-[11px] text-muted">{flowOf(task.flow).label}</span>
       </div>

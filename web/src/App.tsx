@@ -12,9 +12,10 @@ import { Composer } from "./components/Composer";
 import { Settings } from "./components/Settings";
 import { TaskDetail } from "./components/TaskDetail";
 import type { AttentionItem } from "./components/RailCard";
+import { RunsContext } from "./runsContext";
 
 export function App() {
-  const { tasks, requests, activity, activityKind, projects, connected } = useBoard();
+  const { tasks, requests, activity, activityKind, projects, runs, connected } = useBoard();
   const [layout, setLayout] = useLayout();
   const now = useNow(1000);
   // The composer carries an optional draft: the inline "+ Add task" hands off its
@@ -94,6 +95,7 @@ export function App() {
     : undefined;
 
   return (
+    <RunsContext.Provider value={runs}>
     <div className="flex min-h-full flex-col">
       <Topbar
         needCount={needCount}
@@ -155,6 +157,7 @@ export function App() {
         onClose={() => setOpenTaskId(null)}
       />
     </div>
+    </RunsContext.Provider>
   );
 }
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ultraflow/internal/devserver"
+	"ultraflow/internal/flow"
 	"ultraflow/internal/model"
 	"ultraflow/internal/port"
 	"ultraflow/internal/store"
@@ -139,23 +140,24 @@ func (s *Service) CreateTask(title, body, project string) (model.Task, error) {
 	return s.CreateTaskFull(title, body, project, "", "")
 }
 
-// implementedAgents / implementedFlows are what the orchestrator can actually
-// execute today (M0). A task's recorded agent/flow must never claim more than
-// that — the board shows the agent's name and colour on the card, so a task that
-// really ran Claude must not be stored (and later displayed) as "Codex". Blank or
-// not-yet-implemented values normalize to the working defaults.
+// implementedAgents is the set of agent adapters the orchestrator can actually
+// execute today. A task's recorded agent/flow must never claim more than that —
+// the board shows the agent's name and colour on the card, so a task that really
+// ran Claude must not be stored (and later displayed) as "Codex". Blank or
+// not-yet-implemented values normalize to the working defaults. The wired FLOW set
+// lives in the flow package (flow.Wired) — the engine's source of truth for what
+// it can walk — so the composer, task creation and the runner agree.
 var implementedAgents = map[string]bool{"claude": true, "codex": true}
-var implementedFlows = map[string]bool{"solo": true}
 
 // CreateTaskFull creates a task, defaulting agent and flow when blank and
 // normalizing any not-yet-implemented choice to what the orchestrator will
 // actually run, so the stored value never misrepresents the execution.
-func (s *Service) CreateTaskFull(title, body, project, agent, flow string) (model.Task, error) {
+func (s *Service) CreateTaskFull(title, body, project, agent, flowKey string) (model.Task, error) {
 	if !implementedAgents[agent] {
 		agent = "claude"
 	}
-	if !implementedFlows[flow] {
-		flow = "solo"
+	if !flow.Wired(flowKey) {
+		flowKey = "solo"
 	}
 	now := time.Now()
 	t := model.Task{
@@ -164,7 +166,7 @@ func (s *Service) CreateTaskFull(title, body, project, agent, flow string) (mode
 		Body:        body,
 		Project:     project,
 		Agent:       agent,
-		Flow:        flow,
+		Flow:        flowKey,
 		Status:      model.StatusBacklog,
 		MaxAttempts: DefaultMaxAttempts,
 		CreatedAt:   now,
