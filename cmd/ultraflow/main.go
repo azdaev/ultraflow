@@ -65,6 +65,15 @@ func main() {
 	svc.UseWorktrees(wt)
 	orch := orchestrator.New(svc, *workdir, wt, term, mcpURL, *maxConc)
 
+	// The -max-concurrent flag is only the default; a value the human set in
+	// Settings (persisted) wins across restarts, so apply it over the flag here.
+	if n, ok, err := svc.GetMaxConcurrent(); err != nil {
+		log.Printf("couldn't read persisted max_concurrent: %v", err)
+	} else if ok {
+		orch.SetLimit(n)
+		log.Printf("max concurrent agents set to %d (from Settings)", n)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go orch.Run(ctx)
@@ -72,7 +81,7 @@ func main() {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpSrv }, nil)
 	// staticDir (the -static flag) wins for dev; otherwise a release binary built
 	// with `-tags embed` serves the frontend it baked in; otherwise API-only.
-	webMux := web.New(svc, term, resolveStatic(*staticDir), webassets.Assets())
+	webMux := web.New(svc, term, resolveStatic(*staticDir), webassets.Assets(), orch)
 
 	root := http.NewServeMux()
 	root.Handle("/mcp", mcpHandler)

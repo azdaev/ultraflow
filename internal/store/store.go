@@ -42,6 +42,7 @@ func Open(path string) (*Store, error) {
 // cleanly to both fresh and pre-migration-runner databases.
 var migrations = []string{
 	schema,
+	settingsSchema,
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -118,6 +119,15 @@ CREATE TABLE IF NOT EXISTS events (
   kind       TEXT NOT NULL,
   data       TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMP NOT NULL
+);
+`
+
+// settingsSchema (migration 2) adds a simple key/value store for daemon-wide
+// preferences the human can change at runtime — currently just max_concurrent.
+const settingsSchema = `
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 `
 
@@ -356,6 +366,30 @@ func (s *Store) TaskEvents(taskID string) ([]model.Event, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// --- settings ---
+
+// GetSetting returns a stored setting's value and whether it was present. A
+// missing key (ok=false) lets the caller fall back to a default rather than
+// treating absence as an error.
+func (s *Store) GetSetting(key string) (value string, ok bool, err error) {
+	err = s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}
+
+// SetSetting upserts a setting value.
+func (s *Store) SetSetting(key, value string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO settings (key,value) VALUES (?,?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return err
 }
 
 // LatestActivity returns, per task, the text of its most recent event — the

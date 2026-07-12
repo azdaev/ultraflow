@@ -21,19 +21,34 @@ import (
 	"ultraflow/internal/terminal"
 )
 
+// concurrencyController is the slice of the orchestrator the settings API needs:
+// read the live parallel-agent limit and change it. Kept as an interface so web
+// stays decoupled from the orchestrator package (no import cycle); may be nil in
+// API-only/test setups, in which case the limit is still persisted but not
+// applied live.
+type concurrencyController interface {
+	Limit() int
+	SetLimit(int)
+}
+
 type server struct {
 	svc  *core.Service
 	term *terminal.Manager
+	conc concurrencyController
 }
 
 // New returns the HTTP handler for the board. The frontend is served at the root
 // from, in order of preference: staticDir (an explicit on-disk build, for dev);
 // otherwise the embedded assets FS (a self-contained release binary); otherwise
-// nothing (API-only). Pass "" and nil to run API-only.
-func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.FS) http.Handler {
-	s := &server{svc: svc, term: term}
+// nothing (API-only). Pass "" and nil to run API-only. conc lets the settings
+// API read and change the running orchestrator's concurrency limit; pass nil to
+// disable the live change (the value is still persisted).
+func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.FS, conc concurrencyController) http.Handler {
+	s := &server{svc: svc, term: term, conc: conc}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/board", s.board)
+	mux.HandleFunc("GET /api/settings", s.getSettings)
+	mux.HandleFunc("POST /api/settings/concurrency", s.setConcurrencyHandler)
 	mux.HandleFunc("GET /api/projects", s.listProjects)
 	mux.HandleFunc("POST /api/projects", s.createProject)
 	mux.HandleFunc("POST /api/projects/pick", s.pickProject)
@@ -114,6 +129,54 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 		"activity": activity,
 		"projects": projects,
 	})
+}
+
+// currentConcurrency reports the limit the orchestrator is actually running
+// with (the live source of truth). Falls back to the persisted value, then to
+// the min, when there's no live orchestrator (API-only/tests).
+func (s *server) currentConcurrency() int {
+	if s.conc != nil {
+		return s.conc.Limit()
+	}
+	if n, ok, err := s.svc.GetMaxConcurrent(); err == nil && ok {
+		return n
+	}
+	return core.MinConcurrent
+}
+
+// getSettings returns the daemon-wide preferences the board can edit.
+func (s *server) getSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"maxConcurrent":    s.currentConcurrency(),
+		"maxConcurrentMin": core.MinConcurrent,
+		"maxConcurrentMax": core.MaxConcurrentCap,
+	})
+}
+
+// setConcurrencyHandler validates and persists a new parallel-agent limit, then
+// applies it to the live orchestrator so queued tasks can start immediately when
+// it's raised. Returns the effective (clamped) value.
+func (s *server) setConcurrencyHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Value int `json:"value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.Value < core.MinConcurrent || body.Value > core.MaxConcurrentCap {
+		http.Error(w, fmt.Sprintf("value must be between %d and %d", core.MinConcurrent, core.MaxConcurrentCap), http.StatusBadRequest)
+		return
+	}
+	n, err := s.svc.SetMaxConcurrent(body.Value)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if s.conc != nil {
+		s.conc.SetLimit(n)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"maxConcurrent": n})
 }
 
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
