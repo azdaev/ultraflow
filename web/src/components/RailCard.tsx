@@ -6,7 +6,8 @@ import { AnswerBox } from "./AnswerBox";
 
 export type AttentionItem =
   | { type: "needs_human"; request: HumanRequest; task?: Task }
-  | { type: "failed"; task: Task; activity?: string };
+  | { type: "failed"; task: Task; activity?: string }
+  | { type: "merge_failed"; task: Task; message?: string };
 
 interface Props {
   item: AttentionItem;
@@ -26,6 +27,8 @@ export function RailCard({ item, now, onOpen }: Props) {
     >
       {item.type === "needs_human" ? (
         <CheckpointCard item={item} now={now} onOpen={onOpen} />
+      ) : item.type === "merge_failed" ? (
+        <MergeFailedCard item={item} now={now} onOpen={onOpen} />
       ) : (
         <FailedCard item={item} now={now} onOpen={onOpen} />
       )}
@@ -75,6 +78,80 @@ function CheckpointCard({
         <div className="mt-auto pt-2">
           <AnswerBox request={request} />
         </div>
+      </div>
+    </div>
+  );
+}
+
+// MergeFailedCard surfaces a merge that couldn't land (usually a conflict). The
+// task stays in review with its worktree intact, so the actions are to try the
+// merge again or open the thread to resolve it — not a plain retry.
+function MergeFailedCard({
+  item,
+  now,
+  onOpen,
+}: {
+  item: Extract<AttentionItem, { type: "merge_failed" }>;
+  now: number;
+  onOpen: (id: string) => void;
+}) {
+  const { task, message } = item;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function retryMerge() {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.merge(task.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "merge failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col rounded-xl border border-rust/40 bg-surface shadow-[0_6px_20px_-10px_rgba(169,67,43,0.4)]">
+      <div className="flex items-center justify-between border-b border-rust/25 px-4 py-2.5">
+        <span className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-rust" />
+          <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-rust">
+            Merge conflict
+          </span>
+        </span>
+        <span className="font-mono text-[11px] text-muted">
+          {ago(task.updatedAt, now)}
+        </span>
+      </div>
+
+      <div className="flex flex-1 flex-col px-4 py-3">
+        <button
+          onClick={() => onOpen(task.id)}
+          className="text-left text-[16px] font-semibold leading-snug text-ink hover:underline"
+        >
+          {task.title}
+        </button>
+        <p className="mt-1.5 rounded-lg bg-rust-tint px-2.5 py-1.5 font-mono text-[12px] leading-relaxed text-rust">
+          {message || "merge couldn't complete — your repo was left clean"}
+        </p>
+        <div className="mt-auto flex items-center gap-2 pt-3">
+          <button
+            onClick={retryMerge}
+            disabled={busy}
+            className="rounded-lg bg-ink px-3 py-2 text-[13px] font-semibold text-white transition hover:bg-ink/85 disabled:opacity-50"
+          >
+            {busy ? "Merging…" : "Try merge again"}
+          </button>
+          <button
+            onClick={() => onOpen(task.id)}
+            className="rounded-lg border border-hairline bg-surface px-3 py-2 text-[13px] font-semibold text-ink transition hover:border-ink/30"
+          >
+            View thread
+          </button>
+        </div>
+        {err && <p className="mt-1.5 text-[12px] text-rust">{err}</p>}
       </div>
     </div>
   );

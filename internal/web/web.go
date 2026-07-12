@@ -44,6 +44,7 @@ func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.
 	mux.HandleFunc("GET /api/tasks/{id}/events", s.taskEvents)
 	mux.HandleFunc("POST /api/tasks/{id}/retry", s.retryTask)
 	mux.HandleFunc("POST /api/tasks/{id}/merge", s.mergeTask)
+	mux.HandleFunc("POST /api/tasks/{id}/done", s.finishReview)
 	mux.HandleFunc("GET /api/tasks/{id}/terminal", s.terminal)
 	mux.HandleFunc("GET /api/human_requests", s.pendingRequests)
 	mux.HandleFunc("POST /api/human_requests/{id}/answer", s.answer)
@@ -94,6 +95,11 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	activityKind, err := s.svc.LatestActivityKind()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if tasks == nil {
 		tasks = []model.Task{}
 	}
@@ -109,10 +115,11 @@ func (s *server) board(w http.ResponseWriter, r *http.Request) {
 		projects = []model.Project{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tasks":    tasks,
-		"requests": reqs,
-		"activity": activity,
-		"projects": projects,
+		"tasks":        tasks,
+		"requests":     reqs,
+		"activity":     activity,
+		"activityKind": activityKind,
+		"projects":     projects,
 	})
 }
 
@@ -214,6 +221,16 @@ func (s *server) retryTask(w http.ResponseWriter, r *http.Request) {
 // git explanation; the task is left in review with its worktree intact.
 func (s *server) mergeTask(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.MergeTask(r.PathValue("id")); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// finishReview marks a reviewed task done without a merge — for tasks that ran in
+// place (no worktree to land), where "merge" doesn't apply.
+func (s *server) finishReview(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.FinishReview(r.PathValue("id")); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}

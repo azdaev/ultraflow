@@ -380,3 +380,28 @@ func (s *Store) LatestActivity() (map[string]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// LatestActivityKind returns, per task, the kind of its most recent non-empty
+// event (parallel to LatestActivity's text). The board uses it to lift a
+// "merge_failed" event into the attention rail rather than showing it as a quiet
+// status line.
+func (s *Store) LatestActivityKind() (map[string]string, error) {
+	rows, err := s.db.Query(`
+		SELECT e.task_id, e.kind
+		FROM events e
+		JOIN (SELECT task_id, MAX(id) AS mid FROM events WHERE data <> '' GROUP BY task_id) m
+		  ON e.task_id = m.task_id AND e.id = m.mid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var taskID, kind string
+		if err := rows.Scan(&taskID, &kind); err != nil {
+			return nil, err
+		}
+		out[taskID] = kind
+	}
+	return out, rows.Err()
+}

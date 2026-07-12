@@ -100,20 +100,24 @@ export function Composer({ open, onClose, projects }: Props) {
           </Field>
           <Field label="Flow">
             <Select value={flow} onChange={setFlow}>
-              {Object.values(FLOWS).map((f) => (
-                <option key={f.key} value={f.key} disabled={!f.available}>
-                  {f.available ? f.label : `${f.label} · soon`}
-                </option>
-              ))}
+              {Object.values(FLOWS)
+                .filter((f) => f.available)
+                .map((f) => (
+                  <option key={f.key} value={f.key}>
+                    {f.label}
+                  </option>
+                ))}
+              <SoonGroup labels={Object.values(FLOWS).filter((f) => !f.available).map((f) => f.label)} />
             </Select>
           </Field>
           <Field label="Agent">
             <Select value={agent} onChange={setAgent}>
-              {AGENTS.map((a) => (
-                <option key={a.key} value={a.key} disabled={!a.available}>
-                  {a.available ? a.label : `${a.label} · soon`}
+              {AGENTS.filter((a) => a.available).map((a) => (
+                <option key={a.key} value={a.key}>
+                  {a.label}
                 </option>
               ))}
+              <SoonGroup labels={AGENTS.filter((a) => !a.available).map((a) => a.label)} />
             </Select>
           </Field>
         </div>
@@ -131,6 +135,22 @@ export function Composer({ open, onClose, projects }: Props) {
           </button>
         </div>
     </Modal>
+  );
+}
+
+// SoonGroup tucks the not-yet-available choices into a single disabled "Coming
+// soon" section at the bottom of a select, so the picker leads with what you can
+// actually run instead of a wall of greyed-out "· soon" rows that read as broken.
+function SoonGroup({ labels }: { labels: string[] }) {
+  if (labels.length === 0) return null;
+  return (
+    <optgroup label="Coming soon">
+      {labels.map((label) => (
+        <option key={label} value="" disabled>
+          {label}
+        </option>
+      ))}
+    </optgroup>
   );
 }
 

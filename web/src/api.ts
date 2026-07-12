@@ -57,6 +57,9 @@ export interface BoardSnapshot {
   tasks: Task[];
   requests: HumanRequest[];
   activity: Record<string, string>;
+  // kind of each task's latest activity line, parallel to `activity`. Lets the
+  // board lift a "merge_failed" event into the attention rail.
+  activityKind: Record<string, string>;
   projects: Project[];
 }
 
@@ -97,6 +100,13 @@ export const api = {
   // finishes it. Rejects (409) with the git explanation if it can't complete.
   merge: (taskId: string) =>
     fetch(`/api/tasks/${taskId}/merge`, { method: "POST" }).then((r) =>
+      json<{ status: string }>(r),
+    ),
+
+  // markDone finishes a reviewed task that has no worktree to merge (ran in
+  // place). Rejects (409) if the task isn't in review.
+  markDone: (taskId: string) =>
+    fetch(`/api/tasks/${taskId}/done`, { method: "POST" }).then((r) =>
       json<{ status: string }>(r),
     ),
 

@@ -69,10 +69,15 @@ export function TaskCard({ task, activity, now, onOpen, project, showChip }: Pro
         </div>
       )}
 
-      {/* review → merge: land the worktree branch and finish the task. Only
-          shown when there's an isolated worktree to merge (a non-git project
-          runs in place, so there's nothing to land). */}
-      {task.status === "review" && task.worktree && <MergeAction taskId={task.id} />}
+      {/* review → finish. With a worktree, land the branch (merge). Without one
+          (a non-git / shared-workdir project runs in place, nothing to land),
+          offer a plain "Mark done" so the card isn't a dead-end. */}
+      {task.status === "review" &&
+        (task.worktree ? (
+          <MergeAction taskId={task.id} />
+        ) : (
+          <MarkDoneAction taskId={task.id} />
+        ))}
 
       {/* flow stepper */}
       <div className="mt-3">
@@ -130,6 +135,47 @@ function MergeAction({ taskId }: { taskId: string }) {
         }`}
       >
         {busy ? "Merging…" : "Merge → done"}
+      </span>
+      {err && <p className="mt-1.5 line-clamp-2 text-[12px] text-rust">{err}</p>}
+    </div>
+  );
+}
+
+// MarkDoneAction is the review control for a task with no worktree to merge (it
+// ran in place). It just marks the task done. Same nested-control conventions as
+// MergeAction: role="button" span, stop propagation so the drawer doesn't open.
+function MarkDoneAction({ taskId }: { taskId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function markDone(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.markDone(taskId);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "couldn't mark done");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2.5">
+      <span
+        role="button"
+        tabIndex={0}
+        aria-disabled={busy}
+        onClick={markDone}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") markDone(e as unknown as React.MouseEvent);
+        }}
+        className={`inline-flex items-center gap-1.5 rounded-lg bg-moss px-3 py-1.5 text-[13px] font-semibold text-white transition hover:brightness-105 ${
+          busy ? "opacity-60" : ""
+        }`}
+      >
+        {busy ? "Finishing…" : "Mark done"}
       </span>
       {err && <p className="mt-1.5 line-clamp-2 text-[12px] text-rust">{err}</p>}
     </div>
