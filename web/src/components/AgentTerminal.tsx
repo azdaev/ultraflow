@@ -10,6 +10,40 @@ export interface AgentTerminalHandle {
   interrupt: () => void;
 }
 
+// Translate a macOS text-editing combo that xterm.js won't emit on its own into
+// the terminal byte sequence a readline-style TUI (Claude, Codex, any emacs-mode
+// line editor) expects. xterm forwards plain keys and a fixed set of control keys
+// via onData, but silently swallows Cmd/Option editing chords — so Cmd+Backspace,
+// Cmd+←/→, Option+Backspace, Option+←/→ do nothing. Returns null when the event
+// isn't one we remap (let xterm handle it as before).
+function macEditSeq(e: KeyboardEvent): string | null {
+  // Cmd combos: line-wise editing. Require metaKey and no Option so we don't
+  // clobber word-wise (Option) or shadow copy/paste chords handled elsewhere.
+  if (e.metaKey && !e.altKey && !e.ctrlKey) {
+    switch (e.key) {
+      case "Backspace":
+        return "\x15"; // Ctrl-U — delete to line start ("cmd + delete")
+      case "ArrowLeft":
+        return "\x01"; // Ctrl-A — move to line start
+      case "ArrowRight":
+        return "\x05"; // Ctrl-E — move to line end
+    }
+  }
+  // Option combos: word-wise editing. Require altKey and no Cmd; leave
+  // Option+letter (compose / special chars) untouched.
+  if (e.altKey && !e.metaKey && !e.ctrlKey) {
+    switch (e.key) {
+      case "Backspace":
+        return "\x1b\x7f"; // ESC DEL — delete previous word
+      case "ArrowLeft":
+        return "\x1bb"; // ESC b — move word left
+      case "ArrowRight":
+        return "\x1bf"; // ESC f — move word right
+    }
+  }
+  return null;
+}
+
 // AgentTerminal is a real, interactive terminal bound to the task's live agent
 // PTY over a WebSocket: it renders the actual CLI output and sends keystrokes
 // back (including Esc and Ctrl-C). xterm.js is the emulator; the Go daemon bridges
@@ -76,6 +110,15 @@ export const AgentTerminal = forwardRef<AgentTerminalHandle, { taskId: string }>
         const copyCombo = (e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C");
         if (copyCombo && term.hasSelection() && navigator.clipboard) {
           navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+          return false;
+        }
+        // Cmd/Option editing chords xterm won't forward — translate to the byte
+        // sequence the agent's line editor reads, and preventDefault so the browser
+        // doesn't also act on Cmd+←/→ (history nav) or Cmd+Backspace.
+        const seq = macEditSeq(e);
+        if (seq !== null) {
+          e.preventDefault();
+          send(seq);
           return false;
         }
         return true;
