@@ -91,6 +91,12 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+
+	// Graceful path only (ListenAndServe returned ErrServerClosed): checkpoint the
+	// WAL and close the DB now that the server and agents are down.
+	if err := st.Close(); err != nil {
+		log.Printf("store close: %v", err)
+	}
 }
 
 // resolveStatic returns an absolute path if the static dir exists, else "" so the
