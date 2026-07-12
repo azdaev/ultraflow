@@ -187,6 +187,43 @@ func TestAnswerEndpoint(t *testing.T) {
 	}
 }
 
+// TestReviewEndpoints exercises the review surface's HTTP wiring: shots lists
+// empty (no worktree) without erroring, diff 404s when there's nothing to diff,
+// and revise reports unavailable when there's no orchestrator behind the server.
+func TestReviewEndpoints(t *testing.T) {
+	ts, svc := newTestServer(t) // nil conc → no reviser
+	defer ts.Close()
+	task, _ := svc.CreateTask("t", "", "")
+
+	// shots: empty gallery, HTTP 200 (absent dir is not an error).
+	var names []string
+	getJSON(t, ts.URL+"/api/tasks/"+task.ID+"/shots", &names)
+	if len(names) != 0 {
+		t.Fatalf("expected no shots, got %v", names)
+	}
+
+	// diff: 404 for a task with no worktree.
+	res, err := http.Get(ts.URL + "/api/tasks/" + task.ID + "/diff")
+	if err != nil {
+		t.Fatalf("diff get: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("diff without a worktree should 404, got %d", res.StatusCode)
+	}
+
+	// revise: 503 when the server has no orchestrator (reviser) to run the agent.
+	res, err = http.Post(ts.URL+"/api/tasks/"+task.ID+"/revise",
+		"application/json", bytes.NewBufferString(`{"message":"redo it"}`))
+	if err != nil {
+		t.Fatalf("revise post: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("revise without an orchestrator should 503, got %d", res.StatusCode)
+	}
+}
+
 func getJSON(t *testing.T, url string, v any) {
 	t.Helper()
 	res, err := http.Get(url)

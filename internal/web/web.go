@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -31,10 +32,19 @@ type concurrencyController interface {
 	SetLimit(int)
 }
 
+// reviser re-engages a reviewed/failed task's agent with the human's feedback
+// (the "send it back" action). The orchestrator implements it; recovered from the
+// conc value by a type assertion so New's signature stays put. nil in API-only
+// setups, in which case the revise endpoint reports it's unavailable.
+type reviser interface {
+	Revise(taskID, feedback string) error
+}
+
 type server struct {
-	svc  *core.Service
-	term *terminal.Manager
-	conc concurrencyController
+	svc     *core.Service
+	term    *terminal.Manager
+	conc    concurrencyController
+	reviser reviser
 }
 
 // New returns the HTTP handler for the board. The frontend is served at the root
@@ -45,6 +55,11 @@ type server struct {
 // disable the live change (the value is still persisted).
 func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.FS, conc concurrencyController) http.Handler {
 	s := &server{svc: svc, term: term, conc: conc}
+	// The orchestrator passed as conc also drives review send-backs; recover that
+	// capability without widening New's signature (a fake/nil conc simply lacks it).
+	if r, ok := conc.(reviser); ok {
+		s.reviser = r
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/board", s.board)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
@@ -57,6 +72,10 @@ func New(svc *core.Service, term *terminal.Manager, staticDir string, assets fs.
 	mux.HandleFunc("POST /api/tasks", s.createTask)
 	mux.HandleFunc("GET /api/tasks/{id}", s.getTask)
 	mux.HandleFunc("GET /api/tasks/{id}/events", s.taskEvents)
+	mux.HandleFunc("GET /api/tasks/{id}/diff", s.diff)
+	mux.HandleFunc("POST /api/tasks/{id}/revise", s.revise)
+	mux.HandleFunc("GET /api/tasks/{id}/shots", s.listShots)
+	mux.HandleFunc("GET /api/tasks/{id}/shots/{name}", s.getShot)
 	mux.HandleFunc("POST /api/tasks/{id}/retry", s.retryTask)
 	mux.HandleFunc("POST /api/tasks/{id}/merge", s.mergeTask)
 	mux.HandleFunc("POST /api/tasks/{id}/done", s.finishReview)
@@ -298,6 +317,95 @@ func (s *server) finishReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// diff returns the changes a reviewed task made in its worktree (magnitude +
+// unified patch) for the review diff viewer. 404 when the task has no worktree
+// to diff (ran in place, or already merged and torn down).
+func (s *server) diff(w http.ResponseWriter, r *http.Request) {
+	d, err := s.svc.TaskDiff(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+// revise re-engages the task's agent with the human's feedback (the review
+// "send it back" action). 409 if the task isn't in a state that can be sent back;
+// 503 if there's no live orchestrator to run the agent (API-only).
+func (s *server) revise(w http.ResponseWriter, r *http.Request) {
+	if s.reviser == nil {
+		http.Error(w, "sending back to the agent isn't available here", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.reviser.Revise(r.PathValue("id"), body.Message); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// shotsDir resolves the screenshots directory an agent writes into for a task's
+// worktree. Empty worktree (ran in place) yields an error so callers 404/empty.
+func (s *server) shotsDir(taskID string) (string, error) {
+	t, err := s.svc.GetTask(taskID)
+	if err != nil {
+		return "", err
+	}
+	if t.Worktree == "" {
+		return "", fmt.Errorf("no worktree")
+	}
+	return filepath.Join(t.Worktree, ".ultraflow", "shots"), nil
+}
+
+// listShots returns the screenshot filenames the agent left for a task, if any.
+// Absent dir / no worktree is not an error — it's simply an empty gallery.
+func (s *server) listShots(w http.ResponseWriter, r *http.Request) {
+	names := []string{}
+	if dir, err := s.shotsDir(r.PathValue("id")); err == nil {
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() && isImage(e.Name()) {
+					names = append(names, e.Name())
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, names)
+}
+
+// getShot serves one screenshot image by name. The name is validated to a bare
+// image filename (no path separators or "..") so it can't escape the shots dir.
+func (s *server) getShot(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") || !isImage(name) {
+		http.Error(w, "bad screenshot name", http.StatusBadRequest)
+		return
+	}
+	dir, err := s.shotsDir(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	http.ServeFile(w, r, filepath.Join(dir, name))
+}
+
+// isImage reports whether a filename looks like a browser-renderable image, so
+// the review gallery only lists/serves displayable screenshots.
+func isImage(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		return true
+	}
+	return false
 }
 
 // terminal upgrades to a WebSocket bridged to the task's live PTY session: it

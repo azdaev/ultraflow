@@ -47,6 +47,32 @@ func (c *Claude) Command(ctx context.Context, dir, prompt string) (*exec.Cmd, fu
 	return cmd, cleanup, nil
 }
 
+// ResumeCommand builds an interactive claude session that CONTINUES the task's
+// prior conversation in dir (`claude --continue`) and seeds the human's review
+// feedback as the next message. Because each task runs in its own worktree, only
+// that task's conversation lives there, so --continue unambiguously resumes it —
+// the agent keeps its memory of what it built. Same MCP wiring, PTY env, and
+// cleanup contract as Command.
+func (c *Claude) ResumeCommand(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error) {
+	cfgPath, err := c.writeMCPConfig()
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup := func() { os.Remove(cfgPath) }
+
+	cmd := exec.CommandContext(ctx, "claude",
+		"--continue", prompt, // resume this worktree's conversation, send the feedback
+		"--mcp-config", cfgPath,
+		"--strict-mcp-config",
+		"--permission-mode", "bypassPermissions",
+	)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	return cmd, cleanup, nil
+}
+
 // writeMCPConfig writes a throwaway MCP config pointing Claude Code at the
 // Ultraflow daemon, returning its path.
 func (c *Claude) writeMCPConfig() (string, error) {

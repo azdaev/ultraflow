@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -99,6 +100,87 @@ func (m *Manager) Merge(repoPath, taskID, message string) (string, error) {
 		return out, fmt.Errorf("git merge: %w: %s", err, out)
 	}
 	return "merged " + branch, nil
+}
+
+// DiffFile is one changed path in a task's worktree with its line magnitude.
+type DiffFile struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Removed int    `json:"removed"`
+}
+
+// DiffResult is a task's full change set vs the branch it forked from: the
+// magnitude the board leads with (+Added −Removed across Files) plus the raw
+// unified patch (secondary — the human rarely reads it). Patch is capped, with
+// Truncated set when it was cut, so a huge diff never bloats the response.
+type DiffResult struct {
+	Base      string     `json:"base"`
+	Added     int        `json:"added"`
+	Removed   int        `json:"removed"`
+	Files     []DiffFile `json:"files"`
+	Patch     string     `json:"patch"`
+	Truncated bool       `json:"truncated"`
+}
+
+// patchCap bounds the unified patch returned to the board (~200 KB) so a massive
+// change set doesn't blow up the review payload; the magnitude counts are exact.
+const patchCap = 200 * 1024
+
+// Diff computes what a task changed in its worktree, relative to the fork point
+// with the repo's checked-out branch — so it reflects the actual work regardless
+// of whether the agent committed. Uncommitted edits AND new (untracked) files are
+// included: a non-destructive intent-to-add surfaces new files in the diff
+// without staging their content. Used by the review diff viewer.
+func (m *Manager) Diff(repoPath, taskID string) (DiffResult, error) {
+	wtPath := m.pathFor(taskID)
+	if st, err := os.Stat(wtPath); err != nil || !st.IsDir() {
+		return DiffResult{}, fmt.Errorf("this task has no worktree to diff")
+	}
+
+	// The base the branch will merge into is the repo's checked-out branch; fall
+	// back to a raw HEAD ref if it's detached.
+	base := "HEAD"
+	if b, err := run(repoPath, "rev-parse", "--abbrev-ref", "HEAD"); err == nil && b != "" && b != "HEAD" {
+		base = b
+	}
+	// The fork point (merge-base) is the right comparison even if the agent made
+	// commits on the branch or the base moved on since; fall back to base itself.
+	fork := base
+	if mb, err := run(wtPath, "merge-base", base, "HEAD"); err == nil && mb != "" {
+		fork = mb
+	}
+
+	// Intent-to-add untracked files so `git diff` shows them as additions. `-N`
+	// records only the path (empty blob), not content, so it's reversible and
+	// doesn't disturb a later merge (which stages everything anyway).
+	_, _ = run(wtPath, "add", "-A", "-N")
+
+	res := DiffResult{Base: fork, Files: []DiffFile{}}
+	if numstat, err := run(wtPath, "diff", "--numstat", fork); err == nil && numstat != "" {
+		for _, line := range strings.Split(numstat, "\n") {
+			cols := strings.SplitN(line, "\t", 3)
+			if len(cols) != 3 {
+				continue
+			}
+			// Binary files report "-" for both counts; treat as zero-magnitude.
+			added, _ := strconv.Atoi(cols[0])
+			removed, _ := strconv.Atoi(cols[1])
+			res.Added += added
+			res.Removed += removed
+			res.Files = append(res.Files, DiffFile{Path: cols[2], Added: added, Removed: removed})
+		}
+	}
+
+	patch, err := run(wtPath, "diff", fork)
+	if err != nil {
+		return DiffResult{}, fmt.Errorf("git diff: %w: %s", err, patch)
+	}
+	if len(patch) > patchCap {
+		patch = patch[:patchCap]
+		res.Truncated = true
+	}
+	res.Patch = patch
+	return res, nil
 }
 
 // Remove tears down a task's worktree and deletes its branch. Safe to call even

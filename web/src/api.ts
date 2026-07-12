@@ -69,6 +69,23 @@ export interface Settings {
   maxConcurrentMax: number;
 }
 
+export interface DiffFile {
+  path: string;
+  added: number;
+  removed: number;
+}
+
+// TaskDiff is a reviewed task's change set: the magnitude the board leads with
+// plus the raw unified patch (secondary). truncated when the patch was capped.
+export interface TaskDiff {
+  base: string;
+  added: number;
+  removed: number;
+  files: DiffFile[];
+  patch: string;
+  truncated: boolean;
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error((await res.text()) || res.statusText);
   return res.json() as Promise<T>;
@@ -118,6 +135,28 @@ export const api = {
 
   taskEvents: (taskId: string) =>
     fetch(`/api/tasks/${taskId}/events`).then((r) => json<TaskEvent[]>(r)),
+
+  // diff returns a reviewed task's changes vs its base branch. Rejects (404)
+  // when the task has no worktree to diff (ran in place, or already merged).
+  diff: (taskId: string) =>
+    fetch(`/api/tasks/${taskId}/diff`).then((r) => json<TaskDiff>(r)),
+
+  // revise re-engages the task's agent with the human's feedback (the review
+  // "send it back" action): the agent reworks in the same worktree and the card
+  // flips back to running. Rejects (409) if the task can't be sent back.
+  revise: (taskId: string, message: string) =>
+    fetch(`/api/tasks/${taskId}/revise`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    }).then((r) => json<{ status: string }>(r)),
+
+  // shots lists the screenshot filenames the agent left for a task (empty when
+  // none); shotUrl builds the URL to render one.
+  shots: (taskId: string) =>
+    fetch(`/api/tasks/${taskId}/shots`).then((r) => json<string[]>(r)),
+  shotUrl: (taskId: string, name: string) =>
+    `/api/tasks/${taskId}/shots/${encodeURIComponent(name)}`,
 
   projects: () => fetch("/api/projects").then((r) => json<Project[]>(r)),
 

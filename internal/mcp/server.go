@@ -90,7 +90,8 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 		Name: "finish_task",
 		Description: "Call this ONCE when the task is fully complete. It sends the work to review and " +
 			"ENDS your session — you do not need to keep the terminal open or wait. Do not call it before " +
-			"the task is actually done.",
+			"the task is actually done. If you changed anything VISUAL, first save screenshots (PNG) into " +
+			".ultraflow/shots/ in your working directory so the human sees them on the review screen.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, a finishArgs) (*mcp.CallToolResult, any, error) {
 		summary := a.Summary
 		if summary == "" {

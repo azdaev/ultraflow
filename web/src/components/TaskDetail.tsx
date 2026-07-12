@@ -5,6 +5,8 @@ import { agentColor, agentLabel, ago, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { AnswerBox } from "./AnswerBox";
 import { AgentTerminal } from "./AgentTerminal";
+import { ReviewPanel } from "./ReviewPanel";
+import { ReviseBox } from "./ReviseBox";
 
 interface Props {
   task: Task | null;
@@ -21,6 +23,12 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const taskId = task?.id;
   const live = task?.status === "running" || task?.status === "needs_human";
+  // Send-back is available whenever the agent has parked the task for a decision.
+  const canRevise = task?.status === "review" || task?.status === "failed";
+  // Review is a real screen now: once the agent has parked a task that still has
+  // an inspectable worktree, show what it did (screenshots + diff). Excludes a
+  // merged `done` task whose worktree was already torn down.
+  const showReview = canRevise && !!task?.worktree;
   // We only surface errors now — the terminal shows tool activity live, so the
   // old event thread was redundant. Errors matter for a failed card (no terminal).
   const errors = events.filter((e) => e.kind === "error");
@@ -101,6 +109,16 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                       <AgentTerminal taskId={task.id} />
                     </div>
                   </>
+                ) : showReview ? (
+                  <>
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="h-1.5 w-1.5 rounded-full bg-moss" />
+                      <h3 className="eyebrow text-muted">
+                        What the agent did — review the changes
+                      </h3>
+                    </div>
+                    <ReviewPanel taskId={task.id} sig={activitySig} />
+                  </>
                 ) : (
                   <div className="grid flex-1 place-items-center rounded-xl border border-dashed border-hairline text-center">
                     <div className="max-w-sm px-6">
@@ -139,6 +157,8 @@ export function TaskDetail({ task, request, activitySig, now, onClose }: Props) 
                     </div>
                   </div>
                 )}
+
+                {canRevise && <ReviseBox taskId={task.id} />}
 
                 {errors.length > 0 && (
                   <div className="mb-5 rounded-xl border border-rust/40 bg-board p-4">
