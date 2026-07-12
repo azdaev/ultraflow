@@ -46,6 +46,12 @@ export function Settings({ open, onClose, projects }: Props) {
 
   // Per-agent context budget in tokens (0 = off). null while it loads.
   const [cap, setCap] = useState<number | null>(null);
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [telegramHasToken, setTelegramHasToken] = useState(false);
+  const [telegramToken, setTelegramToken] = useState("");
+  const [telegramUserId, setTelegramUserId] = useState("");
+  const [telegramChatId, setTelegramChatId] = useState("");
+  const [telegramSaving, setTelegramSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -60,6 +66,11 @@ export function Settings({ open, onClose, projects }: Props) {
         setConcMax(s.maxConcurrentMax);
         setCap(s.contextCap);
         setNativePicker(s.nativePicker);
+        setTelegramEnabled(s.telegram.enabled);
+        setTelegramHasToken(s.telegram.hasToken);
+        setTelegramToken("");
+        setTelegramUserId(s.telegram.userId ? String(s.telegram.userId) : "");
+        setTelegramChatId(s.telegram.chatId ? String(s.telegram.chatId) : "");
       })
       .catch(() => {
         /* leave the control disabled until it loads */
@@ -108,6 +119,25 @@ export function Settings({ open, onClose, projects }: Props) {
       setErr(errMsg(e, "couldn't open the folder picker"));
     } finally {
       setPicking(false);
+    }
+  }
+
+  async function saveTelegram() {
+    setTelegramSaving(true);
+    setErr(null);
+    try {
+      const saved = await api.setTelegram({
+        enabled: telegramEnabled,
+        token: telegramToken.trim(),
+        userId: Number(telegramUserId),
+        chatId: Number(telegramChatId),
+      });
+      setTelegramHasToken(saved.hasToken);
+      setTelegramToken("");
+    } catch (e) {
+      setErr(errMsg(e, "couldn't save Telegram settings"));
+    } finally {
+      setTelegramSaving(false);
     }
   }
 
@@ -187,6 +217,45 @@ export function Settings({ open, onClose, projects }: Props) {
             </div>
           </div>
           <PresetRow value={cap} presets={CAP_PRESETS} onChange={changeCap} />
+        </div>
+
+        {/* remote access */}
+        <h3 className="eyebrow mb-2.5 mt-6 text-muted">Remote access</h3>
+        <div className="rounded-lg border border-hairline bg-board px-3 py-3">
+          <label className="flex items-start justify-between gap-4">
+            <span>
+              <span className="block text-[14px] font-medium text-ink">Telegram bot</span>
+              <span className="block text-[12px] leading-snug text-muted">
+                Get task updates and answer checkpoints from your phone, even away from this network.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={telegramEnabled}
+              onChange={(e) => setTelegramEnabled(e.target.checked)}
+              className="mt-1 h-4 w-4 accent-ink"
+            />
+          </label>
+          <div className="mt-3 grid gap-2">
+            <input
+              type="password"
+              value={telegramToken}
+              onChange={(e) => setTelegramToken(e.target.value)}
+              placeholder={telegramHasToken ? "Bot token saved — enter to replace" : "Bot token from @BotFather"}
+              autoComplete="new-password"
+              className="rounded-lg border border-hairline bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-muted/60 focus:border-ink/40 focus:outline-none"
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <input type="text" inputMode="numeric" value={telegramUserId} onChange={(e) => setTelegramUserId(e.target.value)} placeholder="Your Telegram user ID" className="min-w-0 rounded-lg border border-hairline bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-muted/60 focus:border-ink/40 focus:outline-none" />
+              <input type="text" inputMode="numeric" value={telegramChatId} onChange={(e) => setTelegramChatId(e.target.value)} placeholder="Private chat ID" className="min-w-0 rounded-lg border border-hairline bg-surface px-3 py-2 text-[13px] text-ink placeholder:text-muted/60 focus:border-ink/40 focus:outline-none" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <p className="text-[11px] leading-snug text-muted">Create a bot in @BotFather, send it /start, then add your numeric IDs. The token stays on this device.</p>
+            <button onClick={() => void saveTelegram()} disabled={telegramSaving || (telegramEnabled && ((!telegramHasToken && !telegramToken.trim()) || !telegramUserId || !telegramChatId))} className="shrink-0 rounded-lg bg-ink px-3 py-2 text-[12px] font-semibold text-white transition hover:bg-ink/85 disabled:opacity-40">
+              {telegramSaving ? "Saving…" : "Save"}
+            </button>
+          </div>
         </div>
 
         {/* projects */}

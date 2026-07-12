@@ -40,6 +40,23 @@ cp "$(brew --prefix)/opt/ultraflow/deploy/com.ultraflow.daemon.plist" ~/Library/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ultraflow.daemon.plist
 ```
 
+## Telegram remote control
+
+Ultraflow can notify and answer checkpoints from a private Telegram chat using
+outbound-only long polling. Open **Settings → Remote access**, create a bot with
+BotFather, send it `/start`, and enter the bot token plus the numeric IDs for
+your Telegram user and private chat. Saving applies the connection immediately,
+so every Ultraflow installation can use its owner's own bot without editing the
+daemon environment.
+
+The bot supports `/status`, `/tasks`, and inline answers to `ask_human`
+questions. Only the exact configured numeric user + private chat pair is
+accepted. The saved token is never returned to the browser after submission.
+Keep the Ultraflow database private, since it contains the bot credential. Use
+only one long-polling process for a token and do not configure a webhook at the
+same time. Existing environment-variable setups are imported on first start for
+backwards compatibility.
+
 Edit the plist's paths if you didn't install to the default Homebrew prefix. Stop
 with `launchctl bootout gui/$(id -u)/com.ultraflow.daemon`.
 

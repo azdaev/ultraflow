@@ -107,6 +107,14 @@ export interface Settings {
   // true where the daemon can open a native folder dialog (macOS). Off it, the
   // board shows a paste-the-path field instead (see addProject).
   nativePicker: boolean;
+  telegram: TelegramSettings;
+}
+
+export interface TelegramSettings {
+  enabled: boolean;
+  hasToken: boolean;
+  userId: number;
+  chatId: number;
 }
 
 export interface DiffFile {
@@ -315,4 +323,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
     }).then((r) => json<{ contextCap: number }>(r)),
+
+  setTelegram: (value: { enabled: boolean; token: string; userId: number; chatId: number }) =>
+	fetch("/api/settings/telegram", {
+	  method: "POST",
+	  headers: { "Content-Type": "application/json" },
+	  body: JSON.stringify(value),
+	}).then((r) => json<TelegramSettings>(r)),
 };

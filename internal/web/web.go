@@ -88,6 +88,7 @@ func New(svc *core.Service, term *terminal.Manager, staticDir, attachDir string,
 	r.GET("/api/settings", s.getSettings)
 	r.POST("/api/settings/concurrency", s.setConcurrencyHandler)
 	r.POST("/api/settings/context-cap", s.setContextCapHandler)
+	r.POST("/api/settings/telegram", s.setTelegramHandler)
 	r.GET("/api/projects", s.listProjects)
 	r.POST("/api/projects", s.createProject)
 	r.POST("/api/projects/pick", s.pickProject)
@@ -206,6 +207,7 @@ func (s *server) currentConcurrency() int {
 
 // getSettings returns the daemon-wide preferences the board can edit.
 func (s *server) getSettings(c *gin.Context) {
+	tg, _, _ := s.svc.TelegramSettings()
 	writeJSON(c, http.StatusOK, map[string]any{
 		"maxConcurrent":    s.currentConcurrency(),
 		"maxConcurrentMin": core.MinConcurrent,
@@ -220,7 +222,34 @@ func (s *server) getSettings(c *gin.Context) {
 		// (macOS only, see pickFolder). Off it, the board falls back to a
 		// paste-the-path field that POSTs to /api/projects.
 		"nativePicker": runtime.GOOS == "darwin",
+		"telegram": map[string]any{
+			"enabled": tg.Enabled, "hasToken": tg.Token != "", "userId": tg.UserID, "chatId": tg.ChatID,
+		},
 	})
+}
+
+func (s *server) setTelegramHandler(c *gin.Context) {
+	var body struct {
+		Enabled bool   `json:"enabled"`
+		Token   string `json:"token"`
+		UserID  int64  `json:"userId"`
+		ChatID  int64  `json:"chatId"`
+	}
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	old, _, _ := s.svc.TelegramSettings()
+	token := strings.TrimSpace(body.Token)
+	if token == "" {
+		token = old.Token
+	}
+	cfg := core.TelegramSettings{Enabled: body.Enabled, Token: token, UserID: body.UserID, ChatID: body.ChatID}
+	if err := s.svc.SetTelegramSettings(cfg); err != nil {
+		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(c, http.StatusOK, map[string]any{"enabled": cfg.Enabled, "hasToken": cfg.Token != "", "userId": cfg.UserID, "chatId": cfg.ChatID})
 }
 
 // setConcurrencyHandler validates and persists a new parallel-agent limit, then
