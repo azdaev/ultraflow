@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"sync"
 	"time"
 
 	"ultraflow/internal/agent"
@@ -30,21 +31,70 @@ type Orchestrator struct {
 	workdir string
 	wt      *worktree.Manager
 	term    *terminal.Manager
-	sem     chan struct{}
+
+	// Resizable concurrency limit. A plain buffered-channel semaphore is fixed at
+	// creation; this mutex+cond version lets SetLimit change the ceiling at runtime
+	// — raising it wakes queued acquirers immediately, lowering it just stops new
+	// starts (already-running agents past the new limit are never killed).
+	mu     sync.Mutex
+	cond   *sync.Cond
+	active int
+	limit  int
 }
 
 func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal.Manager, mcpURL string, maxConcurrent int) *Orchestrator {
 	if maxConcurrent < 1 {
 		maxConcurrent = 1
 	}
-	return &Orchestrator{
+	o := &Orchestrator{
 		svc:     svc,
 		agents:  map[string]agent.Agent{"claude": agent.NewClaude(mcpURL)},
 		workdir: workdir,
 		wt:      wt,
 		term:    term,
-		sem:     make(chan struct{}, maxConcurrent),
+		limit:   maxConcurrent,
 	}
+	o.cond = sync.NewCond(&o.mu)
+	return o
+}
+
+// SetLimit changes the max number of agents allowed to run at once. Raising it
+// broadcasts so any goroutines blocked waiting for a slot wake and re-check;
+// lowering it takes effect only for future acquisitions — running agents are
+// left alone. A value below 1 is clamped to 1.
+func (o *Orchestrator) SetLimit(n int) {
+	if n < 1 {
+		n = 1
+	}
+	o.mu.Lock()
+	o.limit = n
+	o.mu.Unlock()
+	o.cond.Broadcast()
+}
+
+// Limit returns the current concurrency ceiling.
+func (o *Orchestrator) Limit() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.limit
+}
+
+// acquire blocks until a concurrency slot is free under the current limit, then
+// reserves it. release must be called (deferred) when the agent is done.
+func (o *Orchestrator) acquire() {
+	o.mu.Lock()
+	for o.active >= o.limit {
+		o.cond.Wait()
+	}
+	o.active++
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) release() {
+	o.mu.Lock()
+	o.active--
+	o.mu.Unlock()
+	o.cond.Broadcast()
 }
 
 // Run polls the backlog and starts tasks until ctx is cancelled.
@@ -80,8 +130,8 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 	}
 
 	go func() {
-		o.sem <- struct{}{}
-		defer func() { <-o.sem }()
+		o.acquire()
+		defer o.release()
 
 		// Give the task its own isolated checkout so parallel agents don't collide.
 		// Falls back to the shared workdir when the task has no registered git repo.

@@ -60,6 +60,12 @@ export interface BoardSnapshot {
   projects: Project[];
 }
 
+export interface Settings {
+  maxConcurrent: number;
+  maxConcurrentMin: number;
+  maxConcurrentMax: number;
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error((await res.text()) || res.statusText);
   return res.json() as Promise<T>;
@@ -118,4 +124,17 @@ export const api = {
     fetch(`/api/projects/${id}`, { method: "DELETE" }).then((r) =>
       json<{ status: string }>(r),
     ),
+
+  // settings returns the daemon-wide preferences the board can edit (currently
+  // just the parallel-agent limit and its allowed range).
+  settings: () => fetch("/api/settings").then((r) => json<Settings>(r)),
+
+  // setConcurrency persists a new parallel-agent limit and applies it to the
+  // running orchestrator. Returns the effective (clamped) value.
+  setConcurrency: (value: number) =>
+    fetch("/api/settings/concurrency", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    }).then((r) => json<{ maxConcurrent: number }>(r)),
 };

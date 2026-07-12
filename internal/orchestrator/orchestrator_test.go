@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"ultraflow/internal/core"
 	"ultraflow/internal/store"
@@ -36,6 +37,83 @@ func gitRepo(t *testing.T) string {
 		}
 	}
 	return repo
+}
+
+func newTestOrch(t *testing.T, limit int) *Orchestrator {
+	t.Helper()
+	return New(newTestSvc(t), "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")),
+		terminal.NewManager(), "http://mcp", limit)
+}
+
+// TestSemaphoreRaiseWakesQueued verifies the core resizable-semaphore contract:
+// with the limit at 1, a second acquirer blocks; raising the limit must let it
+// proceed immediately without any slot being released.
+func TestSemaphoreRaiseWakesQueued(t *testing.T) {
+	o := newTestOrch(t, 1)
+
+	o.acquire() // hold the only slot; don't release it
+
+	started := make(chan struct{})
+	go func() {
+		o.acquire() // blocks: active(1) >= limit(1)
+		close(started)
+	}()
+
+	select {
+	case <-started:
+		t.Fatal("second acquire should block while limit is 1 and a slot is held")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	o.SetLimit(2) // raising the ceiling must wake the blocked acquirer
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("raising the limit should let the queued acquirer proceed immediately")
+	}
+}
+
+// TestSemaphoreLowerDoesNotEvict verifies that lowering the limit below the
+// number of active agents doesn't disturb them (no panic, active is untouched);
+// it only prevents new acquisitions, which is checked by the blocking behaviour.
+func TestSemaphoreLowerDoesNotEvict(t *testing.T) {
+	o := newTestOrch(t, 3)
+	o.acquire()
+	o.acquire() // 2 active under limit 3
+
+	o.SetLimit(1) // below active; running ones must be untouched
+	if o.Limit() != 1 {
+		t.Fatalf("limit should be 1, got %d", o.Limit())
+	}
+
+	// A fresh acquire must now block (active 2 >= limit 1).
+	got := make(chan struct{})
+	go func() { o.acquire(); close(got) }()
+	select {
+	case <-got:
+		t.Fatal("acquire should block when active exceeds a lowered limit")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Releasing down to 0 active still leaves us at limit 1, so exactly one more
+	// acquire may now proceed (the blocked one above).
+	o.release()
+	o.release()
+	select {
+	case <-got:
+	case <-time.After(time.Second):
+		t.Fatal("a slot should free up once active drops below the lowered limit")
+	}
+}
+
+// TestSetLimitClamps guards the floor: SetLimit never drops below 1.
+func TestSetLimitClamps(t *testing.T) {
+	o := newTestOrch(t, 3)
+	o.SetLimit(0)
+	if o.Limit() != 1 {
+		t.Fatalf("SetLimit(0) should clamp to 1, got %d", o.Limit())
+	}
 }
 
 // TestPrepareWorkdirCreatesWorktree covers the M1 happy path: a task whose

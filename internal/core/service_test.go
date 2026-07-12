@@ -22,6 +22,59 @@ func newTestService(t *testing.T) *Service {
 	return NewService(st)
 }
 
+func TestMaxConcurrentClampAndPersist(t *testing.T) {
+	svc := newTestService(t)
+
+	// Unset by default: caller keeps its own default.
+	if _, ok, err := svc.GetMaxConcurrent(); err != nil || ok {
+		t.Fatalf("expected unset, got ok=%v err=%v", ok, err)
+	}
+
+	// Clamps to the 1..8 range on the way in, and the clamped value is returned.
+	if n, err := svc.SetMaxConcurrent(99); err != nil || n != MaxConcurrentCap {
+		t.Fatalf("SetMaxConcurrent(99) = %d,%v; want %d", n, err, MaxConcurrentCap)
+	}
+	if n, err := svc.SetMaxConcurrent(0); err != nil || n != MinConcurrent {
+		t.Fatalf("SetMaxConcurrent(0) = %d,%v; want %d", n, err, MinConcurrent)
+	}
+
+	if _, err := svc.SetMaxConcurrent(5); err != nil {
+		t.Fatalf("set 5: %v", err)
+	}
+	n, ok, err := svc.GetMaxConcurrent()
+	if err != nil || !ok || n != 5 {
+		t.Fatalf("GetMaxConcurrent = %d,%v,%v; want 5,true,nil", n, ok, err)
+	}
+}
+
+// TestMaxConcurrentSurvivesReopen mirrors the acceptance criterion that a set
+// value persists across a daemon restart (a fresh store on the same file).
+func TestMaxConcurrentSurvivesReopen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := NewService(st).SetMaxConcurrent(6); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	st2, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer st2.Close()
+	n, ok, err := NewService(st2).GetMaxConcurrent()
+	if err != nil || !ok || n != 6 {
+		t.Fatalf("after reopen GetMaxConcurrent = %d,%v,%v; want 6,true,nil", n, ok, err)
+	}
+}
+
 func TestCreateTaskDefaults(t *testing.T) {
 	svc := newTestService(t)
 	task, err := svc.CreateTask("build the thing", "details", "proj")

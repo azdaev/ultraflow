@@ -234,6 +234,51 @@ func (s *Service) DeleteProject(id string) error {
 	return nil
 }
 
+// --- settings ---
+
+// Concurrency bounds: at least one agent, and a ceiling that keeps a single
+// subscription from being hammered by too many parallel agents.
+const (
+	MinConcurrent     = 1
+	MaxConcurrentCap  = 8
+	settingKeyMaxConc = "max_concurrent"
+)
+
+// clampConcurrent forces n into the allowed 1..8 range.
+func clampConcurrent(n int) int {
+	if n < MinConcurrent {
+		return MinConcurrent
+	}
+	if n > MaxConcurrentCap {
+		return MaxConcurrentCap
+	}
+	return n
+}
+
+// GetMaxConcurrent returns the persisted parallel-agent limit and whether one
+// was ever set. When unset (ok=false) the caller keeps its own default (the
+// -max-concurrent launch flag).
+func (s *Service) GetMaxConcurrent() (n int, ok bool, err error) {
+	v, present, err := s.store.GetSetting(settingKeyMaxConc)
+	if err != nil || !present {
+		return 0, false, err
+	}
+	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
+		return 0, false, nil // corrupt value → treat as unset
+	}
+	return clampConcurrent(n), true, nil
+}
+
+// SetMaxConcurrent clamps n to 1..8, persists it, and returns the stored value
+// so the caller can echo the effective (clamped) number back to the UI.
+func (s *Service) SetMaxConcurrent(n int) (int, error) {
+	n = clampConcurrent(n)
+	if err := s.store.SetSetting(settingKeyMaxConc, fmt.Sprintf("%d", n)); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // --- the ask_human protocol (the core of Ultraflow) ---
 
 // AskHuman parks the caller until the human answers the request on the board,
