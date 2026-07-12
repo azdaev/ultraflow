@@ -96,7 +96,9 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 			"the task is actually done. ALWAYS pass `report`: a Markdown writeup of the result — it is shown " +
 			"natively on the review screen and is how the human reads your work (the terminal is not kept). " +
 			"For a question or audit task the report IS the deliverable. If you changed anything VISUAL, also " +
-			"save screenshots (PNG) into .ultraflow/shots/ in your working directory so they show on review.",
+			"save screenshots (PNG) into .ultraflow/shots/ in your working directory so they show on review — " +
+			"and you can embed them inline in the report with Markdown image syntax `![caption](shot.png)` " +
+			"(reference the bare filename; it resolves to the saved screenshot).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, a finishArgs) (*mcp.CallToolResult, any, error) {
 		summary := a.Summary
 		if summary == "" {

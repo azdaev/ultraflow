@@ -6,6 +6,17 @@ import { Markdown } from "./Markdown";
 // left no screenshots", never to block anything.
 const VISUAL_EXT = /\.(tsx?|jsx?|css|scss|sass|less|html|vue|svelte)$/i;
 
+// shotSrc resolves a Markdown image reference in a report to a loadable URL. A
+// remote/data URL is left as-is; anything else is treated as one of the agent's
+// saved screenshots (agents save to .ultraflow/shots/ and often reference it as
+// `shot.png` or `.ultraflow/shots/shot.png`), so we serve it from the task's
+// shots endpoint by its bare filename.
+function shotSrc(taskId: string, src: string): string {
+  if (/^(https?:|data:)/i.test(src)) return src;
+  const name = src.replace(/[?#].*$/, "").replace(/^.*[\\/]/, "");
+  return api.shotUrl(taskId, name);
+}
+
 // ReviewPanel is the review screen's content: the agent's Report (native Markdown
 // writeup — for a question/audit task this IS the deliverable) and, when the task
 // touched a worktree, the Changes (screenshots + code diff). Tabs keep both a tap
@@ -70,7 +81,7 @@ export function ReviewPanel({
 
       {tab === "report" && report && (
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-          <Markdown text={report} />
+          <Markdown text={report} resolveImg={(src) => shotSrc(taskId, src)} />
         </div>
       )}
 

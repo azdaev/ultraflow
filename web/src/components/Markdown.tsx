@@ -1,18 +1,28 @@
 import { Fragment, type ReactNode } from "react";
 
+// resolveImg maps a Markdown image src to the URL to actually load. Reports live
+// off the web root, so a bare screenshot reference (`shot.png`, `.ultraflow/shots/
+// shot.png`) has to be rewritten to the task's shots endpoint; callers pass a
+// resolver for that. The default leaves the src untouched (absolute/remote URLs).
+type ResolveImg = (src: string) => string;
+const identity: ResolveImg = (src) => src;
+
 // Markdown renders an agent's report — well-formed Markdown from a Claude/Codex
 // run — as native, design-system-styled React. Deliberately small: it covers the
 // blocks agents actually emit (headings, lists, code fences, quotes, rules,
-// paragraphs) plus inline bold/italic/code/links, and nothing more. No dep, no
-// dangerouslySetInnerHTML — the report is local, trusted text, but we still only
-// ever render it as text nodes and known elements.
-export function Markdown({ text }: { text: string }) {
-  return <div className="report-prose flex flex-col gap-3">{blocks(text)}</div>;
+// paragraphs) plus inline bold/italic/code/links/images, and nothing more. No dep,
+// no dangerouslySetInnerHTML — the report is local, trusted text, but we still
+// only ever render it as text nodes and known elements. `resolveImg` rewrites
+// image srcs so a report can embed the screenshots the agent saved for the task.
+export function Markdown({ text, resolveImg = identity }: { text: string; resolveImg?: ResolveImg }) {
+  return (
+    <div className="report-prose flex flex-col gap-3">{blocks(text, resolveImg)}</div>
+  );
 }
 
 // blocks splits the source into block-level chunks and renders each. Fenced code
 // is consumed greedily so its contents are never parsed as Markdown.
-function blocks(src: string): ReactNode[] {
+function blocks(src: string, resolveImg: ResolveImg): ReactNode[] {
   const lines = src.replace(/\r\n/g, "\n").split("\n");
   const out: ReactNode[] = [];
   let i = 0;
@@ -63,7 +73,7 @@ function blocks(src: string): ReactNode[] {
           key={key++}
           className={`${size} font-semibold leading-snug text-ink ${level >= 3 ? "mt-1" : "mt-2"}`}
         >
-          {inline(h[2])}
+          {inline(h[2], resolveImg)}
         </div>,
       );
       i++;
@@ -81,7 +91,7 @@ function blocks(src: string): ReactNode[] {
           className="border-l-2 border-hairline pl-3 text-[13px] italic leading-relaxed text-muted"
         >
           {quote.map((q, n) => (
-            <p key={n}>{inline(q)}</p>
+            <p key={n}>{inline(q, resolveImg)}</p>
           ))}
         </blockquote>,
       );
@@ -100,7 +110,7 @@ function blocks(src: string): ReactNode[] {
           <ol key={key++} className={`list-decimal ${cls}`}>
             {items.map((it, n) => (
               <li key={n} className="pl-1">
-                {inline(it)}
+                {inline(it, resolveImg)}
               </li>
             ))}
           </ol>
@@ -108,7 +118,7 @@ function blocks(src: string): ReactNode[] {
           <ul key={key++} className={`list-disc ${cls}`}>
             {items.map((it, n) => (
               <li key={n} className="pl-1">
-                {inline(it)}
+                {inline(it, resolveImg)}
               </li>
             ))}
           </ul>
@@ -132,7 +142,7 @@ function blocks(src: string): ReactNode[] {
     }
     out.push(
       <p key={key++} className="text-[13px] leading-relaxed text-ink">
-        {inline(para.join(" "))}
+        {inline(para.join(" "), resolveImg)}
       </p>,
     );
   }
@@ -140,12 +150,13 @@ function blocks(src: string): ReactNode[] {
   return out;
 }
 
-// inline renders bold, italic, inline code, and links within one line. It walks
-// the string with a single alternation so the earliest match wins and the rest is
-// re-scanned — keeps precedence sane without a full parser.
-function inline(src: string): ReactNode {
+// inline renders bold, italic, inline code, links, and images within one line. It
+// walks the string with a single alternation so the earliest match wins and the
+// rest is re-scanned — keeps precedence sane without a full parser. The image
+// alternative precedes the link one so `![alt](src)` isn't misread as `!` + link.
+function inline(src: string, resolveImg: ResolveImg): ReactNode {
   const nodes: ReactNode[] = [];
-  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*]+\*)|(_[^_]+_)|(\[[^\]]+\]\([^)]+\))/;
+  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*]+\*)|(_[^_]+_)|(!\[[^\]]*\]\([^)]+\))|(\[[^\]]+\]\([^)]+\))/;
   let rest = src;
   let key = 0;
 
@@ -172,6 +183,26 @@ function inline(src: string): ReactNode {
         <strong key={key++} className="font-semibold text-ink">
           {tok.slice(2, -2)}
         </strong>,
+      );
+    } else if (tok.startsWith("![")) {
+      const im = tok.match(/^!\[([^\]]*)\]\(([^)]+)\)$/)!;
+      nodes.push(
+        <a
+          key={key++}
+          href={resolveImg(im[2])}
+          target="_blank"
+          rel="noreferrer"
+          className="my-1 block overflow-hidden rounded-lg border border-hairline bg-surface transition hover:border-ink/25"
+        >
+          <img
+            src={resolveImg(im[2])}
+            alt={im[1]}
+            className="max-h-80 w-full object-contain bg-[#17171A]"
+          />
+          {im[1] && (
+            <span className="block truncate px-2 py-1 text-[11px] text-muted">{im[1]}</span>
+          )}
+        </a>,
       );
     } else if (tok.startsWith("[")) {
       const lm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/)!;
