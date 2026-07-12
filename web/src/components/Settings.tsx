@@ -25,6 +25,11 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
   const [picking, setPicking] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Whether the daemon can open a native folder dialog (macOS). null while the
+  // setting loads; false → show the paste-the-path fallback field instead.
+  const [nativePicker, setNativePicker] = useState<boolean | null>(null);
+  const [pastePath, setPastePath] = useState("");
+
   // Parallel-agent limit. Loaded from the daemon when Settings opens; changes are
   // applied optimistically and POSTed, reflecting the server's clamped value.
   const [conc, setConc] = useState<number | null>(null);
@@ -42,6 +47,7 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
         setConc(s.maxConcurrent);
         setConcMin(s.maxConcurrentMin);
         setConcMax(s.maxConcurrentMax);
+        setNativePicker(s.nativePicker);
       })
       .catch(() => {
         /* leave the control disabled until it loads */
@@ -74,6 +80,24 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
       await api.pickProject(); // new project (if any) arrives via SSE
     } catch (e) {
       setErr(e instanceof Error ? e.message : "couldn't open the folder picker");
+    } finally {
+      setPicking(false);
+    }
+  }
+
+  // addByPath registers a project from a pasted path (the fallback where no
+  // native picker exists). The server validates it's a git repo; the new project
+  // arrives via SSE.
+  async function addByPath() {
+    const path = pastePath.trim();
+    if (picking || !path) return;
+    setPicking(true);
+    setErr(null);
+    try {
+      await api.addProject(path);
+      setPastePath("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "couldn't add that folder");
     } finally {
       setPicking(false);
     }
@@ -170,19 +194,55 @@ export function Settings({ open, onClose, projects, layout, setLayout }: Props) 
           ))}
         </div>
 
-        {/* add project — native folder picker */}
-        <button
-          onClick={chooseFolder}
-          disabled={picking}
-          className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-ink/25 bg-surface px-3 py-3 text-[14px] font-semibold text-ink transition hover:border-ink/50 hover:bg-board disabled:opacity-60"
-        >
-          <FolderIcon />
-          {picking ? "Choose a folder in Finder…" : "Choose a folder…"}
-        </button>
-        <p className="mt-2 text-[12px] text-muted">
-          Opens your file browser — pick the project's git repo folder. Its name
-          becomes the project name.
-        </p>
+        {/* add project — native folder picker on macOS, paste-path fallback
+            elsewhere (the daemon reports which via settings.nativePicker) */}
+        {nativePicker !== false ? (
+          <>
+            <button
+              onClick={chooseFolder}
+              disabled={picking}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-ink/25 bg-surface px-3 py-3 text-[14px] font-semibold text-ink transition hover:border-ink/50 hover:bg-board disabled:opacity-60"
+            >
+              <FolderIcon />
+              {picking ? "Choose a folder in Finder…" : "Choose a folder…"}
+            </button>
+            <p className="mt-2 text-[12px] text-muted">
+              Opens your file browser — pick the project's git repo folder. Its
+              name becomes the project name.
+            </p>
+          </>
+        ) : (
+          <>
+            <form
+              className="mt-3 flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void addByPath();
+              }}
+            >
+              <input
+                type="text"
+                value={pastePath}
+                onChange={(e) => setPastePath(e.target.value)}
+                placeholder="/home/you/code/my-repo"
+                spellCheck={false}
+                autoComplete="off"
+                className="min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-3 py-2.5 font-mono text-[13px] text-ink placeholder:text-muted/60 focus:border-ink/40 focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={picking || pastePath.trim() === ""}
+                className="shrink-0 rounded-lg border border-dashed border-ink/25 bg-surface px-4 py-2.5 text-[14px] font-semibold text-ink transition hover:border-ink/50 hover:bg-board disabled:opacity-40"
+              >
+                {picking ? "Adding…" : "Add"}
+              </button>
+            </form>
+            <p className="mt-2 text-[12px] text-muted">
+              Paste the absolute path to the project's git repo folder. Its name
+              becomes the project name.
+            </p>
+          </>
+        )}
 
         {err && <p className="mt-3 text-[13px] text-rust">{err}</p>}
     </Modal>

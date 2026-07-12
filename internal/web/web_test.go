@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"ultraflow/internal/core"
@@ -120,6 +122,51 @@ func TestCreateAndBoard(t *testing.T) {
 	if len(snap.Tasks) != 1 || snap.Tasks[0].ID != created.ID {
 		t.Fatalf("board missing created task: %+v", snap.Tasks)
 	}
+}
+
+// TestAddProjectByPath drives the paste-the-path fallback (POST /api/projects):
+// a valid git repo path is accepted and named after its folder, while a
+// non-existent path and a directory that isn't a git repo are both rejected.
+func TestAddProjectByPath(t *testing.T) {
+	ts, _ := newTestServer(t)
+	defer ts.Close()
+
+	// A directory with a .git entry is a valid repo; its basename becomes the name.
+	repo := filepath.Join(t.TempDir(), "my-repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	res, err := http.Post(ts.URL+"/api/projects", "application/json",
+		bytes.NewBufferString(`{"path":`+strconv.Quote(repo)+`}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 for a git repo path, got %d", res.StatusCode)
+	}
+	var p model.Project
+	json.NewDecoder(res.Body).Decode(&p)
+	res.Body.Close()
+	if p.Name != "my-repo" || p.RepoPath != repo {
+		t.Fatalf("project = %+v; want name=my-repo path=%s", p, repo)
+	}
+
+	// A directory that isn't a git repo → 400.
+	plain := t.TempDir()
+	res, _ = http.Post(ts.URL+"/api/projects", "application/json",
+		bytes.NewBufferString(`{"path":`+strconv.Quote(plain)+`}`))
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a non-git dir, got %d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	// A path that doesn't exist → 400.
+	res, _ = http.Post(ts.URL+"/api/projects", "application/json",
+		bytes.NewBufferString(`{"path":"/no/such/folder/anywhere"}`))
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a missing path, got %d", res.StatusCode)
+	}
+	res.Body.Close()
 }
 
 func TestCreateRequiresTitle(t *testing.T) {

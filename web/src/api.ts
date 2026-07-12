@@ -80,6 +80,9 @@ export interface Settings {
   maxConcurrent: number;
   maxConcurrentMin: number;
   maxConcurrentMax: number;
+  // true where the daemon can open a native folder dialog (macOS). Off it, the
+  // board shows a paste-the-path field instead (see addProject).
+  nativePicker: boolean;
 }
 
 export interface DiffFile {
@@ -181,6 +184,17 @@ export const api = {
     if (res.status === 204) return null;
     return json<Project>(res);
   },
+
+  // addProject registers a project from a pasted absolute path — the fallback
+  // where no native folder picker is available. The server validates the path is
+  // an existing git repo and names the project after the folder. The created
+  // project also arrives via SSE.
+  addProject: (path: string) =>
+    fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }).then((r) => json<Project>(r)),
 
   deleteProject: (id: string) =>
     fetch(`/api/projects/${id}`, { method: "DELETE" }).then((r) =>

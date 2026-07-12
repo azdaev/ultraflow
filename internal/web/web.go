@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -175,6 +176,10 @@ func (s *server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"maxConcurrent":    s.currentConcurrency(),
 		"maxConcurrentMin": core.MinConcurrent,
 		"maxConcurrentMax": core.MaxConcurrentCap,
+		// nativePicker is true where the daemon can open an OS folder dialog
+		// (macOS only, see pickFolder). Off it, the board falls back to a
+		// paste-the-path field that POSTs to /api/projects.
+		"nativePicker": runtime.GOOS == "darwin",
 	})
 }
 
@@ -216,25 +221,52 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, projects)
 }
 
+// createProject registers a project from a pasted absolute path — the fallback
+// used where the native folder picker isn't available (non-macOS, see
+// pickFolder). The path is validated to be an existing git repo and its basename
+// becomes the project name, matching the native picker flow (pickProject).
 func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name     string `json:"name"`
-		RepoPath string `json:"repoPath"`
+		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(body.Name) == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+	path := strings.TrimRight(strings.TrimSpace(body.Path), "/")
+	if err := validateRepoPath(path); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	p, err := s.svc.CreateProject(strings.TrimSpace(body.Name), strings.TrimSpace(body.RepoPath))
+	p, err := s.svc.CreateProject(filepath.Base(path), path)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)
+}
+
+// validateRepoPath checks a pasted project path points at an existing directory
+// that is a git repository. The .git entry may be a directory (normal clone) or
+// a file (worktree/submodule), so a plain Stat covers both.
+func validateRepoPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("paste the path to the project's git repo folder")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("please paste an absolute path (starting with /)")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("no folder at %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a folder", path)
+	}
+	if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+		return fmt.Errorf("%s isn't a git repo (no .git found)", path)
+	}
+	return nil
 }
 
 func (s *server) deleteProject(w http.ResponseWriter, r *http.Request) {
