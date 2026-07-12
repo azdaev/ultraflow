@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { motion } from "motion/react";
 import { useBoard, useNow } from "./useBoard";
 import { useLayout } from "./useSettings";
 import type { Task } from "./api";
@@ -126,23 +127,49 @@ export function App() {
   );
 }
 
+// The empty state is the first thing a new user sees, so it enters as staged
+// chunks (icon → heading → copy → CTA) rather than one block popping in.
+const emptyContainer = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.08, delayChildren: 0.05 } },
+};
+const emptyItem = {
+  hidden: { opacity: 0, y: 8 },
+  show: {
+    opacity: 1,
+    y: 0,
+    transition: { type: "spring", stiffness: 320, damping: 30 },
+  },
+} as const;
+
 function EmptyBoard({ onNewTask }: { onNewTask: () => void }) {
   return (
-    <div className="mx-auto mt-[10vh] max-w-md text-center">
-      <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-xl bg-surface shadow-sm">
+    <motion.div
+      variants={emptyContainer}
+      initial="hidden"
+      animate="show"
+      className="mx-auto mt-[10vh] max-w-md text-center"
+    >
+      <motion.div
+        variants={emptyItem}
+        className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-xl bg-surface shadow-sm"
+      >
         <span className="h-3 w-3 rounded-[3px] bg-accent" />
-      </div>
-      <h2 className="text-[19px] font-semibold text-ink">No tasks yet</h2>
-      <p className="mt-1.5 text-[14px] text-muted">
+      </motion.div>
+      <motion.h2 variants={emptyItem} className="text-[19px] font-semibold text-ink">
+        No tasks yet
+      </motion.h2>
+      <motion.p variants={emptyItem} className="mt-1.5 text-[14px] text-muted">
         Add a task and an agent picks it up automatically. When it needs you, it
         shows up loud in the attention rail.
-      </p>
-      <button
+      </motion.p>
+      <motion.button
+        variants={emptyItem}
         onClick={onNewTask}
         className="mt-4 rounded-lg bg-accent px-4 py-2.5 text-[14px] font-semibold text-white transition hover:brightness-105"
       >
         Add your first task
-      </button>
-    </div>
+      </motion.button>
+    </motion.div>
   );
 }
