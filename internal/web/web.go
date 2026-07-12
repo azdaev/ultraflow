@@ -191,6 +191,10 @@ func (s *server) board(c *gin.Context) {
 		// fresh load isn't blank until the next transcript poll. Live updates arrive
 		// as "context" SSE events. Absent for tasks with no reading yet.
 		"context": s.svc.ContextTokens(),
+		// Latest per-task model name the agent is actually running (e.g.
+		// "claude-opus-4-8"), for the card's agent footer. Live updates arrive as
+		// "model" SSE events. Absent until the agent's first transcript line.
+		"models": s.svc.Models(),
 	})
 }
 

@@ -446,6 +446,11 @@ func (o *Orchestrator) runAgent(taskID, dir string, isClaude bool, cmd *exec.Cmd
 		go o.watchContext(sess, taskID, dir)
 	}
 
+	// Surface the real model the agent is running (e.g. "Opus 4.8") on the card, for
+	// both adapters — it reads each agent's own transcript. Same per-attempt lifetime
+	// as the watchers above, so a fallback-model retry re-detects.
+	go o.watchModel(sess, taskID, dir, isClaude)
+
 	werr = sess.Wait()
 	if werr != nil {
 		log.Printf("task %s: agent exited before finishing: %v", taskID, werr)

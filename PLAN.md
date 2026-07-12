@@ -1,81 +1,136 @@
-# Plan — show something useful when you open a Done task
+# Plan: show the agent's MODEL name (e.g. "Opus 4.8") on the card, not "Claude Code" / "Codex"
 
-## Problem
+## Decision (confirmed with human via ask_human)
+- **Approach A — auto-detect the real model that ran, display-only.** No composer picker,
+  no DB migration, no `--model` flag. We read the model each agent actually used from its
+  own on-disk transcript and surface it via the SAME in-memory-map + snapshot + SSE
+  mechanism the context meter already uses (`PublishContext`/`ContextTokens`).
+- **Cover both Claude and Codex.**
+- The card keeps the agent **logo** (`AgentMark`); only the **text label** next to it
+  changes from `agentLabel(agent)` → friendly model name, falling back to the provider
+  label while the model is not yet known (first few seconds, before the transcript exists).
 
-Open a task in the **Done** column and the detail modal is almost empty: just the
-dashed "No live session" placeholder in the main area plus the small Details rail.
+## Why this is the smallest correct change
+The orchestrator ALREADY polls Claude's JSONL transcript every 15s in
+`internal/orchestrator/contextcap.go` (`watchContext` → `claudeContextTokens` →
+`lastContextTokens`). Those exact transcript lines carry `message.model` right next to the
+`message.usage` block we already parse. Codex writes rollout JSONL under
+`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; line 0 is a `session_meta` with
+`payload.cwd` (== the task worktree) and `turn_context` lines carry `payload.model`
+(verified live on this machine: cwd matched the worktree + `"model":"gpt-5.6-sol"`).
 
-In `web/src/components/TaskDetail.tsx` the main area has three branches:
+So no new schema/field on `Task` is needed — model is ephemeral runtime state, exactly like
+the live token count.
 
-- `live` (`running`/`needs_human`) → live terminal
-- `showReview` = `canRevise && (worktree || report)`, where
-  `canRevise = review || failed` → `ReviewPanel` (report + diff)
-- else → the empty "No live session" placeholder
+## Backend changes (Go)
 
-A `done` task is neither `live` nor `canRevise`, so it always lands in the empty
-placeholder — even though it has a **report**.
+### 1. Publish/store the model — mirror the context-token plumbing
+`internal/core/service.go`
+- Add `modelName map[string]string` guarded by a mutex (add `modelMu`, or reuse `ctxMu`)
+  next to `ctxTokens` (struct ~L74, init in `NewService` ~L115).
+- Add `PublishModel(taskID, name string)` mirroring `PublishContext` (~L125): store +
+  `s.publish("model", map[string]any{"taskId": taskID, "model": name})`. De-dupe: only
+  publish when the value actually changed, so we don't spam SSE every poll.
+- Add `Models() map[string]string` mirroring `ContextTokens()` (~L134).
+- No terminal-state cleanup needed (matches how `ctxTokens` is left in place).
 
-## What data a Done task actually still has
+### 2. Fold model map into the board snapshot
+`internal/web/web.go` (~L193, the `board` JSON writer): add
+`"models": s.svc.Models()` alongside `"context": s.svc.ContextTokens()`.
 
-I traced the backend (`internal/core/service.go`, `flowrun.go`, `worktree.go`):
+### 3. Detect the model per running agent — one small poller for both adapters
+Start a detector in `runWithSelfHeal` next to `watchIdle` (orchestrator.go ~L440), started
+per attempt so a fallback-to-sonnet retry re-detects:
+```go
+go o.watchModel(sess, taskID, dir, isClaude)
+```
+`watchModel` (new — put it in contextcap.go or a new `modelwatch.go`): poll every few
+seconds until it reads a non-empty model, `PublishModel` it; keep polling cheaply so a
+mid-session model change is caught (or return once found — model is stable within a session,
+so returning-once is acceptable and simplest). Stops on `sess.Done()`. `dir == ""` → no-op.
 
-- **Report — persists.** `CompleteTurn` (finish_task) writes an `appendEvent(id,
-  "report", …)`; events are never deleted on merge/finish. `TaskDetail` already
-  computes `report` from these events. For a multi-step flow this is the last
-  step's writeup. This is the one reliably-available, meaningful artifact.
-- **Result / status one-liners — persist.** `CompleteTurn` also appends a
-  `result` event (agent's one-line summary); the merge path appends a `status`
-  event ("merged and cleaned up the worktree") and `FinishReview` appends
-  "marked done by human". Good material for an outcome line.
-- **Diff — gone.** On merge, `Merge` → `s.wt.Remove(...)` tears down the worktree
-  checkout (service.go:397). `TaskDiff` then 404s. (`t.Worktree` the string is
-  never cleared, so it still reads truthy — a trap: naively reusing `ReviewPanel`
-  with `hasWorktree={!!task.worktree}` would show a "Changes" tab that 404s.)
-- **Screenshots — gone.** `ShotsDir` = `t.Worktree/.ultraflow/shots`, inside the
-  removed worktree. So no shots for a merged done task.
+Readers:
+- **Claude:** reuse `encodeClaudeCwd(dir)` + `newestJSONL` (already in contextcap.go). New
+  `claudeSessionModel(dir) (string, bool)`: scan the transcript for the last line with a
+  non-empty `message.model`. (Could piggyback on `lastContextTokens` by adding
+  `Model string `json:"model"`` under `message`, but a small dedicated reader keeps model
+  detection independent of the cap poll so it still fires on the first reading and isn't
+  entangled with arm/disarm logic.)
+- **Codex:** new `codexSessionModel(dir) (string, bool)`: resolve `$CODEX_HOME` (default
+  `~/.codex`), walk `sessions/**/rollout-*.jsonl` newest-first by mtime, read line 0
+  (`session_meta`); if `payload.cwd` == `EvalSymlinks(dir)` return the last
+  `turn_context.payload.model` in that file. Bound cost: stop at the first cwd match; only
+  consider files modified in the last few hours. `EvalSymlinks(dir)` to match codex's
+  canonicalized cwd (same trick as `ensureTrusted`).
 
-Conclusion: the honest, low-cost win is to **show the report** (plus a one-line
-outcome), and *not* offer a diff/Changes tab that can only fail.
+Dispatch on the `isClaude` flag already available at the call site; non-claude → codex reader.
 
-## Approach (frontend only, minimal)
+## Frontend changes (TS/React)
 
-Edit **`web/src/components/TaskDetail.tsx`** only:
+### 4. Friendly model name mapping — new helper in `web/src/util.ts`
+Add `friendlyModel(raw: string): string` next to `agentLabel` (~L138). Degrades gracefully:
+- `claude-opus-4-8` → "Opus 4.8"; `claude-sonnet-4-5` → "Sonnet 4.5";
+  `claude-haiku-4-5-20251001` → "Haiku 4.5" (strip a trailing 8-digit date segment).
+- bare CLI shorthands `opus`/`sonnet`/`haiku` (Claude's `--fallback-model`) → "Opus"/…
+- `gpt-5` → "GPT-5", `gpt-5-codex` → "GPT-5 Codex", `gpt-5.6-sol` → "GPT-5.6 Sol"
+  (uppercase GPT, title-case trailing words).
+- unknown → return `raw` unchanged (never blank).
 
-1. Add `const done = task?.status === "done";`.
-2. Compute an outcome summary from existing events, e.g. last `result` event's
-   data, falling back to the last `status` event (so there's always one line like
-   "merged and cleaned up the worktree").
-3. Change the main-area gate so a `done` task renders content instead of the empty
-   placeholder:
-   - Keep `live` → terminal, and `showReview` → `ReviewPanel` (with ReviseBox) as-is.
-   - Add a `done` branch that renders:
-     - a small header: "Completed" + the outcome line + `ago(updatedAt)`;
-     - if `report` exists → reuse `ReviewPanel` with **`hasWorktree={false}`**
-       (report-only, no diff/Changes tab, no 404); ReviewPanel already renders a
-       lone Report with no tab bar.
-     - if there is **no** report → keep a graceful filled state: the outcome line
-       plus a muted "This task ran in place / left no writeup." note, instead of
-       the bare "No live session" box.
-4. Do **not** render `ReviseBox` for done (it's gated on `canRevise`, already correct).
-5. Header already shows `task.status` = "done"; the Details rail (agent, flow,
-   project, updated, worktree, body) stays. No rail change needed.
+### 5. Thread the model map through the projection (mirror `context`)
+- `web/src/api.ts`: add `models: Record<string, string>` to `BoardSnapshot` (~L95).
+- `web/src/boardProjection.ts`: add `models` to `BoardProjection` + `emptyBoardProjection`
+  (L12/16); add `{ kind: "model"; data: { taskId: string; model: string } }` to `BoardEvent`
+  (L32); add `"model"` to the `known` set (L37); snapshot case `models:b.models ?? {}`
+  (L47); reducer case
+  `case "model": return { ...state, models:{ ...state.models, [event.data.taskId]:event.data.model } }` (L59).
+- `web/src/useBoard.ts` / `web/src/board/Board.tsx`: carry `models` alongside `context`
+  (Board.tsx L10/21/26 shared object).
 
-No backend, DB, or API change. `ReviewPanel`/`Markdown` are reused verbatim.
+### 6. Render on the card
+- `web/src/board/Column.tsx` (~L65): pass `model={models[t.id]}` next to `contextTokens`.
+- `web/src/board/Card.tsx`:
+  - add `model?: string` to `Props` (~L32) and the destructure (~L42);
+  - pass it into `AgentFooter` at ~L116 (`<AgentFooter agent={...} model={model} .../>`);
+  - in `AgentFooter` (~L270–283) render `model ? friendlyModel(model) : agentLabel(agent)`
+    as the text; keep `AgentMark` (logo) unchanged.
 
-### Optional, explicitly out of scope (note for later)
-
-Reviving the *merged diff* for a done code task would be genuinely useful but needs
-backend work (persist the merge commit SHA at merge time + a diff-by-commit path).
-Deferring — the report covers the "show something" ask with a frontend-only change.
-If the human wants the merged diff too, that's a follow-up task.
+### 7. Consistency on the other identity surfaces (same fallback rule)
+- `web/src/components/TaskDetail.tsx` (~L212–220, the "Agent" `<dl>` row): show
+  `model ? friendlyModel(model) : agentLabel(task.agent)`. Thread `models[task.id]` in the
+  same way context is, or accept a `model` prop from the opener.
+- `web/src/components/RailCard.tsx` (~L91, `title · agentLabel(...)`): same swap — optional
+  but cheap; include for consistency.
 
 ## Verification
+- `go build ./...` and `go test ./...` (touches `internal/core`, `internal/orchestrator`,
+  `internal/web`). Add unit tests for `codexSessionModel` (temp rollout: cwd match + model
+  extraction) and `claudeSessionModel` (temp transcript), following the existing
+  `contextcap` test style.
+- Frontend: `cd web && npm run build` (node via nvm — prepend the nvm bin dir per project
+  memory) to typecheck the projection/prop changes. Add a `friendlyModel` unit test covering
+  the id shapes above (incl. unknown → raw).
+- E2E (per the "Verify frontend SSE" memory): seed a DB, run the daemon on the reserved
+  PORT with `-max-concurrent 0`, headless Chrome, and confirm the card footer flips from
+  "Claude Code" to the model name once a transcript line appears; inject a "model" SSE event
+  to confirm the reducer/render path.
+- Capture a before/after screenshot of the board card footer into `.ultraflow/shots/`.
 
-- Build web with the nvm node on PATH (`web/` — `npm run build` / `vite`).
-- Run the daemon on `$PORT` (58647), seed a `done` task with a `report` event and
-  one without, open each in the board, confirm:
-  - report task → shows the report Markdown, no failing Changes tab;
-  - no-report task → shows the outcome line + note, not the empty placeholder.
-- `go build ./...` sanity (no Go changed, but cheap).
-- Capture screenshots of the Done detail (with-report and without-report) into
-  `.ultraflow/shots/` for the review screen.
+## Files to change (summary)
+- `internal/core/service.go` — PublishModel/Models + map
+- `internal/web/web.go` — snapshot `"models"`
+- `internal/orchestrator/contextcap.go` (or new `modelwatch.go`) — watchModel +
+  claudeSessionModel + codexSessionModel
+- `internal/orchestrator/orchestrator.go` — start `watchModel` near `watchIdle`
+- `web/src/util.ts` — `friendlyModel`
+- `web/src/api.ts`, `web/src/boardProjection.ts`, `web/src/useBoard.ts`,
+  `web/src/board/Board.tsx`, `web/src/board/Column.tsx`, `web/src/board/Card.tsx` — thread +
+  render model
+- `web/src/components/TaskDetail.tsx`, `web/src/components/RailCard.tsx` — consistency
+
+## Notes / edge cases
+- Fallback to the provider label until the first reading keeps the card from ever showing
+  blank.
+- Model reflects reality incl. Claude's `--fallback-model sonnet` kicking in — that's
+  desired (it shows what actually ran).
+- No DB migration, no composer change, no new `Task` field — purely ephemeral runtime state,
+  consistent with the context-meter design.

@@ -67,12 +67,14 @@ type Service struct {
 	ports    *port.Allocator    // set via UsePorts; nil = no port release
 	dev      *devserver.Manager // set via UseDevServer; nil = no dev-server teardown
 
-	// ctxMu guards ctxTokens: the latest live context size (tokens) per running
-	// task, reported by the orchestrator's transcript poll. Kept in memory only
-	// (it's ephemeral, resets on restart) and mirrored into the board snapshot so
-	// a fresh load isn't blank until the next poll. See PublishContext.
+	// ctxMu guards ctxTokens and modelName: the latest live context size (tokens)
+	// and detected model name per running task, reported by the orchestrator's
+	// transcript poll. Kept in memory only (ephemeral, resets on restart) and
+	// mirrored into the board snapshot so a fresh load isn't blank until the next
+	// poll. See PublishContext / PublishModel.
 	ctxMu     sync.Mutex
 	ctxTokens map[string]int
+	modelName map[string]string
 	telegram telegramConfigurator
 }
 
@@ -113,6 +115,7 @@ func NewService(st *store.Store) *Service {
 		store:     st,
 		Broker:    NewBroker(),
 		ctxTokens: map[string]int{},
+		modelName: map[string]string{},
 	}
 }
 
@@ -136,6 +139,38 @@ func (s *Service) ContextTokens() map[string]int {
 	defer s.ctxMu.Unlock()
 	out := make(map[string]int, len(s.ctxTokens))
 	maps.Copy(out, s.ctxTokens)
+	return out
+}
+
+// PublishModel records the model an agent is actually running (e.g.
+// "claude-opus-4-8", "gpt-5.6-sol"), read from the agent's own transcript, and
+// fans it out over SSE as a non-persisted "model" event so the card's footer can
+// show the real model name instead of the generic provider label. The latest
+// value is kept in memory (modelName) and folded into the board snapshot so a
+// page load isn't blank until the next poll. De-duped: only publishes when the
+// value changes, so it doesn't spam SSE on every transcript poll.
+func (s *Service) PublishModel(taskID, name string) {
+	if name == "" {
+		return
+	}
+	s.ctxMu.Lock()
+	changed := s.modelName[taskID] != name
+	if changed {
+		s.modelName[taskID] = name
+	}
+	s.ctxMu.Unlock()
+	if changed {
+		s.publish("model", map[string]any{"taskId": taskID, "model": name})
+	}
+}
+
+// Models returns a copy of the latest per-task model names, for the board
+// snapshot. Keyed by task id; absent for tasks whose model isn't detected yet.
+func (s *Service) Models() map[string]string {
+	s.ctxMu.Lock()
+	defer s.ctxMu.Unlock()
+	out := make(map[string]string, len(s.modelName))
+	maps.Copy(out, s.modelName)
 	return out
 }
 

@@ -4,6 +4,7 @@ import { api, errMsg, type Project, type Task } from "../api";
 import {
   agentColor,
   agentLabel,
+  friendlyModel,
   ago,
   CANCELLABLE,
   CLOSED,
@@ -30,6 +31,7 @@ interface Props {
   activityKind?: string;
   now: number;
   contextTokens?: number;
+  model?: string;
   project?: Project;
   onOpen: (taskId: string) => void;
   index?: number; // position in its column, for a subtle mount stagger
@@ -39,7 +41,7 @@ interface Props {
 // quiet (waiting), running cards carry a live activity strip + context meter,
 // review cards carry the merge/approve action + diff counts, and done cards are
 // muted. Every field maps to real board state — nothing here is decorative.
-export function Card({ task, activity, activityKind, now, contextTokens, project, onOpen, index = 0 }: Props) {
+export function Card({ task, activity, activityKind, now, contextTokens, model, project, onOpen, index = 0 }: Props) {
   const run = useRun(task.id);
   const status = task.status;
   const needsHuman = status === "needs_human";
@@ -113,7 +115,7 @@ export function Card({ task, activity, activityKind, now, contextTokens, project
 
         <div className="h-[0.75px] w-full shrink-0 bg-cardline" />
 
-        <AgentFooter agent={run?.agent ?? task.agent} flow={task.flow} closed={closed} />
+        <AgentFooter agent={run?.agent ?? task.agent} model={model} flow={task.flow} closed={closed} />
 
         {showMeter && <ContextMeter tokens={contextTokens} />}
       </motion.button>
@@ -267,14 +269,16 @@ function ActivityStrip({ text, kind }: { text: string; kind?: string }) {
   );
 }
 
-function AgentFooter({ agent, flow, closed }: { agent: string; flow: string; closed: boolean }) {
+function AgentFooter({ agent, model, flow, closed }: { agent: string; model?: string; flow: string; closed: boolean }) {
   // Done cards fade the agent mark (design uses a muted claude tint). We derive it
-  // from the agent's own colour so codex/others fade consistently too.
+  // from the agent's own colour so codex/others fade consistently too. The label
+  // shows the real model the agent ran (e.g. "Opus 4.8") once detected, falling
+  // back to the generic provider name until the first transcript reading.
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="flex items-center gap-1.75">
         <AgentMark size={closed ? 12 : 13} color={closed ? "#C99180" : agentColor(agent)} agent={agent} />
-        <span className={`text-xs leading-4 ${closed ? "text-faint" : "text-muted"}`}>{agentLabel(agent)}</span>
+        <span className={`text-xs leading-4 ${closed ? "text-faint" : "text-muted"}`}>{model ? friendlyModel(model) : agentLabel(agent)}</span>
       </span>
       <span className={`font-mono text-[10px] leading-3 tracking-[0.04em] ${closed ? "text-[#B0B0AA]" : "text-faint"}`}>
         {flowOf(flow).label.toUpperCase()}

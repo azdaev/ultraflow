@@ -93,6 +93,9 @@ export interface BoardSnapshot {
   // latest context size (tokens) per running/review task, for the card's context
   // meter. Live updates arrive as "context" events; absent until the first poll.
   context: Record<string, number>;
+  // latest model name (e.g. "claude-opus-4-8") per task, for the card's agent
+  // footer. Live updates arrive as "model" events; absent until the first poll.
+  models: Record<string, string>;
 }
 
 export interface Settings {

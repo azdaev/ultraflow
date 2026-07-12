@@ -11,6 +11,7 @@ interface Props {
   activity: Record<string, string>;
   activityKind: Record<string, string>;
   context: Record<string, number>;
+  models: Record<string, string>;
   projects: Project[];
   now: number;
   running: number;
@@ -29,6 +30,7 @@ export function BoardPage({
   activity,
   activityKind,
   context,
+  models,
   projects,
   now,
   running,
@@ -82,6 +84,7 @@ export function BoardPage({
           activity={activity}
           activityKind={activityKind}
           context={context}
+          models={models}
           projects={projects}
           onOpen={onOpenTask}
           onAddTask={() => onNewTask("", effective ?? "")}
