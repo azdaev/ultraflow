@@ -12,3 +12,6 @@ web/node_modules/.tmp/
 # Editor / tooling
 .playwright-mcp/
 .DS_Store
+
+# GoReleaser output
+/dist/
