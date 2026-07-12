@@ -150,3 +150,29 @@ export function ago(fromISO: string, now: number): string {
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 }
+
+// copyText writes to the clipboard, falling back to a hidden textarea when the
+// async Clipboard API is unavailable (insecure origin / older browsers). Used
+// by right-click menus to copy IDs and paths.
+export function copyText(text: string): void {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+    return;
+  }
+  fallbackCopy(text);
+}
+
+function fallbackCopy(text: string): void {
+  const el = document.createElement("textarea");
+  el.value = text;
+  el.style.position = "fixed";
+  el.style.opacity = "0";
+  document.body.appendChild(el);
+  el.select();
+  try {
+    document.execCommand("copy");
+  } catch {
+    /* best effort */
+  }
+  document.body.removeChild(el);
+}
