@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.10.2 — 2026-07-12
+
+- Ultraflow: Public + private changelog on each release cut
+- Ultraflow: Flow engine: multi-step flows (M2 core)
+- Ultraflow: Context cap + actualize docs
+
 ## v0.10.1 — baseline
 
 Concise, user-facing notes on what shipped in each Ultraflow release. From the
