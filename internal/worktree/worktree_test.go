@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -116,6 +117,58 @@ func TestMerge(t *testing.T) {
 	m.Remove(repo, "feat")
 	if _, err := os.Stat(w.Path); !os.IsNotExist(err) {
 		t.Fatal("worktree dir still present after Remove")
+	}
+}
+
+// TestDiff verifies the review diff reflects the agent's work regardless of
+// whether it committed: it must include both an uncommitted edit to a tracked
+// file AND a brand-new (untracked) file, with correct magnitude counts.
+func TestDiff(t *testing.T) {
+	repo := initRepo(t)
+	// Seed a tracked file on the base branch so we can test a modification.
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-q", "-m", "seed"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	m := New(filepath.Join(t.TempDir(), "worktrees"))
+	w, err := m.Create(repo, "difftask")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer m.Remove(repo, "difftask")
+
+	// Agent-style work, deliberately NOT committed: modify a tracked file and add
+	// a new untracked one.
+	if err := os.WriteFile(filepath.Join(w.Path, "tracked.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatalf("modify: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(w.Path, "new.txt"), []byte("fresh\n"), 0o644); err != nil {
+		t.Fatalf("new file: %v", err)
+	}
+
+	d, err := m.Diff(repo, "difftask")
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	// +1 for the added line in tracked.txt, +1 for the new file's single line.
+	if d.Added != 2 || d.Removed != 0 {
+		t.Fatalf("magnitude = +%d −%d; want +2 −0", d.Added, d.Removed)
+	}
+	if len(d.Files) != 2 {
+		t.Fatalf("expected 2 changed files, got %d: %+v", len(d.Files), d.Files)
+	}
+	// The new (untracked) file must appear — the key property (git diff alone
+	// would miss it without the intent-to-add).
+	if !strings.Contains(d.Patch, "new.txt") || !strings.Contains(d.Patch, "+fresh") {
+		t.Fatalf("patch missing the new untracked file:\n%s", d.Patch)
+	}
+	if !strings.Contains(d.Patch, "+two") {
+		t.Fatalf("patch missing the tracked-file edit:\n%s", d.Patch)
 	}
 }
 

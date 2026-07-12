@@ -208,6 +208,24 @@ func (s *Service) FinishReview(id string) error {
 // AppendTaskEvent records an agent-produced event and fans it out live.
 func (s *Service) AppendTaskEvent(taskID, kind, text string) { s.appendEvent(taskID, kind, text) }
 
+// TaskDiff returns the changes a task made in its worktree, for the review diff
+// viewer. Requires a worktree manager and a task with a worktree on a registered
+// git project (a task that ran in place has nothing isolated to diff).
+func (s *Service) TaskDiff(id string) (worktree.DiffResult, error) {
+	t, err := s.store.GetTask(id)
+	if err != nil {
+		return worktree.DiffResult{}, err
+	}
+	if s.wt == nil || t.Worktree == "" {
+		return worktree.DiffResult{}, fmt.Errorf("this task has no worktree to diff")
+	}
+	p, err := s.store.ProjectByName(t.Project)
+	if err != nil || p.RepoPath == "" {
+		return worktree.DiffResult{}, fmt.Errorf("couldn't find the project repo to diff against")
+	}
+	return s.wt.Diff(p.RepoPath, id)
+}
+
 // --- projects ---
 
 // projectPalette holds board hues for projects — deliberately distinct from the
