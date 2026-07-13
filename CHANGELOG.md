@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.17 — 2026-07-13
+
+- Ultraflow: Refactor Orchestrator Logic
+
 ## v0.10.16 — 2026-07-13
 
 - orchestrator: don't strand a completed-run flow task in queued after a restart
