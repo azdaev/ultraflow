@@ -60,6 +60,19 @@ func (a *Allocator) Release(p int) {
 	a.mu.Unlock()
 }
 
+// EnvVars returns the environment entries that publish a reserved dev-server port
+// to a task's agent and any dev server it starts: PORT (the conventional name most
+// frameworks read) and ULTRAFLOW_PORT (our explicit name, in case a framework
+// ignores PORT). The orchestrator injects these into the agent's env and the
+// dev-server launcher into the hook's env — so the var-name contract lives here,
+// in one place, instead of being re-spelled at each call site.
+func EnvVars(p int) []string {
+	return []string{
+		fmt.Sprintf("PORT=%d", p),
+		fmt.Sprintf("ULTRAFLOW_PORT=%d", p),
+	}
+}
+
 // freePort asks the OS for an unused TCP port by binding :0 and reading back the
 // assigned port, then releasing it.
 func freePort() (int, error) {

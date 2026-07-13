@@ -1,14 +1,18 @@
-package core
+// Package broker is a tiny in-process pub/sub that fans JSON messages out to the
+// board's live SSE clients. Publisher and subscribers share one process (the
+// daemon), so this is a channel fan-out, not a cross-process message queue — a
+// Redis/NATS would add a dependency and a network hop for no benefit here.
+package broker
 
 import "sync"
 
-// Broker is a tiny in-process pub/sub fanning JSON messages out to SSE clients.
+// Broker fans published messages out to every current subscriber.
 type Broker struct {
 	mu   sync.Mutex
 	subs map[chan []byte]struct{}
 }
 
-func NewBroker() *Broker {
+func New() *Broker {
 	return &Broker{subs: make(map[chan []byte]struct{})}
 }
 
@@ -38,9 +42,9 @@ func (b *Broker) Publish(msg []byte) {
 		default:
 			// Consumer is too slow and its buffer is full. Dropping the message
 			// silently would leave that client permanently diverged (SSE stays
-			// open, so it never refetches). Instead, evict it: closing the
-			// channel ends its event stream, the browser's EventSource
-			// reconnects, and useBoard resyncs the full snapshot on open.
+			// open, so it never refetches). Instead, evict it: closing the channel
+			// ends its event stream, the browser's EventSource reconnects, and
+			// useBoard resyncs the full snapshot on open.
 			delete(b.subs, ch)
 			close(ch)
 		}

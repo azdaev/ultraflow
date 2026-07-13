@@ -1,6 +1,14 @@
 import { useEffect, useRef } from "react";
-import type { AttentionItem } from "./components/RailCard";
+import type { HumanRequest, Task } from "./api";
 import { notify, requestNotificationPermission } from "./notify";
+
+// AttentionItem is one thing that wants the human: an ask_human checkpoint, a
+// task that gave up, or a merge that couldn't land. App derives the list from
+// board state; the Toolbar counts it and this module raises OS notifications.
+export type AttentionItem =
+  | { type: "needs_human"; request: HumanRequest; task?: Task }
+  | { type: "failed"; task: Task; activity?: string }
+  | { type: "merge_failed"; task: Task; message?: string };
 
 // A stable key + notification content for one attention item. needs_human keys on
 // the request id (a re-ask is a fresh checkpoint); failures key on the task, which

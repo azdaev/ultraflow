@@ -5,6 +5,7 @@ import { agentColor, agentLabel, friendlyModel, ago, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { useRun } from "../runsContext";
 import { AnswerBox } from "./AnswerBox";
+import { ApproveAction, MergeAction } from "./ReviewActions";
 import { CheckpointContext } from "./CheckpointContext";
 import { AgentTerminal, type AgentTerminalHandle } from "./AgentTerminal";
 import { ReviewPanel } from "./ReviewPanel";
@@ -249,6 +250,16 @@ export function TaskDetail({ task, request, activitySig, model, now, onClose }: 
                   </div>
                 )}
 
+                {/* Accept the work right here — so reviewing the diff/report and
+                    approving happen in one place, instead of closing the drawer to
+                    reach the card's merge button. Only for review (not failed). */}
+                {task.status === "review" && (
+                  <div className="mb-5 rounded-xl border border-hairline bg-board p-4">
+                    <h3 className="eyebrow mb-2 text-ink">Accept the work</h3>
+                    {task.worktree ? <MergeAction taskId={task.id} /> : <ApproveAction taskId={task.id} />}
+                  </div>
+                )}
+
                 {canRevise && <ReviseBox taskId={task.id} />}
 
                 {errors.length > 0 && (
@@ -298,7 +309,10 @@ export function TaskDetail({ task, request, activitySig, model, now, onClose }: 
                   )}
                 </dl>
                 {task.body && (
-                  <p className="mt-3 border-t border-hairline pt-3 text-[13px] leading-relaxed text-muted">
+                  // whitespace-pre-wrap: the body comes from a textarea, so keep the
+                  // line breaks the user typed (acceptance criteria, bullet lists)
+                  // instead of collapsing them into one run-on paragraph.
+                  <p className="mt-3 whitespace-pre-wrap border-t border-hairline pt-3 text-[13px] leading-relaxed text-muted">
                     {task.body}
                   </p>
                 )}

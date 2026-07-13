@@ -1,6 +1,7 @@
 import { AnimatePresence } from "motion/react";
 import type { Project, Task } from "../api";
 import { projectMap } from "../util";
+import { ContextMenu, useContextMenu } from "../components/ContextMenu";
 import { Card } from "./Card";
 import { DotsIcon, PlusIcon } from "./icons";
 
@@ -27,16 +28,22 @@ interface Props {
   activity: Record<string, string>;
   activityKind: Record<string, string>;
   context: Record<string, number>;
+  contextCap: number;
   models: Record<string, string>;
   projects: Project[];
   onOpen: (taskId: string) => void;
   onAddTask?: () => void; // backlog only — the dashed "Add task" row
+  onClear?: () => void; // done only — the header ⋯ menu's "Clear done" action
 }
 
 // Column is one pipeline stage: a coloured header (dot + caps label + count),
 // then its cards, with the backlog column capped by the "Add task" row.
-export function Column({ kind, tasks, now, activity, activityKind, context, models, projects, onOpen, onAddTask }: Props) {
+export function Column({ kind, tasks, now, activity, activityKind, context, contextCap, models, projects, onOpen, onAddTask, onClear }: Props) {
   const pm = projectMap(projects);
+  const menu = useContextMenu();
+  // The ⋯ affordance is only shown where it actually does something (Done, with
+  // cards to clear) — an inert menu button on every column would be a dead button.
+  const canClear = !!onClear && tasks.length > 0;
   return (
     <div className="flex min-w-0 flex-col gap-2.25">
       <div className="flex flex-col gap-2.25 pb-3">
@@ -50,7 +57,15 @@ export function Column({ kind, tasks, now, activity, activityKind, context, mode
             {tasks.length}
           </span>
           <span className="grow basis-0" />
-          <DotsIcon className="text-[#B4B4AD]" />
+          {canClear && (
+            <button
+              onClick={menu.openMenu}
+              aria-label={`${kind.label} column actions`}
+              className="grid size-5 shrink-0 place-items-center rounded-md text-[#B4B4AD] transition hover:bg-board hover:text-muted"
+            >
+              <DotsIcon />
+            </button>
+          )}
         </div>
         <div className="h-px w-full shrink-0 bg-hairline" />
       </div>
@@ -64,6 +79,7 @@ export function Column({ kind, tasks, now, activity, activityKind, context, mode
               activity={activity[t.id]}
               activityKind={activityKind[t.id]}
               contextTokens={context[t.id]}
+              contextCap={contextCap}
               model={models[t.id]}
               now={now}
               index={i}
@@ -83,6 +99,10 @@ export function Column({ kind, tasks, now, activity, activityKind, context, mode
           </button>
         )}
       </div>
+
+      {canClear && (
+        <ContextMenu menu={menu} items={[{ label: "Clear done", danger: true, onSelect: () => onClear?.() }]} />
+      )}
     </div>
   );
 }

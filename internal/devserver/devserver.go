@@ -10,12 +10,13 @@
 package devserver
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"syscall"
+
+	portpkg "ultraflow/internal/port"
 )
 
 // HookName is the per-project script Ultraflow runs to boot a task's dev server.
@@ -54,10 +55,7 @@ func (m *Manager) Start(taskID, dir, hookPath string, port int) error {
 
 	cmd := exec.Command("sh", hookPath)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("PORT=%d", port),
-		fmt.Sprintf("ULTRAFLOW_PORT=%d", port),
-	)
+	cmd.Env = append(os.Environ(), portpkg.EnvVars(port)...)
 	// Own session/process group, so ending the agent's PTY session doesn't take the
 	// dev server with it, and Stop can kill the whole tree via the group id.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

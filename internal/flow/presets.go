@@ -46,7 +46,7 @@ var presets = map[string]Flow{
 				Gate:   true,
 				Prompt: "Review the plan, build and critic in this task's worktree. Approve to accept the work (it goes to review, ready to merge), or send it back to the build step for changes.",
 				Routes: []Route{
-					{Answer: "Approve", Next: ""},          // accept → finish → review
+					{Answer: "Approve", Next: ""},              // accept → finish → review
 					{Answer: "Request changes", Next: "build"}, // loop back to rebuild
 				},
 			},

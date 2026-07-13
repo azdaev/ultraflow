@@ -32,21 +32,28 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
 
   useEffect(() => {
     if (!open) return;
+    // A single-project setup has one obvious answer, so pre-fill it rather than
+    // forcing a dropdown click on a select with one option. With several projects
+    // the choice stays deliberate (submit is blocked until one is picked).
+    const sole = projects.length === 1 ? projects[0].name : "";
     // Opened from an inline draft: seed the carried-over title/project and start
     // with a clean body. Otherwise keep the existing draft, only clearing after
     // a prior submit so an Esc-close still preserves what you typed.
     if (initialTitle || initialProject) {
       setTitle(initialTitle ?? "");
-      setProject(initialProject ?? "");
+      setProject(initialProject || sole);
       setBody("");
       attach.clear();
       submitted.current = false;
     } else if (submitted.current) {
       setTitle("");
       setBody("");
-      setProject("");
+      setProject(sole);
       attach.clear();
       submitted.current = false;
+    } else {
+      // Fresh open keeping a prior draft: only fill in an empty project slot.
+      setProject((p) => p || sole);
     }
     setErr(null);
     setBusy(false);
@@ -82,17 +89,7 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
   }
 
   return (
-    <Modal open={open} onClose={onClose} className="max-w-xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-[17px] font-semibold text-ink">New task</h2>
-          <button
-            onClick={onClose}
-            className="rounded-lg px-2 py-1 text-[13px] text-muted hover:bg-board"
-          >
-            Esc
-          </button>
-        </div>
-
+    <Modal open={open} onClose={onClose} title="New task" className="max-w-xl">
         <input
           autoFocus
           value={title}

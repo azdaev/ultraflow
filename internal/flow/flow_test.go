@@ -70,12 +70,12 @@ func TestGateRouting(t *testing.T) {
 		t.Fatal("gate step missing or not a gate")
 	}
 	cases := map[string]string{
-		"Approve":              "",
-		"approve, looks great": "",
-		"Request changes":      "build",
+		"Approve":                     "",
+		"approve, looks great":        "",
+		"Request changes":             "build",
 		"please request changes here": "build",
-		"":                     "", // default → approve
-		"gibberish":            "", // unmatched → default (first route = approve)
+		"":                            "", // default → approve
+		"gibberish":                   "", // unmatched → default (first route = approve)
 	}
 	for answer, want := range cases {
 		if got := gate.Route(answer); got != want {

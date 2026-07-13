@@ -132,19 +132,20 @@ func (s *Service) RunsProgress(tasks []model.Task) map[string]model.RunProgress 
 	out := map[string]model.RunProgress{}
 	ids := make([]string, 0, len(tasks))
 	agents := make(map[string]string, len(tasks))
-	repos := make(map[string]string, len(tasks))
+	projects := make(map[string]string, len(tasks))
 	for _, t := range tasks {
 		ids = append(ids, t.ID)
 		agents[t.ID] = t.Agent
-		repos[t.ID] = s.repoFor(t.Project)
+		projects[t.ID] = t.Project
 	}
 	runs, err := s.store.RunsForTasks(ids)
 	if err != nil {
 		log.Printf("runs progress: %v", err)
 		return out
 	}
+	repos := s.repoByProject() // one query, not one ProjectByName per task
 	for id, r := range runs {
-		out[id] = buildProgress(r, agents[id], repos[id])
+		out[id] = buildProgress(r, agents[id], repos[projects[id]])
 	}
 	return out
 }
@@ -199,4 +200,21 @@ func (s *Service) repoFor(project string) string {
 		return ""
 	}
 	return p.RepoPath
+}
+
+// repoByProject returns a name→repoPath map of every project, so a batch caller
+// (RunsProgress over the whole board) resolves flow-override repos in one query
+// instead of a ProjectByName per task. Nil on error — callers read "" per missing
+// key, the same fallback as repoFor.
+func (s *Service) repoByProject() map[string]string {
+	ps, err := s.store.ListProjects()
+	if err != nil {
+		log.Printf("runs progress: list projects: %v", err)
+		return nil
+	}
+	m := make(map[string]string, len(ps))
+	for _, p := range ps {
+		m[p.Name] = p.RepoPath
+	}
+	return m
 }

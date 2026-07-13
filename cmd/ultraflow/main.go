@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -130,7 +131,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go orch.Run(ctx)
-	telegram := telegrambot.NewManager(ctx, svc, svc.Broker)
+	telegram := telegrambot.NewManager(ctx, svc)
 	svc.UseTelegramConfigurator(telegram)
 	if cfg, ok, err := svc.TelegramSettings(); err != nil {
 		log.Printf("couldn't read Telegram settings: %v", err)
@@ -162,18 +163,35 @@ func main() {
 	log.Printf("ultraflow listening on http://%s  (mcp: %s)", addr, mcpURL)
 
 	srv := &http.Server{Addr: addr, Handler: root}
+	drained := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		term.CloseAll() // don't leak agent processes past the daemon
 		dev.StopAll()   // nor the detached dev servers
-		_ = srv.Close()
+		// Graceful drain: let in-flight API requests (a merge, an answer POST)
+		// finish before exit. Long-lived SSE/WS streams never go idle, so bound
+		// the wait and hard-close whatever is still open when it elapses.
+		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutCtx); err != nil {
+			_ = srv.Close()
+		}
+		close(drained)
 	}()
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		// Bind failed (e.g. the port is already in use): checkpoint the WAL and
+		// close the DB before exiting so this error path doesn't leave the log
+		// uncheckpointed like a bare log.Fatal would.
+		if cerr := st.Close(); cerr != nil {
+			log.Printf("store close: %v", cerr)
+		}
 		log.Fatal(err)
 	}
 
-	// Graceful path only (ListenAndServe returned ErrServerClosed): checkpoint the
-	// WAL and close the DB now that the server and agents are down.
+	// Graceful path only (ListenAndServe returned ErrServerClosed): wait for the
+	// drain to finish so no handler is still touching the DB, then checkpoint the
+	// WAL and close it now that the server and agents are down.
+	<-drained
 	if err := st.Close(); err != nil {
 		log.Printf("store close: %v", err)
 	}

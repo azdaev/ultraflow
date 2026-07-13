@@ -25,16 +25,7 @@ export function Changelog({ open, onClose }: { open: boolean; onClose: () => voi
   }, [open]);
 
   return (
-    <Modal open={open} onClose={onClose} className="max-w-2xl">
-      <div className="mb-5 flex items-center justify-between">
-        <h2 className="text-[17px] font-semibold text-ink">What's new</h2>
-        <button
-          onClick={onClose}
-          className="rounded-lg px-2 py-1 text-[13px] text-muted hover:bg-board"
-        >
-          Esc
-        </button>
-      </div>
+    <Modal open={open} onClose={onClose} title="What's new" className="max-w-2xl">
       <div className="max-h-[65vh] overflow-y-auto pr-1">
         {error ? (
           <p className="text-[14px] text-muted">No changelog yet.</p>

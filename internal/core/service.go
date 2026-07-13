@@ -17,50 +17,44 @@ import (
 	"sync"
 	"time"
 
+	"ultraflow/internal/broker"
 	"ultraflow/internal/devserver"
 	"ultraflow/internal/flow"
 	"ultraflow/internal/journal"
 	"ultraflow/internal/model"
 	"ultraflow/internal/port"
-	"ultraflow/internal/store"
 	"ultraflow/internal/worktree"
 )
 
-// ErrRebaseConflict is returned by MergeTask when bringing the branch up to date
-// with main stops on conflicts the auto-rebase can't resolve mechanically. It's a
-// signal (not a dead-end): the caller re-engages the agent to resolve the rebase
-// with the same self-heal policy, rather than silently returning to review.
+// ErrRebaseConflict is returned by MergeTask when the pre-merge rebase hits
+// conflicts git can't resolve mechanically — a signal to re-engage the agent, not
+// a dead-end.
 var ErrRebaseConflict = errors.New("branch is behind main and the rebase hit conflicts the agent must resolve")
 
 // termInput delivers a human's board reply into a task's live agent terminal
-// (its stdin). *terminal.Manager satisfies it; kept as an interface so core need
-// not import the terminal package and tests can stub it.
+// (stdin). An interface so core need not import the terminal package. Satisfied by
+// *terminal.Manager.
 type termInput interface {
 	WriteTo(taskID string, p []byte) (bool, error)
 }
 
-// reengager re-launches a task's agent after the human answers a checkpoint whose
-// agent is no longer live — the self-heal escalation ("tried N×, stuck"): the
-// orchestrator resumes the worktree with the human's guidance seeded. Kept as an
-// interface so core need not import the orchestrator; nil in API-only/test setups,
-// where an answer to a dead agent is simply a recorded no-op. *Orchestrator
-// satisfies it (wired via UseReengager).
+// reengager re-launches a task's agent when the human answers a checkpoint whose
+// agent is no longer live (the self-heal escalation). An interface so core need not
+// import the orchestrator; nil in API-only/test setups (answer becomes a no-op).
+// Satisfied by *Orchestrator.
 type reengager interface {
 	Reengage(taskID, guidance string) error
 }
 
-// DefaultMaxAttempts is the self-heal retry budget a task gets when its flow
-// doesn't pin one. On an agent error the orchestrator auto-diagnoses and re-runs
-// the task up to this many times — staying `running` with a "fixing itself · k/N"
-// sub-state — before escalating to the human. See spec.md "Failure self-heals;
-// it is a card state, not a destination."
+// DefaultMaxAttempts is the self-heal retry budget when a task's flow doesn't pin
+// one: the orchestrator auto-retries this many times before escalating to the human.
 const DefaultMaxAttempts = 3
 
 // Service is the central coordinator shared by the MCP server, web API and
 // orchestrator.
 type Service struct {
-	store    *store.Store
-	Broker   *Broker
+	store    Repo
+	events   eventBus
 	wt       *worktree.Manager  // set via UseWorktrees; nil = merge/teardown disabled
 	term     termInput          // set via UseTerminal; nil = answers aren't delivered
 	reengage reengager          // set via UseReengager; nil = escalation answers aren't re-run
@@ -75,32 +69,22 @@ type Service struct {
 	ctxMu     sync.Mutex
 	ctxTokens map[string]int
 	modelName map[string]string
-	telegram telegramConfigurator
+	telegram  telegramConfigurator
 }
 
-// UseWorktrees gives the service the worktree manager it needs to merge a task's
-// branch and tear its checkout down. Shares the orchestrator's manager (same
-// root), so both agree on where a task's worktree lives.
-func (s *Service) UseWorktrees(m *worktree.Manager) { s.wt = m }
-
-// UseTerminal gives the service the terminal manager it uses to deliver a human's
-// answer into the parked agent's stdin. Shares the orchestrator's manager.
-func (s *Service) UseTerminal(t termInput) { s.term = t }
-
-// UseReengager wires the orchestrator so an answer to a self-heal escalation (a
-// needs_human checkpoint whose agent has already stopped) re-launches the agent
-// with the human's guidance instead of stranding the task in `running`.
-func (s *Service) UseReengager(r reengager) { s.reengage = r }
-
-// UsePorts / UseDevServer share the orchestrator's port allocator and dev-server
-// manager, so the service can free a task's port and stop its dev server when the
-// task reaches a terminal state (merged, marked done, or failed).
+// The Use* setters share the orchestrator's collaborators post-construction, so
+// both agree on where worktrees live, which terminal to write answers into, etc.
+// Each is nil in API-only/test setups (see the field comments for the degraded
+// behavior).
+func (s *Service) UseWorktrees(m *worktree.Manager)  { s.wt = m }
+func (s *Service) UseTerminal(t termInput)           { s.term = t }
+func (s *Service) UseReengager(r reengager)          { s.reengage = r }
 func (s *Service) UsePorts(p *port.Allocator)        { s.ports = p }
 func (s *Service) UseDevServer(d *devserver.Manager) { s.dev = d }
 
-// releaseRuntime frees a finished task's dev-server port and stops its dev
-// server. Called only at terminal states — NOT when a task enters review, where
-// the port and dev server stay up so the human can open the live app.
+// releaseRuntime frees a finished task's dev-server port and stops its dev server.
+// Called only at terminal states — NOT on entering review, where both stay up so
+// the human can open the live app.
 func (s *Service) releaseRuntime(t model.Task) {
 	if s.dev != nil {
 		s.dev.Stop(t.ID)
@@ -110,21 +94,19 @@ func (s *Service) releaseRuntime(t model.Task) {
 	}
 }
 
-func NewService(st *store.Store) *Service {
+func NewService(st Repo) *Service {
 	return &Service{
 		store:     st,
-		Broker:    NewBroker(),
+		events:    broker.New(),
 		ctxTokens: map[string]int{},
 		modelName: map[string]string{},
 	}
 }
 
-// PublishContext records a running task's live context size (in tokens) and fans
-// it out over SSE as a non-persisted "context" event, so the board's context
-// meter tracks the agent's window in real time. The latest value is also kept in
-// memory (ctxTokens) and folded into the board snapshot, so a page load isn't
-// blank until the next poll. Reporting is decoupled from the context-cap feature:
-// this fires whether or not a cap is configured (see orchestrator.watchContext).
+// PublishContext records a running task's live context size (tokens) and fans it
+// out as a non-persisted "context" SSE event. The latest value is also held in
+// ctxTokens and folded into the board snapshot, so a page load isn't blank until
+// the next poll. Fires whether or not a context cap is set.
 func (s *Service) PublishContext(taskID string, tokens int) {
 	s.ctxMu.Lock()
 	s.ctxTokens[taskID] = tokens
@@ -174,10 +156,8 @@ func (s *Service) Models() map[string]string {
 	return out
 }
 
-// NewID returns a short random hex id. A crypto/rand read failure is unrecoverable
-// (the id is a primary key — a silent all-zero id would collide across records), so
-// it panics rather than hand back a degenerate id; on supported platforms this read
-// does not fail in practice.
+// NewID returns a short random hex id. It panics on a crypto/rand failure rather
+// than hand back a degenerate all-zero primary key that would collide.
 func NewID() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
@@ -192,7 +172,7 @@ func (s *Service) publish(kind string, payload any) {
 	// context, and runs — the whole task/agent story — without new call sites.
 	journal.Log("bus", kind, map[string]any{"data": payload})
 	msg, _ := json.Marshal(map[string]any{"kind": kind, "data": payload})
-	s.Broker.Publish(msg)
+	s.events.Publish(msg)
 }
 
 // PublishPaused broadcasts a global pause/resume to every open board so the "pause
@@ -203,14 +183,19 @@ func (s *Service) PublishPaused(paused bool) {
 	s.publish("paused", map[string]any{"paused": paused})
 }
 
+// Subscribe / Unsubscribe expose the live SSE event stream to the transport layer
+// without handing it the Broker itself, so the web package depends only on the
+// Service contract, not on core's pub/sub internals.
+func (s *Service) Subscribe() chan []byte     { return s.events.Subscribe() }
+func (s *Service) Unsubscribe(ch chan []byte) { s.events.Unsubscribe(ch) }
+
 func (s *Service) appendEvent(taskID, kind, data string) {
 	e := model.Event{TaskID: taskID, Kind: kind, Data: data, CreatedAt: time.Now()}
 	if id, err := s.store.AppendEvent(e); err == nil {
 		e.ID = id
 	} else {
-		// The event still fans out live (ID stays 0) for a responsive board, but a
-		// failed persist would otherwise be invisible — and a reconnecting client
-		// that resyncs from the DB wouldn't see it. Surface it in the log.
+		// Still fans out live (ID stays 0), but a failed persist wouldn't reach a
+		// client that resyncs from the DB — so surface it.
 		log.Printf("task %s: append %s event: %v", taskID, kind, err)
 	}
 	s.publish("event", e)
@@ -222,18 +207,14 @@ func (s *Service) CreateTask(title, body, project string) (model.Task, error) {
 	return s.CreateTaskFull(title, body, project, "", "")
 }
 
-// implementedAgents is the set of agent adapters the orchestrator can actually
-// execute today. A task's recorded agent/flow must never claim more than that —
-// the board shows the agent's name and colour on the card, so a task that really
-// ran Claude must not be stored (and later displayed) as "Codex". Blank or
-// not-yet-implemented values normalize to the working defaults. The wired FLOW set
-// lives in the flow package (flow.Wired) — the engine's source of truth for what
-// it can walk — so the composer, task creation and the runner agree.
+// implementedAgents is what the orchestrator can actually execute. A task's stored
+// agent must never claim more (the card shows it), so an unimplemented choice
+// normalizes to claude below. The flow equivalent is flow.Wired.
 var implementedAgents = map[string]bool{"claude": true, "codex": true}
 
-// CreateTaskFull creates a task, defaulting agent and flow when blank and
-// normalizing any not-yet-implemented choice to what the orchestrator will
-// actually run, so the stored value never misrepresents the execution.
+// CreateTaskFull creates a task, normalizing a blank or not-yet-implemented
+// agent/flow to what the orchestrator will really run so the stored value never
+// misrepresents the execution.
 func (s *Service) CreateTaskFull(title, body, project, agent, flowKey string) (model.Task, error) {
 	if !implementedAgents[agent] {
 		agent = "claude"
@@ -261,23 +242,19 @@ func (s *Service) CreateTaskFull(title, body, project, agent, flowKey string) (m
 	return t, nil
 }
 
-// RecoverInFlight requeues tasks stranded by a previous daemon exit and cancels
-// their orphaned human requests (see store.RecoverInFlight). Call once at
-// startup, before the orchestrator begins polling. No SSE subscribers exist yet,
-// so it only writes; the first board snapshot reflects the recovered state.
+// RecoverInFlight requeues tasks stranded by a previous daemon exit (see
+// store.RecoverInFlight). Call once at startup, before the orchestrator polls.
 func (s *Service) RecoverInFlight() (int64, error) { return s.store.RecoverInFlight() }
 
 func (s *Service) ListTasks() ([]model.Task, error)      { return s.store.ListTasks() }
 func (s *Service) BacklogTasks() ([]model.Task, error)   { return s.store.BacklogTasks() }
 func (s *Service) GetTask(id string) (model.Task, error) { return s.store.GetTask(id) }
 
-// RenameTask gives a task a short, clean title — called by the agent's rename_task
-// as its first action, since the human usually dumps the whole request into the
-// title and leaves the body empty. To keep the full request from being lost (the
-// re-stated self-heal/revise prompts read t.Title as the source of truth), when the
-// body is empty the original long title is moved into the body before the short
-// title replaces it. The live agent's current prompt already embedded the original,
-// so this only affects the card label and any later prompts.
+// RenameTask gives a task a short card label (the agent's rename_task calls it
+// first). The human often dumps the whole request into the title with an empty
+// body, so when the body is empty the original title is moved into it before the
+// short title replaces it — otherwise later prompts, which read the body, lose the
+// full request.
 func (s *Service) RenameTask(id, title string) (model.Task, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -300,10 +277,9 @@ func (s *Service) RenameTask(id, title string) (model.Task, error) {
 	return t, nil
 }
 
-// UpdateStatus persists a task's new status and broadcasts it. It returns the
-// store error so callers whose correctness depends on the write (e.g. the
-// orchestrator's backlog→queued flip that prevents a re-pick) can react; the
-// board is only told about transitions that actually persisted.
+// UpdateStatus persists a task's new status and broadcasts it. Returns the store
+// error so callers whose correctness depends on the write (the backlog→queued flip
+// that prevents a re-pick) can react; only a persisted transition is broadcast.
 func (s *Service) UpdateStatus(id string, st model.TaskStatus) error {
 	updatedAt, err := s.store.UpdateTaskStatus(id, st)
 	if err != nil {
@@ -313,11 +289,10 @@ func (s *Service) UpdateStatus(id string, st model.TaskStatus) error {
 	return nil
 }
 
-// SwapStatus is the guarded (compare-and-swap) form of UpdateStatus: it moves a
-// task to `to` only if it is currently one of `from`, returning whether it did.
-// Used where a concurrent writer may have already moved the task — a human answer
-// resuming a parked task vs. the orchestrator failing it because the agent died —
-// so the two can't clobber each other into a stranded state.
+// SwapStatus is the guarded (compare-and-swap) form of UpdateStatus: it moves the
+// task to `to` only if currently one of `from`, returning whether it did. This is
+// what keeps a human answer and the agent-death handler from clobbering each other
+// into a stranded state.
 func (s *Service) SwapStatus(id string, from []model.TaskStatus, to model.TaskStatus) bool {
 	ok, err := s.store.SwapStatusFrom(id, from, to)
 	if err != nil {
@@ -338,9 +313,8 @@ func (s *Service) SetWorktree(id, wt string) {
 	s.publish("task_updated", map[string]any{"taskId": id, "worktree": wt})
 }
 
-// SetAttempt persists a task's self-heal retry counter and broadcasts it, so the
-// board can render the "fixing itself · k/N" sub-state on the running card. 0 is
-// the original run (no sub-state); k>0 means the agent is on its k-th auto-retry.
+// SetAttempt persists a task's self-heal retry counter and broadcasts it (drives
+// the "fixing itself · k/N" sub-state). 0 = the original run.
 func (s *Service) SetAttempt(id string, attempt int) {
 	updatedAt, err := s.store.SetTaskAttempt(id, attempt)
 	if err != nil {
@@ -350,8 +324,8 @@ func (s *Service) SetAttempt(id string, attempt int) {
 	s.publish("task_updated", map[string]any{"taskId": id, "attempt": attempt, "updatedAt": updatedAt})
 }
 
-// SetPort records (and broadcasts) the dev-server port reserved for a task, so
-// the board can show a clickable http://localhost:PORT link on the card.
+// SetPort records (and broadcasts) the dev-server port reserved for a task, for
+// the card's clickable http://localhost:PORT link.
 func (s *Service) SetPort(id string, port int) {
 	if err := s.store.SetPort(id, port); err != nil {
 		log.Printf("task %s: set port %d: %v", id, port, err)
@@ -370,9 +344,8 @@ func (s *Service) SetResume(id string, v bool) {
 	s.publish("task_updated", map[string]any{"taskId": id, "resume": v})
 }
 
-// RetryTask re-queues a task by moving it back to the backlog; the orchestrator
-// picks it up on its next tick. Used by the board's "Retry" action on a task the
-// agent gave up on (self-heal exhausted). See spec.md "Failure self-heals".
+// RetryTask re-queues a task back to the backlog for the orchestrator's next tick
+// — the board's "Retry" on a task the agent gave up on.
 func (s *Service) RetryTask(id string) error {
 	t, err := s.store.GetTask(id)
 	if err != nil {
@@ -385,11 +358,9 @@ func (s *Service) RetryTask(id string) error {
 	return nil
 }
 
-// MergeTask lands a reviewed task's work in the project repo and finishes it:
-// commit + merge the task's worktree branch into the repo's checked-out branch,
-// then tear the worktree down and mark the task done. A conflict (or any git
-// failure) is aborted so the repo stays clean, and the task returns to review
-// with the worktree intact so the human can retry or inspect it.
+// MergeTask lands a reviewed task's worktree branch into the project repo and
+// finishes it. Any git failure is aborted (repo stays clean) and the task returns
+// to review with its worktree intact for a retry.
 func (s *Service) MergeTask(id string) error {
 	t, err := s.store.GetTask(id)
 	if err != nil {
@@ -409,30 +380,25 @@ func (s *Service) MergeTask(id string) error {
 	_ = s.UpdateStatus(id, model.StatusMerging)
 	s.appendEvent(id, "status", "merging into "+p.Name)
 
-	// Rebase-then-merge: bring the branch on top of whatever landed on main since
-	// it forked, so what merges is what the human reviewed against the latest base
-	// (spec.md "Failure self-heals" → stale branch). A clean/no-op rebase falls
-	// straight through to the merge; conflicts the auto-rebase can't resolve are
-	// escalated to the agent (ErrRebaseConflict), never a silent abort.
+	// Rebase onto the latest main first, so what merges is what was reviewed against
+	// it. A clean rebase falls through to the merge; unresolvable conflicts escalate
+	// to the agent (ErrRebaseConflict), never a silent abort.
 	msg := "Ultraflow: " + t.Title
 	conflicted, _, rerr := s.wt.Rebase(p.RepoPath, id, msg)
 	if rerr != nil {
-		_ = s.UpdateStatus(id, model.StatusReview) // keep the worktree for a retry
+		_ = s.UpdateStatus(id, model.StatusReview)
 		s.appendEvent(id, "merge_failed", "couldn't rebase onto main (your repo was left clean): "+rerr.Error())
 		return rerr
 	}
 	if conflicted {
-		// Leave it in review; the caller (web) hands the rebase to the agent's
-		// self-heal. Record it as "stale" so the card shows the branch needs a rebase.
 		_ = s.UpdateStatus(id, model.StatusReview)
 		s.appendEvent(id, "stale", "behind main — auto-rebase hit conflicts; handing to the agent to resolve")
 		return ErrRebaseConflict
 	}
 
 	if _, err := s.wt.Merge(p.RepoPath, id, msg); err != nil {
-		_ = s.UpdateStatus(id, model.StatusReview) // keep the worktree for a retry
-		// "merge_failed" (not "status") so the board can lift this into the
-		// attention rail instead of letting it read as a quiet status line.
+		_ = s.UpdateStatus(id, model.StatusReview)
+		// "merge_failed" (not "status") so the board lifts it into the attention rail.
 		s.appendEvent(id, "merge_failed", "merge couldn't complete (your repo was left clean): "+err.Error())
 		return err
 	}
@@ -446,9 +412,8 @@ func (s *Service) MergeTask(id string) error {
 	return nil
 }
 
-// FinishReview marks a reviewed task done without a merge. It's for tasks that
-// ran in place (a non-git or shared-workdir project has no worktree to land), so
-// "merge" is meaningless — the human just confirms the work and closes it out.
+// FinishReview marks a reviewed task done without a merge — for tasks that ran in
+// place (no worktree to land), where "merge" is meaningless.
 func (s *Service) FinishReview(id string) error {
 	t, err := s.store.GetTask(id)
 	if err != nil {
@@ -465,19 +430,17 @@ func (s *Service) FinishReview(id string) error {
 	return nil
 }
 
-// cancellableStatuses are the live/pending states a task can be STOPPED from — it
-// has (or is about to have) a running agent. A guarded swap out of one of these
-// into `cancelled` is what makes stop race-safe against the agent finishing or
-// dying at the same instant. Merging is deliberately excluded: it's a short git
-// op we don't interrupt mid-way.
+// cancellableStatuses are the states a task can be STOPPED from (it has, or is
+// about to have, a running agent). The guarded swap into `cancelled` makes stop
+// race-safe against the agent dying at the same instant. Merging is excluded — a
+// short git op we don't interrupt.
 var cancellableStatuses = []model.TaskStatus{
-	model.StatusQueued, model.StatusPlanning, model.StatusRunning, model.StatusNeedsHuman,
+	model.StatusQueued, model.StatusRunning, model.StatusNeedsHuman,
 }
 
-// deletableStatuses are the states a task can be REMOVED from outright: not-yet-
-// started (backlog) or terminal (done, failed, cancelled). A live or in-review
-// task must be stopped or finished first — its agent and worktree are still in
-// play — so those states are absent here.
+// deletableStatuses are the states a task can be REMOVED from: backlog or terminal.
+// A live or in-review task (agent and worktree still in play) must be stopped or
+// finished first.
 var deletableStatuses = map[model.TaskStatus]bool{
 	model.StatusBacklog:   true,
 	model.StatusDone:      true,
@@ -485,15 +448,11 @@ var deletableStatuses = map[model.TaskStatus]bool{
 	model.StatusCancelled: true,
 }
 
-// CancelTask stops a running (or queued/parked) task at the human's request. It
-// flips the card to `cancelled` with a guarded swap — so it can't clobber a task
-// that finished or died in the same instant — retires any pending checkpoint, and
-// frees the task's dev-server runtime. It does NOT kill the agent process itself;
-// the caller (which owns the terminal manager) closes the live session after this
-// returns. Returns whether the task actually transitioned (false → it wasn't in a
-// stoppable state, with an explanatory error). The orchestrator's self-heal loop
-// reads the `cancelled` status this sets and stands down instead of retrying, so
-// closing the session can't be misread as a crash to auto-fix.
+// CancelTask stops a running/queued/parked task: a guarded swap to `cancelled`,
+// retire any pending checkpoint, free the runtime. It does NOT kill the agent — the
+// caller (owner of the terminal manager) closes the session after this returns, and
+// the self-heal loop reads `cancelled` and stands down rather than reading the close
+// as a crash to retry. Returns whether the task transitioned.
 func (s *Service) CancelTask(id string) (bool, error) {
 	t, err := s.store.GetTask(id)
 	if err != nil {
@@ -508,11 +467,9 @@ func (s *Service) CancelTask(id string) (bool, error) {
 	return true, nil
 }
 
-// DeleteTask removes a task from the board for good: it tears down any leftover
-// git worktree, frees any runtime it still held, and deletes the task with its
-// events and checkpoints. Only a not-live task can be removed (see
-// deletableStatuses) so we never yank a worktree out from under a working agent —
-// a running/parked/review task must be stopped or finished first.
+// DeleteTask removes a task for good: tear down any worktree, free any runtime,
+// delete the task with its events and checkpoints. Only a not-live task qualifies
+// (see deletableStatuses), so we never yank a worktree from a working agent.
 func (s *Service) DeleteTask(id string) error {
 	t, err := s.store.GetTask(id)
 	if err != nil {
@@ -530,24 +487,27 @@ func (s *Service) DeleteTask(id string) error {
 	return nil
 }
 
-// teardownWorktree removes a task's leftover git worktree, best-effort. A merged
-// task's checkout is already gone (Merge tore it down) and an in-place task never
-// had one; this cleans up the rest — e.g. a cancelled task whose worktree we kept
-// for inspection. Silent on failure: a missing worktree is not an error here.
+// projectRepo resolves a task's project to the git repo path its worktrees branch
+// from. ok is false when the task has no project or its repo path is unset (it ran
+// in place), so worktree-dependent ops bail with their own phrasing.
+func (s *Service) projectRepo(t model.Task) (repo string, ok bool) {
+	repo = s.repoFor(t.Project)
+	return repo, repo != ""
+}
+
+// teardownWorktree removes a task's leftover git worktree, best-effort (a missing
+// one is not an error) — e.g. a cancelled task whose worktree we kept for inspection.
 func (s *Service) teardownWorktree(t model.Task) {
 	if s.wt == nil || t.Worktree == "" {
 		return
 	}
-	p, err := s.store.ProjectByName(t.Project)
-	if err != nil || p.RepoPath == "" {
-		return
+	if repo, ok := s.projectRepo(t); ok {
+		_ = s.wt.Remove(repo, t.ID)
 	}
-	_ = s.wt.Remove(p.RepoPath, t.ID)
 }
 
 // ArchiveClosed removes every closed (done or cancelled) task in one sweep — the
-// board's "Clear" affordance, so the Done column doesn't grow without bound over
-// a week of use. Returns how many were removed.
+// board's "Clear" affordance. Returns how many were removed.
 func (s *Service) ArchiveClosed() (int, error) {
 	tasks, err := s.store.ListTasks()
 	if err != nil {
@@ -570,13 +530,9 @@ func (s *Service) ArchiveClosed() (int, error) {
 // AppendTaskEvent records an agent-produced event and fans it out live.
 func (s *Service) AppendTaskEvent(taskID, kind, text string) { s.appendEvent(taskID, kind, text) }
 
-// NoteFreshness checks whether a task's branch has fallen behind main and, if so,
-// records a "stale · N behind main" event so the board can warn on the card
-// (roadmap M4). Best-effort and side-effect-light: a no-op for tasks with no
-// worktree / non-git project, and it never changes status — staleness is a card
-// warning, not a state transition. Callers run it when a task enters review (the
-// point where landing an out-of-date branch matters); safe to call from a
-// goroutine so a slow git call doesn't block the caller.
+// NoteFreshness records a "stale · N behind main" event when a task's branch has
+// fallen behind, for the card's warning. Best-effort and never changes status;
+// callers run it (often in a goroutine) as a task enters review.
 func (s *Service) NoteFreshness(taskID string) {
 	if s.wt == nil {
 		return
@@ -585,11 +541,11 @@ func (s *Service) NoteFreshness(taskID string) {
 	if err != nil || t.Worktree == "" {
 		return
 	}
-	p, err := s.store.ProjectByName(t.Project)
-	if err != nil || p.RepoPath == "" {
+	repo, ok := s.projectRepo(t)
+	if !ok {
 		return
 	}
-	behind, _, err := s.wt.Freshness(p.RepoPath, taskID)
+	behind, _, err := s.wt.Freshness(repo, taskID)
 	if err != nil || behind == 0 {
 		return
 	}
@@ -607,11 +563,11 @@ func (s *Service) TaskDiff(id string) (worktree.DiffResult, error) {
 	if s.wt == nil || t.Worktree == "" {
 		return worktree.DiffResult{}, fmt.Errorf("this task has no worktree to diff")
 	}
-	p, err := s.store.ProjectByName(t.Project)
-	if err != nil || p.RepoPath == "" {
+	repo, ok := s.projectRepo(t)
+	if !ok {
 		return worktree.DiffResult{}, fmt.Errorf("couldn't find the project repo to diff against")
 	}
-	return s.wt.Diff(p.RepoPath, id)
+	return s.wt.Diff(repo, id)
 }
 
 // ShotsDir resolves the directory an agent saves screenshots into for a task
@@ -659,23 +615,21 @@ func IsImageFile(name string) bool {
 	return false
 }
 
-// captureContext snapshots the fast context for a task's ask_human checkpoint:
-// the worktree's change magnitude (+added −removed and the changed-file list)
-// plus any screenshots the agent saved. Best-effort — a task with no worktree
-// (M0 shared workdir) or no edits still asks cleanly with zero magnitude.
+// captureContext snapshots the fast context for a task's ask_human checkpoint: the
+// worktree's change magnitude and the screenshots the agent saved. Best-effort — a
+// task with no worktree or no edits still asks cleanly with zero magnitude.
 func (s *Service) captureContext(taskID string) (added, removed int, files []model.ChangedFile, shots []string) {
 	files = []model.ChangedFile{}
 	if d, err := s.TaskDiff(taskID); err == nil {
 		for _, f := range d.Files {
-			// Ultraflow's own metadata (screenshots and the like under .ultraflow/)
-			// isn't the agent's code change — the shots have their own gallery — so
-			// keep it out of the magnitude the human reads as "what changed".
+			// .ultraflow/ metadata (shots have their own gallery) isn't the agent's
+			// code change — keep it out of the "what changed" magnitude.
 			if strings.HasPrefix(f.Path, ".ultraflow/") {
 				continue
 			}
 			added += f.Added
 			removed += f.Removed
-			files = append(files, model.ChangedFile{Path: f.Path, Added: f.Added, Removed: f.Removed})
+			files = append(files, f)
 		}
 	}
 	return added, removed, files, s.TaskShots(taskID)
@@ -863,18 +817,18 @@ func (s *Service) SetContextCap(n int) (int, error) {
 	if err := s.store.SetSetting(settingKeyCtxCap, fmt.Sprintf("%d", n)); err != nil {
 		return 0, err
 	}
+	// Broadcast so every open board rescales its context meter to the new budget
+	// live, instead of waiting for a reload to pick it up from the snapshot.
+	s.publish("settings", map[string]any{"contextCap": n})
 	return n, nil
 }
 
 // --- the ask_human protocol (the core of Ultraflow) ---
 
 // AskHuman posts a question to the board and returns immediately — it does NOT
-// block. The agent runs as a live interactive terminal, so after asking it ends
-// its turn and idles at its prompt: a durable, tokenless, timeout-proof wait
-// (nothing holds an HTTP/tool call open across human time). When the human
-// answers on the board, AnswerHuman writes the reply straight into that
-// terminal's stdin and the agent resumes from its next input. Returns the
-// created request so the caller can tell the agent what it just asked.
+// block. The agent then ends its turn and idles at its prompt: a durable,
+// tokenless, timeout-proof wait. AnswerHuman later writes the reply into that
+// terminal's stdin and the agent resumes. Returns the created request.
 func (s *Service) AskHuman(taskID, question string, options []string, contextStr string) (model.HumanRequest, error) {
 	added, removed, files, shots := s.captureContext(taskID)
 	req := model.HumanRequest{
@@ -899,23 +853,19 @@ func (s *Service) AskHuman(taskID, question string, options []string, contextStr
 	return req, nil
 }
 
-// answerSubmitDelay is the gap between typing a board answer into the agent's
-// terminal and sending the Enter that submits it. It must outlast the TUI's
-// paste-detection window so the trailing CR is read as a keystroke, not as part
-// of a paste (see AnswerHuman). A var so tests can zero it.
+// answerSubmitDelay is the gap between typing a board answer and the Enter that
+// submits it. It must outlast the TUI's paste-detection window so the trailing CR
+// reads as a keystroke, not part of a paste (see AnswerHuman). A var so tests zero it.
 var answerSubmitDelay = 250 * time.Millisecond
 
-// AnswerHuman is called by the web API when the human replies on the board. It
-// records the answer, returns the task to running, and delivers the reply into
-// the agent's live terminal (its stdin) — which is how the parked interactive
-// agent, idle at its prompt, receives it and continues.
+// AnswerHuman records the human's board reply, returns the task to running, and
+// delivers the reply into the parked agent's terminal stdin so it resumes.
 func (s *Service) AnswerHuman(reqID, answer string) error {
 	updated, err := s.store.AnswerHumanRequest(reqID, answer)
 	if err != nil {
 		return err
 	}
-	// A duplicate/late answer (already answered, or unknown id) is a no-op: don't
-	// re-run side effects or re-inject input into the agent.
+	// A duplicate/late answer is a no-op — don't re-run side effects.
 	if !updated {
 		return nil
 	}
@@ -925,10 +875,9 @@ func (s *Service) AnswerHuman(reqID, answer string) error {
 		return err
 	}
 
-	// Resume the task only if it is still parked. If it has already left
-	// needs_human the agent died and the orchestrator's death path has resolved
-	// (or is resolving) it — flipping to running here would strand it behind a
-	// dead agent. The guarded swap makes answer-vs-death mutually exclusive.
+	// Resume only if still parked. If it already left needs_human, the agent died and
+	// the death path owns it — flipping to running here would strand it. The guarded
+	// swap makes answer-vs-death mutually exclusive.
 	if !s.SwapStatus(req.TaskID, []model.TaskStatus{model.StatusNeedsHuman}, model.StatusRunning) {
 		s.appendEvent(req.TaskID, "status", "your answer arrived after the agent had already stopped")
 		return nil
@@ -936,73 +885,65 @@ func (s *Service) AnswerHuman(reqID, answer string) error {
 	s.appendEvent(req.TaskID, "human_answer", answer)
 	s.publish("human_answered", map[string]any{"id": reqID, "answer": answer})
 
-	// Deliver the reply into the agent's terminal exactly as if the human typed it
-	// there. Crucially the text and the Enter that submits it go as TWO writes with
-	// a gap between them: interactive TUIs (Claude Code, Codex) treat text and a
-	// trailing CR arriving glued together in one read as a *paste* and keep the CR
-	// as a literal newline in the prompt instead of submitting — so the answer would
-	// sit typed but un-sent (the "I selected an answer but Enter wasn't pressed"
-	// symptom). Newlines are flattened so an embedded one can't submit early. If no
-	// live terminal exists the agent exited between the swap and now — the
-	// orchestrator's Wait path fails the task — so the log is just a diagnostic.
+	// Deliver the reply as if typed. The text and the submitting Enter go as TWO
+	// writes with a gap: a TUI reading text+CR glued in one read treats it as a paste
+	// and keeps the CR as a literal newline instead of submitting (the "selected an
+	// answer but Enter wasn't pressed" symptom). Newlines are flattened so an embedded
+	// one can't submit early.
+	live := false
 	if s.term != nil {
 		line := strings.NewReplacer("\r", " ", "\n", " ").Replace(answer)
-		live, werr := s.term.WriteTo(req.TaskID, []byte(line))
+		var werr error
+		live, werr = s.term.WriteTo(req.TaskID, []byte(line))
 		if werr != nil {
 			log.Printf("task %s: delivering answer to terminal: %v", req.TaskID, werr)
 		}
-		if live {
-			// Submit as a separate keystroke once the TUI's paste-detection window
-			// has closed, so the lone CR registers as Enter rather than a pasted
-			// newline.
-			time.Sleep(answerSubmitDelay)
-			if _, err := s.term.WriteTo(req.TaskID, []byte("\r")); err != nil {
-				log.Printf("task %s: submitting answer to terminal: %v", req.TaskID, err)
-			}
-		} else {
-			// No live agent to take the answer. Normally this is a self-heal
-			// escalation ("tried N×, stuck") — the agent stopped after exhausting its
-			// retries — so re-launch it in place with the human's guidance rather than
-			// stranding the task in `running`. Reengage no-ops if a self-heal loop is
-			// still live for the task (an agent that died in the checkpoint gap), so it
-			// can never race a second agent onto the same worktree.
-			if s.reengage != nil {
-				if err := s.reengage.Reengage(req.TaskID, answer); err != nil {
-					log.Printf("task %s: re-engage after answer: %v", req.TaskID, err)
-				}
-			} else {
-				log.Printf("task %s: answered but the agent terminal is gone", req.TaskID)
-			}
+	}
+	if live {
+		// Submit as a separate keystroke once the paste-detection window has closed.
+		time.Sleep(answerSubmitDelay)
+		if _, err := s.term.WriteTo(req.TaskID, []byte("\r")); err != nil {
+			log.Printf("task %s: submitting answer to terminal: %v", req.TaskID, err)
 		}
+		return nil
+	}
+
+	// No live agent took the answer — normally a self-heal escalation (the agent
+	// stopped after exhausting retries), so re-launch in place with the guidance.
+	// Reengage no-ops if a self-heal loop still owns the task, so it can't race a
+	// second agent onto the worktree. Gated on `live`, not `s.term != nil`, so
+	// re-engagement fires whenever no live session exists.
+	if s.reengage != nil {
+		if err := s.reengage.Reengage(req.TaskID, answer); err != nil {
+			log.Printf("task %s: re-engage after answer: %v", req.TaskID, err)
+		}
+	} else {
+		log.Printf("task %s: answered but the agent terminal is gone", req.TaskID)
 	}
 	return nil
 }
 
-// AbandonRequests retires any still-pending human request for a task whose agent
-// has exited, so an orphaned checkpoint doesn't linger on the attention rail and
-// can't be answered into a void.
+// AbandonRequests retires any pending human request for a task whose agent has
+// exited, so an orphaned checkpoint can't linger or be answered into a void.
 func (s *Service) AbandonRequests(taskID string) {
 	if n, _ := s.store.CancelTaskRequests(taskID); n > 0 {
 		s.publish("human_cancelled", map[string]any{"taskId": taskID})
 	}
 }
 
-// ResolveAgentExit drives a task to a terminal state after its agent PROCESS has
-// exited (the orchestrator learns this from sess.Wait). It is the single
-// authority for "the agent is gone": finish_task already moved a completed task
-// to review, so that no-ops here; anything still in-flight didn't finish and is
-// resolved now. crashed is true for a non-zero exit; detail carries the exit
-// error for the failed card.
+// ResolveAgentExit drives a task terminal after its agent PROCESS exits — the
+// single authority for "the agent is gone". A completed task is already in review
+// (finish_task), so that no-ops; anything still in-flight is resolved now. crashed
+// is a non-zero exit; detail is the exit error for the failed card.
 //
-// Every transition is a guarded compare-and-swap, so a human answer racing in at
-// this instant (needs_human→running) cannot strand the task behind the dead
-// agent — note that BOTH the crash swap and the clean-exit fail swap include
-// `running`, so an answer that lands in the gap is still driven terminal.
+// Every transition is a guarded swap, so a human answer racing in (needs_human→
+// running) can't strand the task — both the crash swap and the clean-exit fail swap
+// include `running` to catch an answer that lands in the gap.
 func (s *Service) ResolveAgentExit(taskID string, crashed bool, detail string) {
 	if crashed {
 		if s.SwapStatus(taskID, []model.TaskStatus{model.StatusQueued, model.StatusRunning, model.StatusNeedsHuman}, model.StatusFailed) {
 			s.AbandonRequests(taskID)
-			s.releaseRuntimeByID(taskID) // agent's gone; its dev server (if any) is dead — free the port
+			s.releaseRuntimeByID(taskID)
 			reason := "agent exited before reporting completion"
 			if detail != "" {
 				reason += ": " + detail
@@ -1011,15 +952,14 @@ func (s *Service) ResolveAgentExit(taskID string, crashed bool, detail string) {
 		}
 		return
 	}
-	// Clean exit (exit 0 without finish_task — e.g. the human ended the session at
-	// the prompt): a running/queued agent that finished its turn goes to review.
+	// Clean exit without finish_task (e.g. the human ended the session): a
+	// running/queued agent that finished its turn goes to review.
 	if s.SwapStatus(taskID, []model.TaskStatus{model.StatusQueued, model.StatusRunning}, model.StatusReview) {
-		go s.NoteFreshness(taskID) // warn on the card if the branch fell behind main
+		go s.NoteFreshness(taskID)
 		return
 	}
-	// Otherwise it was still parked — or a late answer resumed it into `running`
-	// behind this now-dead agent — so it never finished: fail it (running included
-	// to close the answer-in-the-gap race) and retire the orphaned checkpoint.
+	// Otherwise it was still parked (or a late answer resumed it behind this dead
+	// agent), so it never finished: fail it and retire the orphaned checkpoint.
 	if s.SwapStatus(taskID, []model.TaskStatus{model.StatusNeedsHuman, model.StatusRunning}, model.StatusFailed) {
 		s.AbandonRequests(taskID)
 		s.releaseRuntimeByID(taskID)
@@ -1027,8 +967,8 @@ func (s *Service) ResolveAgentExit(taskID string, crashed bool, detail string) {
 	}
 }
 
-// releaseRuntimeByID looks up a task and frees its runtime (dev server + port).
-// A convenience for the agent-exit paths, which only have the task id.
+// releaseRuntimeByID frees a task's runtime by id, for the agent-exit paths that
+// only have the id.
 func (s *Service) releaseRuntimeByID(taskID string) {
 	if t, err := s.store.GetTask(taskID); err == nil {
 		s.releaseRuntime(t)
@@ -1044,10 +984,9 @@ func (s *Service) TaskEvents(taskID string) ([]model.Event, error) {
 	return s.store.TaskEvents(taskID)
 }
 
-// LatestActivity returns, per task, the text and the kind of its latest activity
-// line for the board — the text drives the live activity strip, the kind lets the
-// board raise a "merge_failed" event into the attention rail rather than showing it
-// as a quiet status line. Both maps come from one store query.
+// LatestActivity returns, per task, the text and kind of its latest activity line
+// (the kind lets the board lift e.g. "merge_failed" into the attention rail). Both
+// maps come from one store query.
 func (s *Service) LatestActivity() (text, kind map[string]string, err error) {
 	lines, err := s.store.LatestActivity()
 	if err != nil {

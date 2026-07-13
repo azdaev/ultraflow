@@ -11,6 +11,7 @@ interface Props {
   activity: Record<string, string>;
   activityKind: Record<string, string>;
   context: Record<string, number>;
+  contextCap: number;
   models: Record<string, string>;
   projects: Project[];
   now: number;
@@ -32,6 +33,7 @@ export function BoardPage({
   activity,
   activityKind,
   context,
+  contextCap,
   models,
   projects,
   now,
@@ -45,11 +47,28 @@ export function BoardPage({
   onOpenChangelog,
 }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
   // If the selected project is removed in Settings, fall back to "All" rather than
   // stranding the board on a filter with no chip to clear it.
   const effective = selected !== null && projects.some((p) => p.name === selected) ? selected : null;
-  const filtered = effective === null ? tasks : tasks.filter((t) => t.project === effective);
+  // Project chip and the TopBar search compose: a task shows only if it matches
+  // both. Search is a case-insensitive substring over title + body.
+  const q = query.trim().toLowerCase();
+  const filtered = tasks.filter(
+    (t) =>
+      (effective === null || t.project === effective) &&
+      (q === "" || t.title.toLowerCase().includes(q) || t.body.toLowerCase().includes(q)),
+  );
+
+  // Enter in the command bar: with one match, jump straight into it; with none,
+  // create a task from the query (same as the no-results "Create" button). Several
+  // matches stay ambiguous, so Enter is a no-op and you keep refining.
+  const onSubmit = () => {
+    if (q === "") return;
+    if (filtered.length === 1) onOpenTask(filtered[0].id);
+    else if (filtered.length === 0) onNewTask(query.trim(), effective ?? "");
+  };
 
   // The attention indicator is global (like the old rail): every task that needs a
   // human answer, plus any failed task. Clicking jumps to the first such task's
@@ -66,6 +85,9 @@ export function BoardPage({
       <TopBar
         running={running}
         queued={queued}
+        query={query}
+        onSearch={setQuery}
+        onSubmit={onSubmit}
         paused={paused}
         onTogglePause={onTogglePause}
         onNewTask={() => onNewTask()}
@@ -83,6 +105,19 @@ export function BoardPage({
 
       {tasks.length === 0 ? (
         <EmptyBoard onNewTask={() => onNewTask()} />
+      ) : q !== "" && filtered.length === 0 ? (
+        // Search that finds nothing is a dead end unless it offers the obvious next
+        // step: the thing isn't here, so make it. Hands the typed text off to the
+        // composer as the new task's title (and the active project, if any).
+        <div className="mx-auto mt-[12vh] flex flex-col items-center gap-3 px-6 text-center">
+          <p className="text-[14px] text-muted">No tasks match “{query.trim()}”.</p>
+          <button
+            onClick={() => onNewTask(query.trim(), effective ?? "")}
+            className="rounded-lg bg-accent px-4 py-2 text-[13px] font-semibold text-white transition hover:brightness-105"
+          >
+            Create “{query.trim()}”
+          </button>
+        </div>
       ) : (
         <Board
           tasks={filtered}
@@ -90,6 +125,7 @@ export function BoardPage({
           activity={activity}
           activityKind={activityKind}
           context={context}
+          contextCap={contextCap}
           models={models}
           projects={projects}
           onOpen={onOpenTask}

@@ -18,7 +18,6 @@ export function groupColumns(tasks: Task[]): Columns {
     switch (t.status) {
       case "backlog":
       case "queued":
-      case "planning":
         cols.backlog.push(t);
         break;
       case "running":
@@ -47,7 +46,7 @@ export function groupColumns(tasks: Task[]): Columns {
 
 // CANCELLABLE — a task with a live (or about-to-be-live) agent can be Stopped.
 // Mirrors the daemon's cancellableStatuses.
-export const CANCELLABLE = new Set<TaskStatus>(["queued", "running", "needs_human", "planning"]);
+export const CANCELLABLE = new Set<TaskStatus>(["queued", "running", "needs_human"]);
 
 // DELETABLE — a not-live task (backlog, or terminal) can be Removed. Mirrors the
 // daemon's deletableStatuses.
@@ -60,6 +59,13 @@ export const DEV_LINK_STATUSES = new Set<TaskStatus>(["running", "needs_human", 
 // CLOSED — a closed card (done or cancelled) reads muted; its work is finished, so
 // it recedes rather than competing with live cards for attention.
 export const CLOSED = new Set<TaskStatus>(["done", "cancelled"]);
+
+// IN_FLIGHT — the daemon is actively working this task (an agent running, parked on
+// a human checkpoint, or merging). Drives the TopBar "running" count.
+export const IN_FLIGHT = new Set<TaskStatus>(["running", "needs_human", "merging"]);
+
+// WAITING — accepted but not yet picked up by a free slot. Drives the "queued" count.
+export const WAITING = new Set<TaskStatus>(["queued", "backlog"]);
 
 // --- flows: presets that double as templates (see spec/flows / web.md). The
 // backend tracks flow *name*, not per-step progress (that lands in M2), so the
@@ -108,7 +114,6 @@ export function activeStep(status: TaskStatus, steps: string[]): number {
   switch (status) {
     case "backlog":
     case "queued":
-    case "planning":
       return -1;
     case "done":
     case "merging":

@@ -124,26 +124,7 @@ function Changes({ taskId, sig }: { taskId: string; sig?: string }) {
       {shots.length > 0 && (
         <section>
           <h3 className="eyebrow mb-2 text-muted">Screenshots</h3>
-          <div className="grid grid-cols-2 gap-2">
-            {shots.map((name) => (
-              <a
-                key={name}
-                href={api.shotUrl(taskId, name)}
-                target="_blank"
-                rel="noreferrer"
-                className="block overflow-hidden rounded-lg border border-hairline bg-surface transition hover:border-ink/25"
-              >
-                <img
-                  src={api.shotUrl(taskId, name)}
-                  alt={name}
-                  className="max-h-64 w-full object-contain bg-[#17171A]"
-                />
-                <span className="block truncate px-2 py-1 font-mono text-[10px] text-muted">
-                  {name}
-                </span>
-              </a>
-            ))}
-          </div>
+          <ShotsGrid taskId={taskId} shots={shots} maxH="max-h-64" />
         </section>
       )}
 
@@ -159,16 +140,7 @@ function Changes({ taskId, sig }: { taskId: string; sig?: string }) {
       <section className="min-h-0">
         <div className="mb-2 flex items-baseline justify-between">
           <h3 className="eyebrow text-muted">Changes</h3>
-          {diff && (
-            <span className="font-mono text-[12px]">
-              <span className="text-moss">+{diff.added}</span>{" "}
-              <span className="text-rust">−{diff.removed}</span>
-              <span className="text-muted">
-                {" "}
-                · {diff.files.length} file{diff.files.length === 1 ? "" : "s"}
-              </span>
-            </span>
-          )}
+          {diff && <DiffMagnitude added={diff.added} removed={diff.removed} files={diff.files.length} />}
         </div>
 
         {err && <p className="text-[12px] text-muted">{err}</p>}
@@ -188,6 +160,48 @@ function Changes({ taskId, sig }: { taskId: string; sig?: string }) {
         )}
       </section>
     </div>
+  );
+}
+
+// ShotsGrid is the shared screenshot gallery — a 2-col grid of the agent's saved
+// screenshots, each opening full-size in a new tab. Used on both the checkpoint
+// context and the review Changes tab; maxH caps the thumbnail height (the
+// checkpoint rail is tighter than the review drawer), e.g. "max-h-40" / "max-h-64".
+export function ShotsGrid({ taskId, shots, maxH }: { taskId: string; shots: string[]; maxH: string }) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {shots.map((name) => (
+        <a
+          key={name}
+          href={api.shotUrl(taskId, name)}
+          target="_blank"
+          rel="noreferrer"
+          className="block overflow-hidden rounded-lg border border-hairline bg-surface transition hover:border-ink/25"
+        >
+          <img
+            src={api.shotUrl(taskId, name)}
+            alt={name}
+            className={`w-full object-contain bg-[#17171A] ${maxH}`}
+          />
+          <span className="block truncate px-2 py-1 font-mono text-[10px] text-muted">{name}</span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
+// DiffMagnitude is the shared "+N −N · k files" change summary, shown on both the
+// checkpoint context and the review Changes header.
+export function DiffMagnitude({ added, removed, files }: { added: number; removed: number; files: number }) {
+  return (
+    <span className="font-mono text-[12px]">
+      <span className="text-moss">+{added}</span>{" "}
+      <span className="text-diff-minus">−{removed}</span>
+      <span className="text-muted">
+        {" "}
+        · {files} file{files === 1 ? "" : "s"}
+      </span>
+    </span>
   );
 }
 

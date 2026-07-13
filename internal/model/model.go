@@ -9,7 +9,6 @@ type TaskStatus string
 const (
 	StatusBacklog    TaskStatus = "backlog"
 	StatusQueued     TaskStatus = "queued" // picked up, waiting for a concurrency slot
-	StatusPlanning   TaskStatus = "planning"
 	StatusRunning    TaskStatus = "running"
 	StatusNeedsHuman TaskStatus = "needs_human"
 	StatusReview     TaskStatus = "review"
@@ -140,4 +139,12 @@ type Event struct {
 	Kind      string    `json:"kind"` // status, log, human_request, human_answer
 	Data      string    `json:"data"`
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+// ActivityLine is a task's most recent non-empty event: the text the board's
+// activity strip shows and the kind it uses to lift certain events (e.g.
+// merge_failed) into the attention rail.
+type ActivityLine struct {
+	Data string
+	Kind string
 }

@@ -28,7 +28,9 @@ export function Toolbar({ projects, tasks, selected, onSelect, attentionCount, o
             color={p.color}
             active={selected === p.name}
             count={tasks.filter((t) => t.project === p.name).length}
-            onClick={() => onSelect(p.name)}
+            // Clicking the active chip again clears back to "All" — the expected
+            // toggle-off from Linear/Notion, so the filter isn't one-way.
+            onClick={() => onSelect(selected === p.name ? null : p.name)}
           />
         ))}
       </div>

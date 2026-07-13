@@ -3,7 +3,6 @@
 export type TaskStatus =
   | "backlog"
   | "queued"
-  | "planning"
   | "running"
   | "needs_human"
   | "review"
@@ -93,6 +92,9 @@ export interface BoardSnapshot {
   // latest context size (tokens) per running/review task, for the card's context
   // meter. Live updates arrive as "context" events; absent until the first poll.
   context: Record<string, number>;
+  // configured per-agent context budget in tokens (0 = off). The card meter scales
+  // to this so "near cap" lines up with where /compact actually fires.
+  contextCap: number;
   // latest model name (e.g. "claude-opus-4-8") per task, for the card's agent
   // footer. Live updates arrive as "model" events; absent until the first poll.
   models: Record<string, string>;
@@ -279,8 +281,6 @@ export const api = {
     fetch(`/api/tasks/${taskId}/shots`).then((r) => json<string[]>(r)),
   shotUrl: (taskId: string, name: string) =>
     `/api/tasks/${taskId}/shots/${encodeURIComponent(name)}`,
-
-  projects: () => fetch("/api/projects").then((r) => json<Project[]>(r)),
 
   // pickProject opens the OS-native folder chooser on the daemon's machine and
   // registers the picked folder. Returns null when the user cancels the dialog

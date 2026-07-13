@@ -9,6 +9,8 @@ export interface BoardState {
   runs: Record<string, RunProgress>;
   // latest context size (tokens) per task, keyed by task id.
   context: Record<string, number>;
+  // configured per-agent context budget in tokens (0 = off); the meter's scale.
+  contextCap: number;
   // latest model name per task, keyed by task id.
   models: Record<string, string>;
   // whether ALL agents are currently held (the "pause all" toggle).

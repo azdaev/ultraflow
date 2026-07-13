@@ -1,18 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { useBoard, useNow } from "./useBoard";
-import { useAttentionNotifications } from "./useNotifications";
+import { useAttentionNotifications, type AttentionItem } from "./useNotifications";
 import { api, type Task } from "./api";
 import { Composer } from "./components/Composer";
 import { Settings } from "./components/Settings";
 import { Changelog } from "./components/Changelog";
 import { TaskDetail } from "./components/TaskDetail";
-import type { AttentionItem } from "./components/RailCard";
 import { RunsContext } from "./runsContext";
+import { IN_FLIGHT, WAITING } from "./util";
 import { BoardPage } from "./board/BoardPage";
 import { installClickJournal, logUI } from "./journal";
 
 export function App() {
-  const { tasks, requests, activity, activityKind, projects, runs, context, models, paused } = useBoard();
+  const { tasks, requests, activity, activityKind, projects, runs, context, contextCap, models, paused } = useBoard();
   const now = useNow(1000);
   // The composer carries an optional draft: the inline "+ Add task" hands off its
   // typed title and column project via "More…"; the "n" key and the Topbar open it blank.
@@ -79,12 +79,8 @@ export function App() {
   // it focuses Ultraflow on that task, answering it clears it.
   useAttentionNotifications(attention, setOpenTaskId);
 
-  const running = tasks.filter((t) =>
-    ["running", "needs_human", "planning", "merging"].includes(t.status),
-  ).length;
-  const queued = tasks.filter((t) =>
-    ["queued", "backlog"].includes(t.status),
-  ).length;
+  const running = tasks.filter((t) => IN_FLIGHT.has(t.status)).length;
+  const queued = tasks.filter((t) => WAITING.has(t.status)).length;
 
   const openTask = openTaskId ? (byId.get(openTaskId) ?? null) : null;
   const openRequest = openTaskId
@@ -99,6 +95,7 @@ export function App() {
         activity={activity}
         activityKind={activityKind}
         context={context}
+        contextCap={contextCap}
         models={models}
         projects={projects}
         now={now}

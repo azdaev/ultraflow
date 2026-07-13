@@ -33,6 +33,8 @@ func (f *fakeService) AnswerHuman(id, answer string) error {
 	f.reqs = nil
 	return nil
 }
+func (f *fakeService) Subscribe() chan []byte     { return make(chan []byte) }
+func (f *fakeService) Unsubscribe(ch chan []byte) {}
 
 func TestOwnerCallbackAnswersOnce(t *testing.T) {
 	var methods []string

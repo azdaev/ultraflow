@@ -100,7 +100,12 @@ every path pays a nil-check tax.
   optional `runtime`, and the nil-checks collapse to one.
 - Note the coupled nesting at `AnswerHuman`: the re-engage path is gated *inside*
   `if s.term != nil`, so a reengager wired without a terminal manager would never
-  fire. A single `runtime` seam removes that accidental dependency.
+  fire. A single `runtime` seam removes that accidental dependency. **Partially
+  applied 2026-07-12:** `AnswerHuman` was flattened — it now computes `live` (false
+  when there's no terminal manager *or* the session is gone), returns early on the
+  submit path, and gates re-engagement on `!live` instead of nesting it under
+  `s.term != nil`. Re-engagement is now independent of whether a terminal manager
+  is wired; the broader six-setter → one-`runtime`-seam grouping is still open.
 
 ### B. Prop-drilling on the board (`web/src`)
 
@@ -115,13 +120,16 @@ Props shape is re-typed by hand in five components (which have already drifted).
 
 ### C. The headless `Agent.Run` pipeline is dead today (`internal/agent`)
 
-`Agent.Run` and both `Claude.Run` / `Codex.Run` (with `parseStreamLine`,
-`parseCodexLine`, `summarizeTool`, `compactArgs`, the `Event` struct — ~150 lines)
-have **no non-test callers**: the orchestrator only ever type-asserts to
-`interactiveAgent` and uses `Command`/`ResumeCommand`. The code is deliberately
-kept "for future non-interactive flows" (M2), so this is a **judgment call, not a
-clear delete**: keep it as scaffolding for the flow engine, or remove it now and
-reintroduce when M2 actually needs streaming. Flagged so the choice is explicit.
+**Resolved 2026-07-12 — deleted.** The "keep it for M2" rationale expired: the M2
+flow engine shipped and drives every step through the `interactiveAgent` seam
+(`Command`/`ResumeCommand` in a PTY), never `Run`. So `Agent.Run`, `Claude.Run`,
+`Codex.Run`, `parseStreamLine`, `parseCodexLine`, `summarizeTool`, `compactArgs`,
+`truncate`, `tailBuffer`, and the `Event` struct (~200 lines across `agent.go`,
+`claude.go`, `codex.go`) were removed, along with `TestParseCodexLine` and the
+flow-test fake's no-op `Run`. The `Agent` interface is now just `Name()`; the
+adapters keep only their interactive path. Build + vet + tests green; if a real
+non-interactive flow ever needs streaming, reintroduce it against the concrete
+event schema it actually requires rather than this speculative one.
 
 ### D. Cross-language / cross-package duplication with drift risk
 
@@ -130,35 +138,58 @@ reintroduce when M2 actually needs streaming. Flagged so the choice is explicit.
   the TS side (item 9) helps, but the Go↔TS split remains hand-synced — a shared
   source (an endpoint that reports the groupings, or codegen) would remove the
   drift entirely. Weigh against the added machinery.
-- **`{path, added, removed}`** exists as `model.ChangedFile`, `worktree.DiffFile`,
-  and TS `DiffFile`; `captureContext` copies field-by-field. `worktree.DiffFile`
-  could *be* `model.ChangedFile` (same JSON), removing one type and the copy.
-- **The `PORT`/`ULTRAFLOW_PORT` env contract** is written in `orchestrator.injectPort`,
-  `devserver.Start`, and described again in `portInstruction` — three places to
-  change the var name.
+- ~~**`{path, added, removed}`** exists as `model.ChangedFile`, `worktree.DiffFile`,
+  and TS `DiffFile`; `captureContext` copies field-by-field.~~ **Applied
+  2026-07-12:** `worktree.DiffResult.Files` is now `[]model.ChangedFile` (identical
+  JSON), so the type is gone and `captureContext` appends the value directly. (TS
+  `DiffFile` is the wire mirror and stays.)
+- **The `PORT`/`ULTRAFLOW_PORT` env contract.** **Applied 2026-07-12:** the var
+  names + `PORT=%d`/`ULTRAFLOW_PORT=%d` formatting now live once in
+  `port.EnvVars(p)`, used by both `orchestrator.injectPort` and `devserver.Start`
+  (which dropped its `fmt` import). `portInstruction`'s prose still names the vars
+  for the agent — that's documentation, not a second definition of the contract.
 - **Default port `7787`** is a literal in six files (`main.go`, `vite.config.ts`,
   the plist, README, goreleaser, a `web.go` comment); the plist passes `-port 7787`
   explicitly, so it can silently diverge from the flag default.
 
 ### E. The phantom `planning` status
 
-`model.StatusPlanning` is declared, guarded in `cancellableStatuses`/`RecoverInFlight`,
-and rendered in the UI, but **no code ever transitions a task into it**. It's
-aspirational (the M2 plan→build flow). Either wire it when M2 lands or drop it —
-today it spreads a dead concept across both languages and the spec.
+**Resolved 2026-07-12 — dropped.** M2 shipped using a separate `RunPhase` (the
+`runs` table), never a task-level `planning` status, so the aspirational value was
+confirmed dead — nothing ever transitioned a task into it, making its UI branches
+unreachable. Removed everywhere: `model.StatusPlanning`, its `cancellableStatuses`
+entry, the `'planning'` literals + comment in `RecoverInFlight`'s SQL, the TS
+`TaskStatus` union member, and the (never-hit) `planning` cases in `groupColumns`,
+`activeStep`, `CANCELLABLE`, `IN_FLIGHT`, and the card's status row. Go build/vet +
+97 tests, `tsc`, and `vite build` all green. Reintroduce a real status if/when a
+plan→build flow actually sets one.
 
 ### F. Minor, low-priority
 
-- `internal/mcp` has **no tests**, yet `finish_task` carries real
+- ~~`internal/mcp` has **no tests**, yet `finish_task` carries real
   report-vs-summary ordering + `→ review` logic; spec.md calls `ask_human` "the
-  whole product". A small handler-level test would give it a net.
-- `main.go` shutdown uses `srv.Close()` (abrupt) where the comment says "graceful";
-  `http.Server.Shutdown(ctx)` drains in-flight SSE/API requests. And a
-  `ListenAndServe` bind error `log.Fatal`s *before* `st.Close()` runs, so the WAL
-  isn't checkpointed on that exit path.
+  whole product".~~ **Applied 2026-07-12:** `internal/mcp/server_test.go` drives
+  the real server over an in-memory transport (SDK `NewInMemoryTransports`) — a
+  client calls `create_task` (persists a backlog task) and `finish_task` (sends a
+  running solo task to review with the report appended before the summary so the
+  summary stays the latest activity). First net on the package.
+- ~~`main.go` shutdown uses `srv.Close()` (abrupt) where the comment says
+  "graceful"; and a `ListenAndServe` bind error `log.Fatal`s *before* `st.Close()`
+  runs, so the WAL isn't checkpointed on that exit path.~~ **Applied 2026-07-12:**
+  shutdown now `Shutdown(ctx)`-drains in-flight API requests (3s bound, then
+  hard-close for never-idle SSE/WS) and waits for the drain before `st.Close()` so
+  no handler is mid-write when the DB closes; the bind-error path checkpoints the
+  WAL before exiting.
 - The two agent adapters diverge: `Claude.Run` passes `--fallback-model sonnet`,
   Codex has no resilience flag; their activity-event labelling also differs
   (Codex always says "Bash"/"Edit"; Claude distinguishes tools).
-- Several near-identical UI pairs remain (`MergeAction`/`MarkDoneAction`,
-  `MergeFailedCard`/`FailedCard`, the shots-grid + diff-magnitude blocks shared by
-  `CheckpointContext`/`ReviewPanel`) — one parameterized control each.
+- ~~Several near-identical UI pairs remain.~~ **All applied 2026-07-12:**
+  (a) `MergeFailedCard`/`FailedCard` collapsed to one `AlertCard` (label + message
+  + action params); the former `FailedCard` now also surfaces a retry error
+  inline, which it silently swallowed before. (b) the card's
+  `MergeAction`/`ApproveAction` review pill — the fiddly `role="button"`
+  nested-control a11y span plus busy/error state machine — extracted to one shared
+  `MossAction`; the two are now thin wrappers differing only in icon, label,
+  action, and trailing meta. (c) the shots-grid + diff-magnitude blocks shared by
+  `CheckpointContext`/`ReviewPanel` extracted to shared `ShotsGrid` (maxH-param)
+  and `DiffMagnitude` in `ReviewPanel.tsx`.

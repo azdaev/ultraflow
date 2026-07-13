@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, type HumanRequest, type TaskDiff } from "../api";
-import { DiffBody } from "./ReviewPanel";
+import { DiffBody, DiffMagnitude, ShotsGrid } from "./ReviewPanel";
 
 // CheckpointContext is the fast-context surface for an ask_human checkpoint: the
 // daemon captures the worktree's change magnitude (+N −N + changed files) and the
@@ -24,14 +24,7 @@ export function CheckpointContext({ request }: { request: HumanRequest }) {
         <div className="rounded-lg border border-hairline bg-board px-2.5 py-2">
           <div className="flex items-baseline justify-between">
             <span className="eyebrow text-muted">Changes</span>
-            <span className="font-mono text-[12px]">
-              <span className="text-moss">+{request.added}</span>{" "}
-              <span className="text-rust">−{request.removed}</span>
-              <span className="text-muted">
-                {" "}
-                · {files.length} file{files.length === 1 ? "" : "s"}
-              </span>
-            </span>
+            <DiffMagnitude added={request.added} removed={request.removed} files={files.length} />
           </div>
           {files.length > 0 && (
             <ul className="mt-1.5 space-y-0.5">
@@ -45,7 +38,7 @@ export function CheckpointContext({ request }: { request: HumanRequest }) {
                   </span>
                   <span className="shrink-0 tabular-nums text-muted">
                     <span className="text-moss">+{f.added}</span>{" "}
-                    <span className="text-rust">−{f.removed}</span>
+                    <span className="text-diff-minus">−{f.removed}</span>
                   </span>
                 </li>
               ))}
@@ -58,26 +51,7 @@ export function CheckpointContext({ request }: { request: HumanRequest }) {
       {shots.length > 0 && (
         <div>
           <span className="eyebrow mb-1.5 block text-muted">Screenshots</span>
-          <div className="grid grid-cols-2 gap-2">
-            {shots.map((name) => (
-              <a
-                key={name}
-                href={api.shotUrl(request.taskId, name)}
-                target="_blank"
-                rel="noreferrer"
-                className="block overflow-hidden rounded-lg border border-hairline bg-surface transition hover:border-ink/25"
-              >
-                <img
-                  src={api.shotUrl(request.taskId, name)}
-                  alt={name}
-                  className="max-h-40 w-full object-contain bg-[#17171A]"
-                />
-                <span className="block truncate px-2 py-1 font-mono text-[10px] text-muted">
-                  {name}
-                </span>
-              </a>
-            ))}
-          </div>
+          <ShotsGrid taskId={request.taskId} shots={shots} maxH="max-h-40" />
         </div>
       )}
     </div>

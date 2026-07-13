@@ -169,17 +169,7 @@ export function Settings({ open, onClose, projects }: Props) {
   }
 
   return (
-    <Modal open={open} onClose={onClose} className="max-w-lg">
-        <div className="mb-5 flex items-center justify-between">
-          <h2 className="text-[17px] font-semibold text-ink">Settings</h2>
-          <button
-            onClick={onClose}
-            className="rounded-lg px-2 py-1 text-[13px] text-muted hover:bg-board"
-          >
-            Esc
-          </button>
-        </div>
-
+    <Modal open={open} onClose={onClose} title="Settings" className="max-w-lg">
         {/* parallel agents */}
         <h3 className="eyebrow mb-2.5 text-muted">Parallel agents</h3>
         <div className="flex items-center justify-between rounded-lg border border-hairline bg-board px-3 py-2.5">

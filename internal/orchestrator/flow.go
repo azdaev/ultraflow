@@ -7,20 +7,16 @@ import (
 	"os/exec"
 	"time"
 
-	"ultraflow/internal/core"
 	"ultraflow/internal/flow"
 	"ultraflow/internal/model"
 	"ultraflow/internal/terminal"
 )
 
-// This file is the multi-step flow runner. Where the solo path (orchestrator.go)
-// runs ONE agent to completion, a flow WALKS A GRAPH of steps that all share the
-// task's single worktree: a work step spawns its agent, waits for the agent to end
-// its turn, then advances along the graph; a gate step parks the task for a human
-// decision that routes the graph. The run cursor is persisted every step, so a
-// daemon restart re-picks the task and resumes at the step it was on rather than
-// walking from the top. Solo tasks never enter here — they keep their unchanged,
-// battle-tested path — which is what guarantees the default can't regress.
+// This file is the multi-step flow runner. Where the solo path runs ONE agent to
+// completion, a flow WALKS A GRAPH of steps sharing the task's single worktree: a
+// work step runs its agent for a turn then advances; a gate step parks the task for
+// a human decision that routes the graph. The cursor is persisted every step, so a
+// restart resumes where it left off. Solo tasks never enter here.
 
 // stepOutcome is why a work step's turn ended, deciding what the walk does next.
 type stepOutcome int
@@ -32,11 +28,10 @@ const (
 	stepDaemonDown                    // daemon shutting down → startup recovery will resume
 )
 
-// runFlow drives a task through a multi-step flow. It owns the task end-to-end
-// like runWithSelfHeal, so it marks the task `healing` while live: that stands the
-// answer-driven re-engage down, so a mid-flow crash can't race a second walker
-// onto the shared worktree. It resumes from a persisted cursor when one exists (a
-// restart re-picked the task), else starts a fresh run at the flow's start step.
+// runFlow drives a task through a multi-step flow. It marks the task `healing` while
+// live so an answer-driven re-engage stands down and can't race a second walker onto
+// the worktree. Resumes from a persisted cursor when one exists (a restart re-picked
+// the task), else starts fresh at the flow's start step.
 func (o *Orchestrator) runFlow(ctx context.Context, t model.Task, dir string, prt int, fl flow.Flow) {
 	o.beginHeal(t.ID)
 	defer o.endHeal(t.ID)
@@ -107,20 +102,17 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 		return stepHalted
 	}
 
-	budget := t.MaxAttempts
-	if budget < 1 {
-		budget = core.DefaultMaxAttempts
-	}
+	budget := retryBudget(t)
 	retries := 0
 	o.svc.SetAttempt(t.ID, 0)
 	caption := fl.Caption(step.ID)
 
 	for {
-		// Fresh per-turn: a step is done only once finish_task or an idle turn-end
-		// flips this. A bare crash leaves it false, which is how we tell the two apart.
+		// Reset per-turn: only finish_task or an idle turn-end sets it; a bare crash
+		// leaves it false, which is how we tell a clean end from a crash below.
 		o.svc.SetTurnDone(t.ID, false)
-		// Persist before process creation. If the daemon dies after this point,
-		// recovery resumes this step's session with a compact continuation prompt.
+		// Persist active before process creation, so a daemon death here resumes this
+		// step's session on restart.
 		o.svc.SetRunPhase(t.ID, model.RunActive)
 
 		var (
@@ -130,8 +122,8 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 		)
 		switch {
 		case retries == 0 && resume:
-			// A persisted active phase means the daemon interrupted an already-started
-			// session. Human-guided re-entry also resumes, but carries the answer.
+			// Resuming: a restart interrupted an active session, or a human-guided
+			// re-entry (which carries the answer as seed).
 			if seed == "" {
 				cmd, cleanup, err = ia.ResumeCommand(ctx, dir, o.buildStepRestartPrompt(t, step))
 			} else {
@@ -165,7 +157,7 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 			return stepStopped
 		}
 		if stoppedByHuman(werr) {
-			o.gaveUp(t.ID, "you stopped this task")
+			o.fail(t.ID, "you stopped this task")
 			return stepStopped
 		}
 
@@ -186,9 +178,9 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 }
 
 // runStepTurn runs cmd as the step's live PTY agent for one turn. Unlike the solo
-// runAgent it does NOT drive the task to review on a turn end — the flow runner
-// owns that decision — it only flips the card to running and waits. started is
-// false only when the terminal couldn't start (the task is already failed).
+// runAgent it does NOT drive the task to review on a turn end — the flow runner owns
+// that — it only flips the card to running and waits. started is false only when the
+// terminal couldn't start (task already failed).
 func (o *Orchestrator) runStepTurn(taskID string, cmd *exec.Cmd, cleanup func(), runningMsg string) (werr error, started bool) {
 	defer cleanup()
 
@@ -197,15 +189,13 @@ func (o *Orchestrator) runStepTurn(taskID string, cmd *exec.Cmd, cleanup func(),
 		o.fail(taskID, "couldn't start the agent terminal: "+err.Error())
 		return nil, false
 	}
-	// Guarded running transition (same as the solo runAgent): a task cancelled in
-	// the gap between acquiring a slot and starting isn't revived — runStep sees the
-	// cancelled status after the turn and stops walking.
+	// Guarded transition: a task cancelled between slot and start isn't revived —
+	// runStep sees the cancelled status after the turn and stops walking.
 	o.svc.AgentStarted(taskID)
 	o.svc.AppendTaskEvent(taskID, "status", runningMsg)
 
-	// End a bare turn (agent idled at its prompt without finish_task) so the step
-	// advances instead of pinning here forever. Unlike the solo watcher it marks the
-	// turn done and closes the session rather than sending the task to review.
+	// End a bare turn (idled without finish_task) so the step advances; unlike the
+	// solo watcher this marks the turn done rather than sending the task to review.
 	go o.watchStepIdle(sess, taskID)
 
 	werr = sess.Wait()
@@ -241,58 +231,53 @@ func (o *Orchestrator) watchStepIdle(sess *terminal.Session, taskID string) {
 	}
 }
 
-// openGate parks a task at a human gate: it posts the gate's question to the board
-// (needs_human) with the flow context, then returns so the walker's goroutine ends
-// and frees its slot. The previous work step's agent has already exited, so there
-// is no live terminal — the answer re-enters the flow via resumeGate (AnswerHuman →
-// Reengage), routing the graph by the human's choice.
+// openGate parks a task at a human gate: post the gate's question (needs_human) with
+// flow context, then return so the walker frees its slot. The prior step's agent has
+// exited, so there's no live terminal — the answer re-enters via resumeGate.
 func (o *Orchestrator) openGate(t model.Task, fl flow.Flow, step flow.Step) {
 	q := step.Prompt
 	if q == "" {
 		q = "This step is done — approve to continue to the next step, or send it back for changes."
 	}
-	context := fmt.Sprintf("Flow: %s — %s\nApproving continues to the next step (the default). Your answer routes what happens next.",
+	gateContext := fmt.Sprintf("Flow: %s — %s\nApproving continues to the next step (the default). Your answer routes what happens next.",
 		fl.Label, fl.Caption(step.ID))
-	if _, err := o.svc.AskHuman(t.ID, q, step.GateOptions(), context); err != nil {
+	if _, err := o.svc.AskHuman(t.ID, q, step.GateOptions(), gateContext); err != nil {
 		log.Printf("task %s: open gate %s: %v", t.ID, step.ID, err)
 	}
 }
 
-// resumeGate continues a flow after the human answers a gate: it routes the gate
-// by the answer and either finishes the flow (approve at a terminal gate → review)
-// or re-enters the graph at the routed step, seeding the answer into that step's
-// prompt (so a "send back" carries the human's ask into the rebuild). Runs on a
-// fresh concurrency slot — the parked gate released the previous one.
+// launchWalk resumes walkFlow in the background on a fresh concurrency slot under
+// the healing guard, so an answer-driven re-entry can't race a second walker onto
+// the shared worktree. Shared by the gate-reroute and step-escalation re-entries.
+func (o *Orchestrator) launchWalk(t model.Task, fl flow.Flow, cursor, seed string, resume bool) {
+	dir := o.flowDir(t)
+	go func() {
+		o.acquire()
+		defer o.release()
+		o.beginHeal(t.ID)
+		defer o.endHeal(t.ID)
+		o.walkFlow(o.ctx(), t, dir, t.Port, fl, cursor, seed, resume)
+	}()
+}
+
+// resumeGate continues a flow after the human answers a gate: route by the answer,
+// then either finish (approve at a terminal gate → review) or re-enter the graph at
+// the routed step, seeding the answer so a "send back" carries into the rebuild.
 func (o *Orchestrator) resumeGate(t model.Task, fl flow.Flow, gate flow.Step, answer string) error {
 	next := gate.Route(answer)
 	if next == "" {
 		return o.svc.FinishFlow(t.ID) // approved at the final gate → review
 	}
 	o.svc.AdvanceRun(t.ID, gate.ID, next)
-	dir := o.flowDir(t)
-	go func() {
-		o.acquire()
-		defer o.release()
-		o.beginHeal(t.ID)
-		defer o.endHeal(t.ID)
-		o.walkFlow(o.ctx(), t, dir, t.Port, fl, next, answer, false)
-	}()
+	o.launchWalk(t, fl, next, answer, false)
 	return nil
 }
 
 // resumeStep re-enters a work step after the human answered its self-heal
-// escalation ("tried N×, stuck"): it resumes that step's conversation with the
-// guidance and carries on walking the flow from there, rather than the solo
-// resume-to-review path (which would abandon the remaining steps).
+// escalation, resuming that step's conversation with the guidance and walking on —
+// rather than the solo resume-to-review path, which would abandon the later steps.
 func (o *Orchestrator) resumeStep(t model.Task, fl flow.Flow, step flow.Step, guidance string) error {
-	dir := o.flowDir(t)
-	go func() {
-		o.acquire()
-		defer o.release()
-		o.beginHeal(t.ID)
-		defer o.endHeal(t.ID)
-		o.walkFlow(o.ctx(), t, dir, t.Port, fl, step.ID, guidance, true)
-	}()
+	o.launchWalk(t, fl, step.ID, guidance, true)
 	return nil
 }
 

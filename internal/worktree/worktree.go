@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"ultraflow/internal/model"
 )
 
 // Manager creates and tears down per-task worktrees under a single root dir.
@@ -212,24 +214,19 @@ func hasConflicts(wtPath string) bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
-// DiffFile is one changed path in a task's worktree with its line magnitude.
-type DiffFile struct {
-	Path    string `json:"path"`
-	Added   int    `json:"added"`
-	Removed int    `json:"removed"`
-}
-
 // DiffResult is a task's full change set vs the branch it forked from: the
 // magnitude the board leads with (+Added −Removed across Files) plus the raw
 // unified patch (secondary — the human rarely reads it). Patch is capped, with
 // Truncated set when it was cut, so a huge diff never bloats the response.
+// Files reuses model.ChangedFile — same shape, same JSON — so the ask_human
+// context capture can pass it through without a field-by-field copy.
 type DiffResult struct {
-	Base      string     `json:"base"`
-	Added     int        `json:"added"`
-	Removed   int        `json:"removed"`
-	Files     []DiffFile `json:"files"`
-	Patch     string     `json:"patch"`
-	Truncated bool       `json:"truncated"`
+	Base      string              `json:"base"`
+	Added     int                 `json:"added"`
+	Removed   int                 `json:"removed"`
+	Files     []model.ChangedFile `json:"files"`
+	Patch     string              `json:"patch"`
+	Truncated bool                `json:"truncated"`
 }
 
 // patchCap bounds the unified patch returned to the board (~200 KB) so a massive
@@ -249,9 +246,9 @@ func (m *Manager) Diff(repoPath, taskID string) (DiffResult, error) {
 
 	// The base the branch will merge into is the repo's checked-out branch; fall
 	// back to a raw HEAD ref if it's detached.
-	base := "HEAD"
-	if b, err := run(repoPath, "rev-parse", "--abbrev-ref", "HEAD"); err == nil && b != "" && b != "HEAD" {
-		base = b
+	base := baseBranch(repoPath)
+	if base == "" {
+		base = "HEAD"
 	}
 	// The fork point (merge-base) is the right comparison even if the agent made
 	// commits on the branch or the base moved on since; fall back to base itself.
@@ -265,9 +262,9 @@ func (m *Manager) Diff(repoPath, taskID string) (DiffResult, error) {
 	// doesn't disturb a later merge (which stages everything anyway).
 	_, _ = run(wtPath, "add", "-A", "-N")
 
-	res := DiffResult{Base: fork, Files: []DiffFile{}}
+	res := DiffResult{Base: fork, Files: []model.ChangedFile{}}
 	if numstat, err := run(wtPath, "diff", "--numstat", fork); err == nil && numstat != "" {
-		for _, line := range strings.Split(numstat, "\n") {
+		for line := range strings.SplitSeq(numstat, "\n") {
 			cols := strings.SplitN(line, "\t", 3)
 			if len(cols) != 3 {
 				continue
@@ -277,7 +274,7 @@ func (m *Manager) Diff(repoPath, taskID string) (DiffResult, error) {
 			removed, _ := strconv.Atoi(cols[1])
 			res.Added += added
 			res.Removed += removed
-			res.Files = append(res.Files, DiffFile{Path: cols[2], Added: added, Removed: removed})
+			res.Files = append(res.Files, model.ChangedFile{Path: cols[2], Added: added, Removed: removed})
 		}
 	}
 

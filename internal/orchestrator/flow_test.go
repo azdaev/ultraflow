@@ -30,8 +30,8 @@ type fakeFlowAgent struct {
 
 func (a *fakeFlowAgent) Name() string { return "claude" }
 
-// Run satisfies agent.Agent (the headless path); the flow runner only ever uses
-// the interactive Command/ResumeCommand, so this is an unused no-op here.
+// Run satisfies agent.Agent; the flow runner only ever drives this fake through
+// its interactive Command/ResumeCommand path, so the headless Run is unused here.
 func (a *fakeFlowAgent) Run(ctx context.Context, dir, prompt string, out chan<- agent.Event) error {
 	return nil
 }

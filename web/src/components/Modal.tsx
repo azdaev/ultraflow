@@ -5,6 +5,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   className?: string; // panel width, e.g. "max-w-xl"
+  title?: string; // renders the standard header (title + Esc button) when set
   children: React.ReactNode;
 }
 
@@ -13,7 +14,7 @@ interface Props {
 // fades and the panel eases back down on close instead of snapping away. The
 // enter springs in; the exit is a smaller, softer translate (enters should feel
 // livelier than exits).
-export function Modal({ open, onClose, className = "", children }: Props) {
+export function Modal({ open, onClose, className = "", title, children }: Props) {
   // Escape-to-dismiss belongs to the shell so every consumer gets it for free.
   useEffect(() => {
     if (!open) return;
@@ -42,6 +43,17 @@ export function Modal({ open, onClose, className = "", children }: Props) {
             transition={{ type: "spring", stiffness: 320, damping: 30 }}
             className={`relative w-full rounded-2xl border border-hairline bg-surface p-5 shadow-[0_24px_60px_-20px_rgba(23,23,26,0.4)] ${className}`}
           >
+            {title && (
+              <div className="mb-5 flex items-center justify-between">
+                <h2 className="text-[17px] font-semibold text-ink">{title}</h2>
+                <button
+                  onClick={onClose}
+                  className="rounded-lg px-2 py-1 text-[13px] text-muted hover:bg-board"
+                >
+                  Esc
+                </button>
+              </div>
+            )}
             {children}
           </motion.div>
         </motion.div>

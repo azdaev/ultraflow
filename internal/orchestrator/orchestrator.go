@@ -45,10 +45,9 @@ type Orchestrator struct {
 	dev     *devserver.Manager // runs the per-project dev-server hook, detached
 	baseCtx context.Context    // daemon lifetime; used by out-of-band launches (Revise)
 
-	// Resizable concurrency limit. A plain buffered-channel semaphore is fixed at
-	// creation; this mutex+cond version lets SetLimit change the ceiling at runtime
-	// — raising it wakes queued acquirers immediately, lowering it just stops new
-	// starts (already-running agents past the new limit are never killed).
+	// Resizable concurrency limit (mutex+cond, not a fixed channel semaphore, so
+	// SetLimit can change the ceiling at runtime: raising wakes queued acquirers,
+	// lowering only stops new starts).
 	mu     sync.Mutex
 	cond   *sync.Cond
 	active int
@@ -59,16 +58,14 @@ type Orchestrator struct {
 	// Transient (in-memory only) — a restart re-runs in-flight tasks unpaused.
 	paused bool
 
-	// healing tracks tasks with a live self-heal loop (a runWithSelfHeal goroutine
-	// mid-flight). It's how an answer-driven re-engage knows NOT to launch a second
-	// agent: if a loop is still running for the task, it owns the crash resolution.
+	// healing tracks tasks with a live self-heal loop, so an answer-driven re-engage
+	// knows that loop already owns the recovery and won't launch a second agent.
 	// Guarded by mu.
 	healing map[string]bool
 }
 
-// launchIntent is the small interface into task execution. Callers describe why
-// an agent is being launched; the implementation below owns the shared ordering
-// of concurrency, command construction, port injection, and self-heal.
+// launchIntent describes one agent launch (fresh run, revision, re-engage, or
+// rebase); execute below owns the shared command-build, port-inject, self-heal path.
 type launchIntent struct {
 	task       model.Task
 	dir        string
@@ -92,8 +89,7 @@ func (o *Orchestrator) interactiveAgent(t model.Task) (interactiveAgent, error) 
 	return ia, nil
 }
 
-// launch is the deep task-execution module: one implementation pays for every
-// fresh run, revision, human re-engagement, and rebase repair.
+// launch runs an intent in the background under a concurrency slot.
 func (o *Orchestrator) launch(intent launchIntent) {
 	go func() {
 		o.acquire()
@@ -230,12 +226,9 @@ func (o *Orchestrator) Run(ctx context.Context) {
 }
 
 func (o *Orchestrator) start(ctx context.Context, t model.Task) {
-	// Flip out of backlog synchronously so the next tick won't re-pick it, but
-	// mark it "queued" — not "running" — because it may sit waiting for a
-	// concurrency slot. The board shows queued distinctly from live-running.
-	// If this write fails the task stays in backlog; bail so we don't spawn a
-	// goroutine for a task the next tick will (correctly) pick up again — that
-	// would double-run it.
+	// Claim it out of backlog synchronously (→ queued, since it may wait for a slot)
+	// so the next tick can't re-pick and double-run it. On a failed write it stays in
+	// backlog for a later tick, so bail.
 	if !o.svc.ClaimTask(t.ID) {
 		log.Printf("task %s: could not claim backlog state; will retry next tick", t.ID)
 		return
@@ -244,90 +237,76 @@ func (o *Orchestrator) start(ctx context.Context, t model.Task) {
 	go func() {
 		o.acquire()
 		defer o.release()
-
-		// The task may have been Stopped (→ cancelled) while it sat queued waiting for
-		// a slot — a wait that can last minutes. If it's no longer queued, don't spin
-		// an agent up on it; that would revive a task the human deliberately stopped.
-		// Re-read here so we also see the fresh resume marker RecoverInFlight may have set.
-		cur, err := o.svc.GetTask(t.ID)
-		if err != nil {
-			// Transient read failure after we already claimed it out of backlog. Put it
-			// back — guarded, so we can't clobber a concurrent stop — so a later poll
-			// re-picks it, rather than stranding it in `queued` with no agent until a
-			// daemon restart (BacklogTasks never re-picks a queued task).
-			o.svc.SwapStatus(t.ID, []model.TaskStatus{model.StatusQueued}, model.StatusBacklog)
-			return
-		}
-		if cur.Status != model.StatusQueued {
-			return
-		}
-
-		// t.Agent is already normalized to an implemented adapter at creation time
-		// (core.CreateTaskFull), so this resolves; interactiveAgent applies the
-		// belt-and-braces claude fallback.
-		ia, err := o.interactiveAgent(cur)
-		if err != nil {
-			o.fail(cur.ID, err.Error())
-			return
-		}
-
-		// A daemon restart interrupted this task mid-run. Resume it IN PLACE — same
-		// worktree (its uncommitted work intact, no prune) and, for claude, the same
-		// conversation via --continue — instead of wiping the checkout and starting
-		// the task over from the top. The marker is one-shot: clear it now so a later
-		// clean run of the same id doesn't accidentally resume. If the worktree is
-		// somehow gone, fall through to a normal fresh start.
-		if cur.Resume {
-			o.svc.SetResume(cur.ID, false)
-			if cur.Worktree != "" && isDir(cur.Worktree) {
-				// A multi-step flow resumes IN PLACE too, but through its own graph
-				// walker (runFlow picks up at the persisted cursor); a solo task resumes
-				// its single conversation. Both reuse the existing worktree — falling
-				// through to prepareWorkdir would PRUNE the earlier steps' uncommitted work.
-				if fl := flow.ResolveFor(o.repoPath(cur), cur.Flow); fl.Multi() {
-					o.resumeFlowAfterRestart(ctx, cur, fl)
-					return
-				}
-				o.resumeAfterRestart(ctx, cur, ia)
-				return
-			}
-		}
-
-		// Give the task its own isolated checkout so parallel agents don't collide.
-		// Falls back to the shared workdir when the task has no registered git repo.
-		// The worktree is intentionally kept after the run so the human can review
-		// the diff; there is no merge flow yet, so a retry of the same task id is
-		// what reclaims the branch (Create prunes it before re-adding).
-		dir := o.prepareWorkdir(cur)
-
-		// Reserve a distinct dev-server port for this task and, if the project ships a
-		// dev-server hook, boot it — so parallel tasks never collide and the human can
-		// open the task's live app from its card.
-		prt := o.setupPort(cur, dir)
-
-		// A multi-step flow walks a graph of steps sharing this one worktree; solo
-		// (the default) stays on the unchanged single-agent execute() path below so it
-		// can't regress. Overrides in the project's .ultraflow/flows.yaml are honored.
-		if fl := flow.ResolveFor(o.repoPath(cur), cur.Flow); fl.Multi() {
-			o.runFlow(ctx, cur, dir, prt, fl)
-			return
-		}
-
-		o.execute(ctx, launchIntent{task: cur, dir: dir, agent: ia, prompt: buildPrompt(cur, prt), port: prt, fresh: true,
-			runningMsg: "running — open the card to watch progress (Ctrl-C to interrupt)", buildErr: "couldn't build the agent command: "})
+		o.runClaimed(ctx, t)
 	}()
 }
 
-// resumeAfterRestart re-launches a task whose live session a daemon restart cut
-// short (marked by store.RecoverInFlight). It reuses the EXISTING worktree — no
-// prune, so every uncommitted edit the agent made survives — and resumes via
-// ResumeCommand, which for claude reconnects the prior conversation (`--continue`)
-// so the agent keeps its memory of what it was doing. This is the whole point of
-// the fix: a restart continues the task instead of silently starting it over.
-//
-// The dev server the task had was killed on shutdown, so bring it back up on the
-// SAME reserved port (main.go re-reserved it at startup so nothing else took it).
-// Runs under the ordinary self-heal loop, exactly like a fresh start.
+// runClaimed drives a task start already claimed out of backlog, now holding a
+// slot. It re-reads the task (it may have been stopped or flagged for
+// restart-resume during the queued wait) and routes it: resume-in-place, a
+// multi-step flow, or a fresh solo run.
+func (o *Orchestrator) runClaimed(ctx context.Context, t model.Task) {
+	// Re-read: the human may have Stopped it during the (possibly minutes-long) queued
+	// wait, and this also picks up any resume marker RecoverInFlight set.
+	cur, err := o.svc.GetTask(t.ID)
+	if err != nil {
+		// Transient read failure — put it back to backlog (guarded, so we can't clobber
+		// a concurrent stop) for a later poll; BacklogTasks never re-picks a queued task.
+		o.svc.SwapStatus(t.ID, []model.TaskStatus{model.StatusQueued}, model.StatusBacklog)
+		return
+	}
+	if cur.Status != model.StatusQueued {
+		return // stopped while queued — don't revive it
+	}
+
+	// t.Agent was normalized to an implemented adapter at creation (CreateTaskFull);
+	// interactiveAgent applies the belt-and-braces claude fallback.
+	ia, err := o.interactiveAgent(cur)
+	if err != nil {
+		o.fail(cur.ID, err.Error())
+		return
+	}
+
+	// A daemon restart interrupted this task mid-run: resume IN PLACE (same worktree,
+	// no prune; for claude the same conversation via --continue) rather than starting
+	// over. One-shot marker — clear it now. A gone worktree falls through to a fresh
+	// start; a multi-step flow resumes via its own graph walker at the persisted cursor.
+	if cur.Resume {
+		o.svc.SetResume(cur.ID, false)
+		if cur.Worktree != "" && isDir(cur.Worktree) {
+			if fl := flow.ResolveFor(o.repoPath(cur), cur.Flow); fl.Multi() {
+				o.resumeFlowAfterRestart(ctx, cur, fl)
+				return
+			}
+			o.resumeAfterRestart(ctx, cur, ia)
+			return
+		}
+	}
+
+	// Isolated checkout so parallel agents don't collide (shared workdir when the task
+	// has no git repo). Kept after the run for review; a retry of the same id reclaims
+	// the branch.
+	dir := o.prepareWorkdir(cur)
+
+	// Reserve a dev-server port and boot the project's dev hook if any.
+	prt := o.setupPort(cur, dir)
+
+	// A multi-step flow walks a graph sharing this worktree; solo stays on the
+	// execute() path below. Project .ultraflow/flows.yaml overrides are honored.
+	if fl := flow.ResolveFor(o.repoPath(cur), cur.Flow); fl.Multi() {
+		o.runFlow(ctx, cur, dir, prt, fl)
+		return
+	}
+
+	o.execute(ctx, launchIntent{task: cur, dir: dir, agent: ia, prompt: buildPrompt(cur, prt), port: prt, fresh: true,
+		runningMsg: "running — open the card to watch progress (Ctrl-C to interrupt)", buildErr: "couldn't build the agent command: "})
+}
+
+// resumeAfterRestart re-launches a solo task a daemon restart cut short. It reuses
+// the EXISTING worktree (no prune, so uncommitted edits survive) and resumes via
+// ResumeCommand — for claude reconnecting the prior conversation (`--continue`) — so
+// a restart continues the task instead of starting it over. The dev server, killed
+// on shutdown, comes back on its same reserved port. Runs under the normal self-heal.
 func (o *Orchestrator) resumeAfterRestart(ctx context.Context, t model.Task, ia interactiveAgent) {
 	o.svc.AppendTaskEvent(t.ID, "status",
 		"resuming after an Ultraflow restart — same worktree, picking up where it left off")
@@ -337,11 +316,10 @@ func (o *Orchestrator) resumeAfterRestart(ctx context.Context, t model.Task, ia 
 		runningMsg: "resuming after restart (Ctrl-C to interrupt)", buildErr: "couldn't relaunch the agent to resume: "})
 }
 
-// resumeFlowAfterRestart resumes a multi-step FLOW task a daemon restart cut short.
-// Like resumeAfterRestart it reuses the EXISTING worktree (no prune, so the earlier
-// steps' uncommitted work survives) and restores the dev-server port, but it hands
-// off to the flow runner, which picks up at the persisted cursor — the step it was
-// on, or the gate it was parked at — instead of the solo single-conversation resume.
+// resumeFlowAfterRestart resumes a multi-step FLOW task after a restart. Like
+// resumeAfterRestart it reuses the worktree and restores the port, but hands off to
+// the flow runner, which picks up at the persisted cursor (its step, or the gate it
+// was parked at).
 func (o *Orchestrator) resumeFlowAfterRestart(ctx context.Context, t model.Task, fl flow.Flow) {
 	o.svc.AppendTaskEvent(t.ID, "status",
 		"resuming flow after an Ultraflow restart — same worktree, picking up at the current step")
@@ -363,27 +341,20 @@ func (o *Orchestrator) restorePort(t model.Task) int {
 	return o.setupPort(t, t.Worktree)
 }
 
-// runWithSelfHeal runs a task's agent and, on an unexpected error, AUTO-DIAGNOSES
-// and re-runs it up to its retry budget — the task STAYS `running` the whole time
-// with a "fixing itself · k/N" sub-state (never a red failed card). Retries resume
-// the SAME worktree conversation, so the agent keeps its memory of what it built
-// and can fix its own mistake. Only when the budget is exhausted does it ESCALATE
-// as a plain-language needs_human checkpoint. A clean exit resolves normally
-// (finish_task → review, or an ended session → review); a signalled exit is a
-// human stop → terminal `failed`. See spec.md "Failure self-heals".
+// runWithSelfHeal runs a task's agent and, on an unexpected error, auto-retries up
+// to the budget — staying `running` with a "fixing itself · k/N" sub-state, resuming
+// the same worktree conversation each time — then escalates to a needs_human
+// checkpoint. A clean exit resolves to review; a signalled exit is a human stop →
+// failed. See spec.md "Failure self-heals".
 //
-// It owns the task's execution end-to-end, so while its goroutine is live it marks
-// the task `healing`: an answer-driven re-engage checks that flag and stands down,
-// which is what keeps a checkpoint-gap crash from ever racing two agents onto one
-// worktree. `cmd`/`cleanup` are the first attempt; further attempts are built here.
+// While its goroutine is live it marks the task `healing`, so an answer-driven
+// re-engage stands down and can't race a second agent onto the worktree.
+// `cmd`/`cleanup` are the first attempt; further attempts are built here.
 func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, dir string, ia interactiveAgent, cmd *exec.Cmd, cleanup func(), runningMsg string) {
 	o.beginHeal(t.ID)
 	defer o.endHeal(t.ID)
 
-	budget := t.MaxAttempts
-	if budget < 1 {
-		budget = core.DefaultMaxAttempts
-	}
+	budget := retryBudget(t)
 	retries := 0
 	o.svc.SetAttempt(t.ID, retries) // 0 = the original run, no sub-state
 
@@ -395,29 +366,25 @@ func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, dir st
 	for {
 		werr, started := o.runAgent(t.ID, dir, isClaude, cmd, cleanup, runningMsg)
 		if !started {
-			return // runAgent already failed the task (couldn't start the terminal)
+			return // runAgent already failed the task
 		}
 		if ctx.Err() != nil {
-			return // daemon shutting down — startup recovery requeues it next boot
+			return // daemon shutting down — startup recovery requeues it
 		}
-		// An intentional end, not a crash: finish_task and the idle-watcher both send
-		// the task to `review` and then Close the session (SIGKILL), and a human Stop
-		// sets `cancelled` and then Closes it — so the exit here looks like a non-nil
-		// crash error. If the task already reached one of those externally-set states,
-		// the agent was ended on purpose — resolve, don't self-heal into a spurious
-		// retry that would revive a stopped task.
+		// finish_task/idle-watcher (→ review) and human Stop (→ cancelled) both Close
+		// the session, so the exit looks like a crash. If the task already reached one
+		// of those states, it ended on purpose — don't self-heal into a spurious retry.
 		if cur, _ := o.svc.GetTask(t.ID); cur.Status == model.StatusReview || cur.Status == model.StatusCancelled {
 			return
 		}
 		if werr == nil {
-			// Clean exit: finished via finish_task (already review), the human ended
-			// the session, or a parked clean-exit. The guarded resolver handles all,
-			// race-safe against an answer landing in the same instant.
+			// Clean exit — the guarded resolver handles every case, race-safe against a
+			// concurrent answer.
 			o.svc.ResolveAgentExit(t.ID, false, "")
 			return
 		}
 		if stoppedByHuman(werr) {
-			o.gaveUp(t.ID, "you stopped this task") // Ctrl-C = you-said-stop → terminal
+			o.fail(t.ID, "you stopped this task") // Ctrl-C = you-said-stop → terminal
 			return
 		}
 
@@ -429,11 +396,9 @@ func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, dir st
 		}
 
 		retries++
-		// The raw error is a COLLAPSED disclosure in the thread ("Why it failed"),
-		// never the headline; the friendly sub-state line is what leads the card.
+		// Raw error is a collapsed thread disclosure; the friendly sub-state leads the card.
 		o.svc.AppendTaskEvent(t.ID, "error", fmt.Sprintf("attempt failed: %s", truncateErr(werr.Error())))
-		// A stale checkpoint (agent died parked) would otherwise linger on the rail.
-		o.svc.AbandonRequests(t.ID)
+		o.svc.AbandonRequests(t.ID) // a stale parked checkpoint would linger otherwise
 		o.svc.SetAttempt(t.ID, retries)
 		o.svc.AppendTaskEvent(t.ID, "status",
 			fmt.Sprintf("fixing itself · %d/%d — diagnosing the error and retrying", retries, budget))
@@ -447,11 +412,10 @@ func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, dir st
 	}
 }
 
-// runAgent runs cmd as the task's live PTY agent for a single attempt: it registers
-// the session (so the board can attach and watch/type/Ctrl-C), flips the card to
-// running only once the terminal exists (never a 404), waits for the process to
-// exit, and returns the exit error (nil = clean). started is false only when the
-// terminal couldn't be started, in which case the task is already failed.
+// runAgent runs cmd as the task's live PTY agent for one attempt: register the
+// session, flip the card to running only once the terminal exists (never a 404),
+// wait, and return the exit error (nil = clean). started is false only when the
+// terminal couldn't start, in which case the task is already failed.
 func (o *Orchestrator) runAgent(taskID, dir string, isClaude bool, cmd *exec.Cmd, cleanup func(), runningMsg string) (werr error, started bool) {
 	defer cleanup()
 
@@ -464,17 +428,12 @@ func (o *Orchestrator) runAgent(taskID, dir string, isClaude bool, cmd *exec.Cmd
 	o.svc.AppendTaskEvent(taskID, "status", runningMsg)
 	journal.Log("agent", "start", map[string]any{"task": taskID, "dir": dir, "claude": isClaude})
 
-	// Free the slot when the agent ends its turn without finish_task: an interactive
-	// TUI never exits on its own, so without this it would idle at its prompt holding
-	// the slot forever. Started per attempt; it sends an idle turn-end to `review`
-	// and kills the session — which the self-heal loop treats as an intentional end
-	// (the task is now in review), not a crash to retry. Runs for the attempt's whole
-	// life so it also catches a second idle after an ask_human answer resumes.
+	// An interactive TUI never exits on its own, so a turn-end without finish_task
+	// would hold the slot forever: watchIdle sends an idle turn-end to review and
+	// kills the session (which self-heal reads as an intentional end, not a crash).
 	go o.watchIdle(sess, taskID, idleTimeout, idlePoll)
 
-	// Keep the agent's context under the daemon's budget by injecting /compact when
-	// it crosses the cap (claude only — it reads Claude Code's transcript). No-op
-	// when no cap is set. Same per-attempt lifetime as the idle-watcher.
+	// Inject /compact when the context crosses the cap (claude only; no-op when unset).
 	if isClaude {
 		go o.watchContext(sess, taskID, dir)
 	}
@@ -545,6 +504,16 @@ func stoppedByHuman(werr error) bool {
 	return false
 }
 
+// retryBudget is a task's self-heal retry ceiling: its own MaxAttempts, or the
+// default when unset. The single source for the policy both the solo
+// (runWithSelfHeal) and flow (runStep) loops retry against.
+func retryBudget(t model.Task) int {
+	if t.MaxAttempts < 1 {
+		return core.DefaultMaxAttempts
+	}
+	return t.MaxAttempts
+}
+
 // truncateErr collapses an error to a single readable line for a thread event or a
 // checkpoint's context, so a chatty stack trace never becomes a wall of red.
 func truncateErr(s string) string {
@@ -585,17 +554,14 @@ const (
 	idlePoll    = 5 * time.Second
 )
 
-// watchIdle ends a session whose agent went idle at its prompt without calling
-// finish_task, so a bare turn-end frees the concurrency slot instead of pinning it
-// forever. It sends the task to review and kills the session (the freed slot then
-// starts a queued task). It runs until the session ends.
+// watchIdle sends a task to review and kills the session when its agent goes idle
+// without finish_task, freeing the slot. It runs until the session ends.
 //
-// It must NOT disturb the intentional ask_human durable wait: an agent parked on an
-// open human request is SUPPOSED to idle at its prompt. That case is excluded by the
-// guarded swap — ask_human moved the task to needs_human, so running→review fails
-// and we keep watching (a later answer returns it to running, where a fresh idle can
-// be caught). The swap is also the atomic arbiter against an ask_human/answer racing
-// in at the moment we act.
+// The guarded FinishForReview swap is what protects the intentional ask_human wait:
+// a parked agent is SUPPOSED to idle, but ask_human already moved it to needs_human,
+// so running→review fails and we keep watching (a later answer returns it to running,
+// where a fresh idle can be caught). The swap also arbitrates an ask_human racing in
+// as we act.
 func (o *Orchestrator) watchIdle(sess *terminal.Session, taskID string, timeout, poll time.Duration) {
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
@@ -617,14 +583,10 @@ func (o *Orchestrator) watchIdle(sess *terminal.Session, taskID string, timeout,
 	}
 }
 
-// Revise re-engages a task's agent after it has gone to review (or failed): it
-// re-runs the agent IN THE SAME worktree — keeping every file it already wrote —
-// with the human's feedback seeded, and via `claude --continue` its memory of the
-// conversation. The card flips back to running so the human watches the rework
-// live in the terminal, and a normal finish_task returns it to review. This is
-// what makes review a conversation ("you made X wrong, redo it") instead of a
-// merge-or-nothing dead-end. Reuses the same concurrency-slot machinery as a
-// fresh start, so a rework still respects the parallel-agent cap.
+// Revise re-engages a reviewed/failed task's agent in the SAME worktree with the
+// human's feedback (and, via `claude --continue`, its conversation memory), flipping
+// the card back to running. This is what makes review a conversation rather than a
+// merge-or-nothing dead-end.
 func (o *Orchestrator) Revise(taskID, feedback string) error {
 	feedback = strings.TrimSpace(feedback)
 	if feedback == "" {
@@ -650,15 +612,13 @@ func (o *Orchestrator) Revise(taskID, feedback string) error {
 		dir = o.workdir // ran in place (non-git / shared-workdir project)
 	}
 
-	// Flip out of review synchronously so the board reflects the send-back at once
-	// and a double-click can't launch two agents on the same worktree.
+	// Flip out of review synchronously so a double-click can't launch two agents.
 	if !o.svc.QueueRevision(taskID) {
 		return fmt.Errorf("task status changed before it could be queued")
 	}
 	o.svc.AppendTaskEvent(taskID, "human_answer", feedback)
 
-	// Reuse the port reserved on the first run (its dev server has stayed up through
-	// review); reserve one now if the earlier run never got one.
+	// Reuse the first run's port (its dev server stayed up through review).
 	prt := t.Port
 	if prt == 0 {
 		prt = o.setupPort(t, dir)
@@ -670,13 +630,10 @@ func (o *Orchestrator) Revise(taskID, feedback string) error {
 }
 
 // Reengage re-launches a task's agent after the human answered its self-heal
-// escalation checkpoint (the "tried N×, stuck — replan, or guide me?" item). It
-// resumes the same worktree conversation with the human's guidance seeded and a
-// FRESH retry budget, so the agent can act on the steer and, if it stumbles again,
-// self-heal anew. Driven from AnswerHuman when the answered checkpoint's agent is
-// no longer live. It is a no-op when a self-heal loop is still running for the task
-// (an agent that died in the checkpoint gap) — that loop already owns the recovery,
-// so this can't race a second agent onto the worktree.
+// escalation checkpoint, resuming the worktree conversation with the guidance and a
+// FRESH retry budget. Driven from AnswerHuman when the checkpoint's agent is no
+// longer live. No-op when a self-heal loop still owns the task, so it can't race a
+// second agent onto the worktree.
 func (o *Orchestrator) Reengage(taskID, guidance string) error {
 	if o.isHealing(taskID) {
 		return nil
@@ -685,10 +642,9 @@ func (o *Orchestrator) Reengage(taskID, guidance string) error {
 	if err != nil {
 		return err
 	}
-	// A multi-step flow task answered mid-flow re-enters its graph, not a solo
-	// resume: a gate answer routes the graph (resumeGate), and an answer to a work
-	// step's self-heal escalation resumes that step and keeps walking (resumeStep).
-	// Only a genuinely solo task falls through to the conversation resume below.
+	// A flow task answered mid-flow re-enters its graph: a gate answer routes it
+	// (resumeGate), a work-step escalation resumes that step (resumeStep). Only a
+	// solo task falls through to the conversation resume below.
 	if run, ok := o.svc.Run(taskID); ok && run.Cursor != "" {
 		fl := flow.ResolveFor(o.repoPath(t), run.Flow)
 		if step, ok := fl.Step(run.Cursor); ok {
@@ -713,14 +669,10 @@ func (o *Orchestrator) Reengage(taskID, guidance string) error {
 	return nil
 }
 
-// Rebase re-engages a reviewed task's agent to bring its branch up to date with
-// main when an auto-rebase hit conflicts git couldn't resolve mechanically (see
-// core.ErrRebaseConflict, raised at merge time). It reuses the exact send-back
-// machinery as Revise — same worktree, `claude --continue` memory, concurrency
-// slot — so the agent resolves the rebase with the SAME auto-retry/escalate
-// self-heal policy: resolve what it can, and escalate a truly stuck conflict as a
-// plain-language ask_human item rather than a silent abort. A clean finish returns
-// the task to review on top of the latest main, ready to actually land.
+// Rebase re-engages a reviewed task's agent to resolve a stale-branch rebase whose
+// conflicts the mechanical auto-rebase couldn't handle (core.ErrRebaseConflict). It
+// reuses Revise's send-back machinery, so the agent resolves the rebase under the
+// same self-heal policy and a clean finish returns the task to review atop main.
 func (o *Orchestrator) Rebase(taskID string) error {
 	t, err := o.svc.GetTask(taskID)
 	if err != nil {
@@ -741,8 +693,8 @@ func (o *Orchestrator) Rebase(taskID string) error {
 		return err
 	}
 
-	// Best-effort freshness figure for the prompt; the agent doesn't strictly need
-	// it, so a lookup failure just yields a generic "behind main" phrasing.
+	// Best-effort freshness figure for the prompt; a lookup failure just yields a
+	// generic "behind main" phrasing.
 	behind, base := 0, "main"
 	if p, perr := o.svc.ProjectByName(t.Project); perr == nil && p.RepoPath != "" {
 		if n, b, ferr := o.wt.Freshness(p.RepoPath, taskID); ferr == nil {
@@ -753,8 +705,7 @@ func (o *Orchestrator) Rebase(taskID string) error {
 		}
 	}
 
-	// Flip out of review synchronously so the board reflects the self-heal at once
-	// and a double-click can't launch two agents on the same worktree.
+	// Flip out of review synchronously so a double-click can't launch two agents.
 	if !o.svc.QueueRebase(taskID) {
 		return fmt.Errorf("task status changed before it could be queued")
 	}
@@ -774,18 +725,11 @@ func (o *Orchestrator) ctx() context.Context {
 	return context.Background()
 }
 
-// fail records a reason on the task thread and marks it failed, so a failed card
-// always explains why instead of just showing "Gave up". Reserved for genuine
-// dead-ends (couldn't build/start the agent at all) — an agent that ran and errored
-// self-heals instead. `failed` is terminal: gave-up or you-said-stop.
+// fail marks a task terminally failed with a reason. Reserved for genuine dead-ends
+// (couldn't build/start the agent, or a human Ctrl-C) — an agent that ran and
+// errored self-heals instead. The guarded swap in FailExecution won't clobber a
+// task an answer already moved on.
 func (o *Orchestrator) fail(taskID, reason string) {
-	o.svc.FailExecution(taskID, reason)
-}
-
-// gaveUp marks a task terminally failed because the human stopped it (Ctrl-C). The
-// guarded swap retires any parked checkpoint and won't clobber a task an answer has
-// already moved on, mirroring the crash resolver's race-safety.
-func (o *Orchestrator) gaveUp(taskID, reason string) {
 	o.svc.FailExecution(taskID, reason)
 }
 
@@ -881,7 +825,7 @@ func injectPort(cmd *exec.Cmd, p int) {
 	if cmd == nil || p <= 0 {
 		return
 	}
-	cmd.Env = append(cmd.Env, fmt.Sprintf("PORT=%d", p), fmt.Sprintf("ULTRAFLOW_PORT=%d", p))
+	cmd.Env = append(cmd.Env, port.EnvVars(p)...)
 }
 
 // screenshotInstruction tells the agent to leave visual evidence for the review

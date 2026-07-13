@@ -201,6 +201,30 @@ CREATE TABLE IF NOT EXISTS runs (
 // launch records it as active.
 const runPhaseSchema = `ALTER TABLE runs ADD COLUMN phase TEXT NOT NULL DEFAULT 'pending';`
 
+// rowScanner is the read side shared by *sql.Row and *sql.Rows, so one scan
+// function serves both a single-row Get and a multi-row list query.
+type rowScanner interface{ Scan(...any) error }
+
+// queryRows runs query and maps each result row with scan, collecting them into a
+// slice. It centralizes the Query/Close/Next/Err boilerplate every list method
+// would otherwise repeat, so the iteration protocol lives in exactly one place.
+func queryRows[T any](db *sql.DB, scan func(rowScanner) (T, error), query string, args ...any) ([]T, error) {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []T
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // --- runs (multi-step flow progress) ---
 
 // CreateRun starts (or resets) a task's flow run at the given cursor. It upserts,
@@ -216,22 +240,31 @@ func (s *Store) CreateRun(taskID, flow, cursor string) error {
 	return err
 }
 
-// GetRun returns a task's flow run and whether it has one (solo tasks don't).
-func (s *Store) GetRun(taskID string) (model.Run, bool, error) {
+const runCols = `task_id,flow,cursor,completed,turn_done,phase,updated_at`
+
+// scanRun reads one run row (single-row or from a list), decoding the two fields
+// Scan can't map directly: the completed-steps JSON blob and the turn_done flag.
+func scanRun(sc rowScanner) (model.Run, error) {
 	var r model.Run
 	var completed string
 	var turnDone int
-	err := s.db.QueryRow(
-		`SELECT task_id,flow,cursor,completed,turn_done,phase,updated_at FROM runs WHERE task_id=?`, taskID,
-	).Scan(&r.TaskID, &r.Flow, &r.Cursor, &completed, &turnDone, &r.Phase, &r.UpdatedAt)
+	if err := sc.Scan(&r.TaskID, &r.Flow, &r.Cursor, &completed, &turnDone, &r.Phase, &r.UpdatedAt); err != nil {
+		return model.Run{}, err
+	}
+	_ = json.Unmarshal([]byte(completed), &r.Completed)
+	r.TurnDone = turnDone != 0
+	return r, nil
+}
+
+// GetRun returns a task's flow run and whether it has one (solo tasks don't).
+func (s *Store) GetRun(taskID string) (model.Run, bool, error) {
+	r, err := scanRun(s.db.QueryRow(`SELECT `+runCols+` FROM runs WHERE task_id=?`, taskID))
 	if err == sql.ErrNoRows {
 		return model.Run{}, false, nil
 	}
 	if err != nil {
 		return model.Run{}, false, err
 	}
-	_ = json.Unmarshal([]byte(completed), &r.Completed)
-	r.TurnDone = turnDone != 0
 	return r, true, nil
 }
 
@@ -302,29 +335,20 @@ func (s *Store) RunsForTasks(ids []string) (map[string]model.Run, error) {
 	if len(ids) == 0 {
 		return out, nil
 	}
-	q := `SELECT task_id,flow,cursor,completed,turn_done,phase,updated_at FROM runs WHERE task_id IN (?` +
+	q := `SELECT ` + runCols + ` FROM runs WHERE task_id IN (?` +
 		strings.Repeat(",?", len(ids)-1) + `)`
 	args := make([]any, len(ids))
 	for i, id := range ids {
 		args[i] = id
 	}
-	rows, err := s.db.Query(q, args...)
+	runs, err := queryRows(s.db, scanRun, q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var r model.Run
-		var completed string
-		var turnDone int
-		if err := rows.Scan(&r.TaskID, &r.Flow, &r.Cursor, &completed, &turnDone, &r.Phase, &r.UpdatedAt); err != nil {
-			return nil, err
-		}
-		_ = json.Unmarshal([]byte(completed), &r.Completed)
-		r.TurnDone = turnDone != 0
+	for _, r := range runs {
 		out[r.TaskID] = r
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // --- tasks ---
@@ -339,7 +363,7 @@ func (s *Store) CreateTask(t model.Task) error {
 
 const taskCols = `id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,port,resume,created_at,updated_at`
 
-func scanTask(sc interface{ Scan(...any) error }) (model.Task, error) {
+func scanTask(sc rowScanner) (model.Task, error) {
 	var t model.Task
 	var status string
 	var resume int
@@ -350,20 +374,7 @@ func scanTask(sc interface{ Scan(...any) error }) (model.Task, error) {
 }
 
 func (s *Store) queryTasks(where string, args ...any) ([]model.Task, error) {
-	rows, err := s.db.Query(`SELECT `+taskCols+` FROM tasks `+where, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []model.Task
-	for rows.Next() {
-		t, err := scanTask(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
+	return queryRows(s.db, scanTask, `SELECT `+taskCols+` FROM tasks `+where, args...)
 }
 
 func (s *Store) ListTasks() ([]model.Task, error) {
@@ -401,14 +412,19 @@ func (s *Store) GetTask(id string) (model.Task, error) {
 	return scanTask(s.db.QueryRow(`SELECT `+taskCols+` FROM tasks WHERE id=?`, id))
 }
 
-// UpdateTaskStatus flips a task's status and returns the new updated_at, so the
-// caller can broadcast it and keep the board's live timers accurate.
-func (s *Store) UpdateTaskStatus(id string, st model.TaskStatus) (time.Time, error) {
+// touchField sets one column on a task and bumps updated_at, returning the new
+// timestamp so callers can broadcast the change. `col` is always a trusted literal
+// from the call site (never user input), so splicing it into the SQL is safe.
+func (s *Store) touchField(id, col string, val any) (time.Time, error) {
 	now := time.Now()
-	if _, err := s.db.Exec(`UPDATE tasks SET status=?, updated_at=? WHERE id=?`, string(st), now, id); err != nil {
+	if _, err := s.db.Exec(`UPDATE tasks SET `+col+`=?, updated_at=? WHERE id=?`, val, now, id); err != nil {
 		return time.Time{}, err
 	}
 	return now, nil
+}
+
+func (s *Store) UpdateTaskStatus(id string, st model.TaskStatus) (time.Time, error) {
+	return s.touchField(id, "status", string(st))
 }
 
 // SwapStatusFrom sets a task's status to `to` only if it is currently one of
@@ -448,23 +464,19 @@ func (s *Store) UpdateTaskTitleBody(id, title, body string) (time.Time, error) {
 }
 
 func (s *Store) SetWorktree(id, wt string) error {
-	_, err := s.db.Exec(`UPDATE tasks SET worktree=?, updated_at=? WHERE id=?`, wt, time.Now(), id)
+	_, err := s.touchField(id, "worktree", wt)
 	return err
 }
 
 // SetTaskAttempt persists a task's self-heal retry counter and returns the new
 // updated_at so the caller can broadcast it and keep the card's live timer honest.
 func (s *Store) SetTaskAttempt(id string, attempt int) (time.Time, error) {
-	now := time.Now()
-	if _, err := s.db.Exec(`UPDATE tasks SET attempt=?, updated_at=? WHERE id=?`, attempt, now, id); err != nil {
-		return time.Time{}, err
-	}
-	return now, nil
+	return s.touchField(id, "attempt", attempt)
 }
 
 // SetPort records the dev-server port reserved for a task (0 to clear it).
 func (s *Store) SetPort(id string, port int) error {
-	_, err := s.db.Exec(`UPDATE tasks SET port=?, updated_at=? WHERE id=?`, port, time.Now(), id)
+	_, err := s.touchField(id, "port", port)
 	return err
 }
 
@@ -482,7 +494,7 @@ func (s *Store) SetResume(id string, v bool) error {
 
 // RecoverInFlight cleans up work stranded by a previous daemon exit. A restart
 // kills every agent goroutine, so any task still marked in-flight
-// (queued/running/needs_human/planning/merging) has no executor behind it and
+// (queued/running/needs_human/merging) has no executor behind it and
 // would otherwise sit forever — the board only offers Retry on failed cards.
 // Move them back to backlog to be picked up fresh, and cancel their now-orphaned
 // pending human requests (the agent that would consume the answer is gone).
@@ -504,12 +516,12 @@ func (s *Store) RecoverInFlight() (int64, error) {
 	// Must run BEFORE the requeue below, while these rows still carry those statuses.
 	if _, err := s.db.Exec(
 		`UPDATE tasks SET resume=1
-		 WHERE status IN ('running','needs_human','planning','merging') AND worktree != ''`); err != nil {
+		 WHERE status IN ('running','needs_human','merging') AND worktree != ''`); err != nil {
 		return 0, err
 	}
 	res, err := s.db.Exec(
 		`UPDATE tasks SET status='backlog', updated_at=?
-		 WHERE status IN ('queued','running','needs_human','planning','merging')`,
+		 WHERE status IN ('queued','running','needs_human','merging')`,
 		time.Now())
 	if err != nil {
 		return 0, err
@@ -526,29 +538,20 @@ func (s *Store) CreateProject(p model.Project) error {
 	return err
 }
 
+const projectCols = `id,name,repo_path,color,created_at`
+
+func scanProject(sc rowScanner) (model.Project, error) {
+	var p model.Project
+	err := sc.Scan(&p.ID, &p.Name, &p.RepoPath, &p.Color, &p.CreatedAt)
+	return p, err
+}
+
 func (s *Store) ListProjects() ([]model.Project, error) {
-	rows, err := s.db.Query(`SELECT id,name,repo_path,color,created_at FROM projects ORDER BY created_at ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []model.Project
-	for rows.Next() {
-		var p model.Project
-		if err := rows.Scan(&p.ID, &p.Name, &p.RepoPath, &p.Color, &p.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
+	return queryRows(s.db, scanProject, `SELECT `+projectCols+` FROM projects ORDER BY created_at ASC`)
 }
 
 func (s *Store) ProjectByName(name string) (model.Project, error) {
-	var p model.Project
-	err := s.db.QueryRow(
-		`SELECT id,name,repo_path,color,created_at FROM projects WHERE name=?`, name,
-	).Scan(&p.ID, &p.Name, &p.RepoPath, &p.Color, &p.CreatedAt)
-	return p, err
+	return scanProject(s.db.QueryRow(`SELECT `+projectCols+` FROM projects WHERE name=?`, name))
 }
 
 func (s *Store) ProjectCount() (int, error) {
@@ -578,7 +581,7 @@ func (s *Store) CreateHumanRequest(r model.HumanRequest) error {
 
 const hrCols = `id,task_id,question,options,context,answer,status,added,removed,files,shots,created_at,answered_at`
 
-func scanHumanRequest(sc interface{ Scan(...any) error }) (model.HumanRequest, error) {
+func scanHumanRequest(sc rowScanner) (model.HumanRequest, error) {
 	var r model.HumanRequest
 	var opts, files, shots string
 	var answeredAt sql.NullTime
@@ -627,23 +630,19 @@ func (s *Store) CancelTaskRequests(taskID string) (int64, error) {
 }
 
 func (s *Store) PendingHumanRequests() ([]model.HumanRequest, error) {
-	rows, err := s.db.Query(`SELECT ` + hrCols + ` FROM human_requests WHERE status='pending' ORDER BY created_at ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []model.HumanRequest
-	for rows.Next() {
-		r, err := scanHumanRequest(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return queryRows(s.db, scanHumanRequest,
+		`SELECT `+hrCols+` FROM human_requests WHERE status='pending' ORDER BY created_at ASC`)
 }
 
 // --- events ---
+
+const eventCols = `id,task_id,kind,data,created_at`
+
+func scanEvent(sc rowScanner) (model.Event, error) {
+	var e model.Event
+	err := sc.Scan(&e.ID, &e.TaskID, &e.Kind, &e.Data, &e.CreatedAt)
+	return e, err
+}
 
 func (s *Store) AppendEvent(e model.Event) (int64, error) {
 	res, err := s.db.Exec(`INSERT INTO events (task_id,kind,data,created_at) VALUES (?,?,?,?)`,
@@ -656,21 +655,8 @@ func (s *Store) AppendEvent(e model.Event) (int64, error) {
 
 // TaskEvents returns a task's events oldest-first (the thread timeline).
 func (s *Store) TaskEvents(taskID string) ([]model.Event, error) {
-	rows, err := s.db.Query(
-		`SELECT id,task_id,kind,data,created_at FROM events WHERE task_id=? ORDER BY id ASC`, taskID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []model.Event
-	for rows.Next() {
-		var e model.Event
-		if err := rows.Scan(&e.ID, &e.TaskID, &e.Kind, &e.Data, &e.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	return queryRows(s.db, scanEvent,
+		`SELECT `+eventCols+` FROM events WHERE task_id=? ORDER BY id ASC`, taskID)
 }
 
 // --- settings ---
@@ -697,18 +683,11 @@ func (s *Store) SetSetting(key, value string) error {
 	return err
 }
 
-// ActivityLine is a task's most recent non-empty event: the text the board's
-// activity strip shows and the kind it uses to lift certain events (e.g.
-// merge_failed) into the attention rail. Both come from one query.
-type ActivityLine struct {
-	Data string
-	Kind string
-}
-
 // LatestActivity returns, per task, its most recent non-empty event — text and
-// kind together. A single grouped MAX(id) join feeds both the live activity strip
-// and the attention-rail promotion, rather than running the same join twice.
-func (s *Store) LatestActivity() (map[string]ActivityLine, error) {
+// kind together (see model.ActivityLine). A single grouped MAX(id) join feeds
+// both the live activity strip and the attention-rail promotion, rather than
+// running the same join twice.
+func (s *Store) LatestActivity() (map[string]model.ActivityLine, error) {
 	rows, err := s.db.Query(`
 		SELECT e.task_id, e.kind, e.data
 		FROM events e
@@ -718,13 +697,13 @@ func (s *Store) LatestActivity() (map[string]ActivityLine, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make(map[string]ActivityLine)
+	out := make(map[string]model.ActivityLine)
 	for rows.Next() {
 		var taskID, kind, data string
 		if err := rows.Scan(&taskID, &kind, &data); err != nil {
 			return nil, err
 		}
-		out[taskID] = ActivityLine{Data: data, Kind: kind}
+		out[taskID] = model.ActivityLine{Data: data, Kind: kind}
 	}
 	return out, rows.Err()
 }

@@ -1,6 +1,9 @@
 package flow
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Caption renders the card's one-line description of where a run is in its flow,
 // e.g. "Build · step 2 of 4 · critic + your gate next". It leads with the current
@@ -15,7 +18,7 @@ func (f Flow) Caption(cursor string) string {
 		return ""
 	}
 	idx := f.IndexOf(cursor)
-	head := titleRole(step.Role) + " · step " + itoa(idx+1) + " of " + itoa(len(f.Steps))
+	head := titleRole(step.Role) + " · step " + strconv.Itoa(idx+1) + " of " + strconv.Itoa(len(f.Steps))
 
 	if step.Gate {
 		return head + " · your approval needed"
@@ -54,20 +57,4 @@ func titleRole(role string) string {
 		return "Step"
 	}
 	return strings.ToUpper(role[:1]) + role[1:]
-}
-
-// itoa is a tiny non-negative int→string to avoid pulling strconv into this
-// otherwise dependency-light file (values here are small step counts).
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
 }

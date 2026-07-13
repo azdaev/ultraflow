@@ -10,6 +10,8 @@ export interface BoardProjection {
   runs: Record<string, RunProgress>;
   // latest context size (tokens) per task, keyed by task id, for the context meter.
   context: Record<string, number>;
+  // configured per-agent context budget in tokens (0 = off); the meter's scale.
+  contextCap: number;
   // latest model name per task, keyed by task id, for the card's agent footer.
   models: Record<string, string>;
   // whether ALL agents are currently held (the "pause all" toggle).
@@ -17,7 +19,7 @@ export interface BoardProjection {
 }
 
 export const emptyBoardProjection: BoardProjection = {
-  tasks: [], requests: [], activity: {}, activityKind: {}, projects: [], runs: {}, context: {}, models: {}, paused: false,
+  tasks: [], requests: [], activity: {}, activityKind: {}, projects: [], runs: {}, context: {}, contextCap: 0, models: {}, paused: false,
 };
 
 type TaskPatch = { taskId: string } & Partial<Pick<Task, "status" | "updatedAt" | "worktree" | "attempt" | "port" | "title" | "body">>;
@@ -35,12 +37,13 @@ export type BoardEvent =
   | { kind: "run_updated"; data: { taskId: string; progress: RunProgress } }
   | { kind: "context"; data: { taskId: string; tokens: number } }
   | { kind: "model"; data: { taskId: string; model: string } }
-  | { kind: "paused"; data: { paused: boolean } };
+  | { kind: "paused"; data: { paused: boolean } }
+  | { kind: "settings"; data: { contextCap: number } };
 
 export function decodeBoardEvent(value: unknown): BoardEvent | null {
   if (!value || typeof value !== "object" || !("kind" in value) || !("data" in value)) return null;
   const event = value as { kind: string; data: unknown };
-  const known = new Set(["task_created", "task_updated", "task_deleted", "project_created", "project_deleted", "human_request", "human_answered", "human_cancelled", "event", "run_updated", "context", "model", "paused"]);
+  const known = new Set(["task_created", "task_updated", "task_deleted", "project_created", "project_deleted", "human_request", "human_answered", "human_cancelled", "event", "run_updated", "context", "model", "paused", "settings"]);
   return known.has(event.kind) ? event as BoardEvent : null;
 }
 
@@ -50,11 +53,11 @@ export function reduceBoardEvent(state: BoardProjection, event: BoardEvent): Boa
   switch (event.kind) {
     case "snapshot": {
       const b = event.data;
-      return { tasks:b.tasks, requests:b.requests, activity:b.activity ?? {}, activityKind:b.activityKind ?? {}, projects:b.projects ?? [], runs:b.runs ?? {}, context:b.context ?? {}, models:b.models ?? {}, paused:b.paused ?? false };
+      return { tasks:b.tasks, requests:b.requests, activity:b.activity ?? {}, activityKind:b.activityKind ?? {}, projects:b.projects ?? [], runs:b.runs ?? {}, context:b.context ?? {}, contextCap:b.contextCap ?? 0, models:b.models ?? {}, paused:b.paused ?? false };
     }
     case "task_created": return state.tasks.some(t => t.id === event.data.id) ? state : { ...state, tasks:[event.data, ...state.tasks] };
     case "task_updated": return { ...state, tasks:state.tasks.map(t => t.id === event.data.taskId ? { ...t, ...withoutTaskID(event.data) } : t) };
-    case "task_deleted": return { ...state, tasks:state.tasks.filter(t => t.id !== event.data.id), requests:state.requests.filter(r => r.taskId !== event.data.id), runs:withoutKey(state.runs, event.data.id) };
+    case "task_deleted": { const id = event.data.id; return { ...state, tasks:state.tasks.filter(t => t.id !== id), requests:state.requests.filter(r => r.taskId !== id), runs:withoutKey(state.runs, id), activity:withoutKey(state.activity, id), activityKind:withoutKey(state.activityKind, id), context:withoutKey(state.context, id) }; }
     case "project_created": return state.projects.some(p => p.id === event.data.id) ? state : { ...state, projects:[...state.projects, event.data] };
     case "project_deleted": return { ...state, projects:state.projects.filter(p => p.id !== event.data.id) };
     case "human_request": return state.requests.some(r => r.id === event.data.id) ? state : { ...state, requests:[...state.requests, event.data] };
@@ -65,6 +68,7 @@ export function reduceBoardEvent(state: BoardProjection, event: BoardEvent): Boa
     case "context": return { ...state, context:{ ...state.context, [event.data.taskId]:event.data.tokens } };
     case "model": return { ...state, models:{ ...state.models, [event.data.taskId]:event.data.model } };
     case "paused": return { ...state, paused:event.data.paused };
+    case "settings": return { ...state, contextCap:event.data.contextCap };
   }
 }
 

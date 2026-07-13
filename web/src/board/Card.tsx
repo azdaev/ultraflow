@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { api, errMsg, type Project, type Task } from "../api";
+import { api, type Project, type Task } from "../api";
 import {
   agentColor,
   agentLabel,
@@ -16,13 +15,16 @@ import {
 } from "../util";
 import { useRun } from "../runsContext";
 import { ContextMenu, useContextMenu, type MenuItem } from "../components/ContextMenu";
-import { AgentMark, CheckCircleIcon, CheckIcon, ClockIcon, MergeIcon, PromptIcon } from "./icons";
+import { FlowStepper } from "../components/FlowStepper";
+import { ApproveAction, MergeAction } from "../components/ReviewActions";
+import { AgentMark, CheckCircleIcon, ClockIcon, PromptIcon } from "./icons";
 
-// The model context window the meter measures against. The daemon reports the
-// live size in tokens; the denominator is a frontend constant (see PLAN).
+// The meter's fallback scale when no context budget is set: the model window, a
+// neutral reference for how full the context is. With a budget configured the
+// meter scales to that instead, so "near cap" lines up with the real /compact point.
 const CONTEXT_WINDOW = 200_000;
-// At/above this fraction the meter reads "near cap" and turns amber-rust — the
-// same threshold at which the daemon's optional /compact would kick in.
+// At/above this fraction the meter reads "near cap" and turns amber-rust — close
+// to the point where the daemon's optional /compact would kick in.
 const NEAR_CAP = 0.88;
 
 interface Props {
@@ -31,6 +33,7 @@ interface Props {
   activityKind?: string;
   now: number;
   contextTokens?: number;
+  contextCap?: number; // configured budget (0/undefined = off → meter uses the model window)
   model?: string;
   project?: Project;
   onOpen: (taskId: string) => void;
@@ -41,7 +44,7 @@ interface Props {
 // quiet (waiting), running cards carry a live activity strip + context meter,
 // review cards carry the merge/approve action + diff counts, and done cards are
 // muted. Every field maps to real board state — nothing here is decorative.
-export function Card({ task, activity, activityKind, now, contextTokens, model, project, onOpen, index = 0 }: Props) {
+export function Card({ task, activity, activityKind, now, contextTokens, contextCap, model, project, onOpen, index = 0 }: Props) {
   const run = useRun(task.id);
   const status = task.status;
   const needsHuman = status === "needs_human";
@@ -49,6 +52,10 @@ export function Card({ task, activity, activityKind, now, contextTokens, model, 
   const isRunning = status === "running" || status === "needs_human" || status === "merging";
   const isReview = status === "review";
   const showMeter = (isRunning || isReview) && contextTokens != null && contextTokens > 0;
+  // Multi-step flows show their live position right on the card (solo has one step,
+  // so nothing to track). Only while in-flight/review — a quiet backlog card
+  // doesn't need a not-started stepper.
+  const showStepper = (isRunning || isReview) && flowOf(task.flow).steps.length > 1;
   const menu = useContextMenu();
 
   // Right-click actions mirror the card's primary controls, keyed off status, so
@@ -113,11 +120,13 @@ export function Card({ task, activity, activityKind, now, contextTokens, model, 
 
         {isReview && (task.worktree ? <MergeAction taskId={task.id} /> : <ApproveAction taskId={task.id} note={activity} />)}
 
+        {showStepper && <FlowStepper flow={task.flow} status={status} run={run} />}
+
         <div className="h-[0.75px] w-full shrink-0 bg-cardline" />
 
         <AgentFooter agent={run?.agent ?? task.agent} model={model} flow={task.flow} closed={closed} />
 
-        {showMeter && <ContextMeter tokens={contextTokens} />}
+        {showMeter && <ContextMeter tokens={contextTokens} cap={contextCap ?? 0} />}
       </motion.button>
       <ContextMenu menu={menu} items={items} />
     </>
@@ -130,14 +139,12 @@ function StatusRow({ task, now }: { task: Task; now: number }) {
   const s = task.status;
 
   // Backlog family: clock + "waiting" label on the left, age on the right.
-  if (s === "backlog" || s === "queued" || s === "planning") {
+  if (s === "backlog" || s === "queued") {
     return (
       <Row right={ago(task.createdAt, now)}>
         <span className="flex items-center gap-1.25 text-faint">
           <ClockIcon />
-          <span className="text-[11px] leading-[14px]">
-            {s === "planning" ? "Planning" : "Waiting for a slot"}
-          </span>
+          <span className="text-[11px] leading-[14px]">Waiting for a slot</span>
         </span>
       </Row>
     );
@@ -287,16 +294,20 @@ function AgentFooter({ agent, model, flow, closed }: { agent: string; model?: st
   );
 }
 
-function ContextMeter({ tokens }: { tokens: number }) {
-  const pct = Math.min(1, tokens / CONTEXT_WINDOW);
+function ContextMeter({ tokens, cap }: { tokens: number; cap: number }) {
+  // Scale to the configured budget when set (so the bar fills as /compact nears),
+  // else the model window as a neutral reference.
+  const scale = cap > 0 ? cap : CONTEXT_WINDOW;
+  const pct = Math.min(1, tokens / scale);
   const near = pct >= NEAR_CAP;
   const k = Math.round(tokens / 1000);
+  const scaleLabel = scale >= 1_000_000 ? `${scale / 1_000_000}M` : `${Math.round(scale / 1000)}K`;
   return (
     <div className="flex w-full flex-col gap-1.25">
       <div className="flex items-center justify-between gap-2">
         <span className="font-mono text-[9px] leading-3 tracking-[0.08em] text-[#B0B0AA]">CONTEXT</span>
         <span className={`font-mono text-[9.5px] leading-3 ${near ? "text-nearcap" : "text-faint"}`}>
-          {k}K/200K{near ? " · near cap" : ""}
+          {k}K/{scaleLabel}{near ? " · near cap" : ""}
         </span>
       </div>
       <div className="h-1 w-full shrink-0 rounded-full bg-board">
@@ -307,115 +318,6 @@ function ContextMeter({ tokens }: { tokens: number }) {
           transition={{ type: "spring", stiffness: 260, damping: 30 }}
         />
       </div>
-    </div>
-  );
-}
-
-// --- review actions (ported from TaskCard, restyled to the mock) ---
-
-// MergeAction lands a reviewed task's branch. It renders as a role="button" span
-// (a nested <button> is invalid inside the card's button) and stops click
-// propagation so it doesn't also open the drawer. Diff counts (+added −removed)
-// are fetched once so the human sees the change magnitude on the card.
-function MergeAction({ taskId }: { taskId: string }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [diff, setDiff] = useState<{ added: number; removed: number } | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    api
-      .diff(taskId)
-      .then((d) => live && setDiff({ added: d.added, removed: d.removed }))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [taskId]);
-
-  async function merge(e: React.MouseEvent) {
-    e.stopPropagation();
-    if (busy) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await api.merge(taskId);
-    } catch (e) {
-      setErr(errMsg(e, "merge failed"));
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-2.25">
-        <span
-          role="button"
-          tabIndex={0}
-          aria-disabled={busy}
-          onClick={merge}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") merge(e as unknown as React.MouseEvent);
-          }}
-          className={`inline-flex items-center gap-1.5 rounded-lg bg-moss px-3 py-1.75 text-[12.5px] font-semibold leading-4 text-white transition hover:brightness-105 ${
-            busy ? "opacity-60" : ""
-          }`}
-        >
-          <MergeIcon className="text-white" />
-          {busy ? "Merging…" : "Merge to main"}
-        </span>
-        {diff && (
-          <span className="flex items-center gap-1.25 font-mono text-[11px] leading-[14px]">
-            <span className="text-moss">+{diff.added}</span>
-            <span className="text-diff-minus">−{diff.removed}</span>
-          </span>
-        )}
-      </div>
-      {err && <p className="line-clamp-2 text-[12px] text-rust">{err}</p>}
-    </div>
-  );
-}
-
-// ApproveAction finishes a reviewed task with no worktree to merge (ran in place).
-// Same nested-control conventions as MergeAction.
-function ApproveAction({ taskId, note }: { taskId: string; note?: string }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  async function approve(e: React.MouseEvent) {
-    e.stopPropagation();
-    if (busy) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await api.markDone(taskId);
-    } catch (e) {
-      setErr(errMsg(e, "couldn't mark done"));
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-2.25">
-        <span
-          role="button"
-          tabIndex={0}
-          aria-disabled={busy}
-          onClick={approve}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") approve(e as unknown as React.MouseEvent);
-          }}
-          className={`inline-flex items-center gap-1.5 rounded-lg bg-moss px-3 py-1.75 text-[12.5px] font-semibold leading-4 text-white transition hover:brightness-105 ${
-            busy ? "opacity-60" : ""
-          }`}
-        >
-          <CheckIcon className="text-white" />
-          {busy ? "Finishing…" : "Approve & close"}
-        </span>
-        <span className="text-[11px] leading-[14px] text-faint">{note ? `${note} · no diff` : "no diff"}</span>
-      </div>
-      {err && <p className="line-clamp-2 text-[12px] text-rust">{err}</p>}
     </div>
   );
 }

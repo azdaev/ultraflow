@@ -29,6 +29,8 @@ type service interface {
 	GetTask(string) (model.Task, error)
 	PendingRequests() ([]model.HumanRequest, error)
 	AnswerHuman(string, string) error
+	Subscribe() chan []byte
+	Unsubscribe(ch chan []byte)
 }
 
 // Config is intentionally environment-friendly: secrets never touch SQLite or
@@ -54,13 +56,12 @@ type Bot struct {
 type Manager struct {
 	ctx    context.Context
 	svc    service
-	broker *core.Broker
 	mu     sync.Mutex
 	cancel context.CancelFunc
 }
 
-func NewManager(ctx context.Context, svc service, broker *core.Broker) *Manager {
-	return &Manager{ctx: ctx, svc: svc, broker: broker}
+func NewManager(ctx context.Context, svc service) *Manager {
+	return &Manager{ctx: ctx, svc: svc}
 }
 
 func (m *Manager) ApplyTelegram(s core.TelegramSettings) {
@@ -77,7 +78,7 @@ func (m *Manager) ApplyTelegram(s core.TelegramSettings) {
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.cancel = cancel
 	log.Printf("telegram bot enabled for user %d, private chat %d", s.UserID, s.ChatID)
-	go New(Config{Token: s.Token, UserID: s.UserID, ChatID: s.ChatID}, m.svc).Run(ctx, m.broker)
+	go New(Config{Token: s.Token, UserID: s.UserID, ChatID: s.ChatID}, m.svc).Run(ctx)
 }
 
 type action struct {
@@ -95,9 +96,9 @@ func New(cfg Config, svc service) *Bot {
 
 // Run polls until ctx is cancelled. Telegram failures back off and never affect
 // the orchestrator; this adapter is an optional notification surface.
-func (b *Bot) Run(ctx context.Context, broker *core.Broker) {
-	updates := broker.Subscribe()
-	defer broker.Unsubscribe(updates)
+func (b *Bot) Run(ctx context.Context) {
+	updates := b.svc.Subscribe()
+	defer b.svc.Unsubscribe(updates)
 	if reqs, err := b.svc.PendingRequests(); err == nil {
 		for _, req := range reqs {
 			b.notifyRequest(ctx, req)

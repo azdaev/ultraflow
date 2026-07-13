@@ -64,7 +64,7 @@ type pauser interface {
 }
 
 type server struct {
-	svc       *core.Service
+	svc       Service
 	term      *terminal.Manager
 	conc      concurrencyController
 	reviser   reviser
@@ -81,7 +81,7 @@ type server struct {
 // disable the live change (the value is still persisted).
 // attachDir is where images uploaded from a composer are saved (see
 // uploadImages); it's created on first upload.
-func New(svc *core.Service, term *terminal.Manager, staticDir, attachDir string, assets fs.FS, conc concurrencyController) http.Handler {
+func New(svc Service, term *terminal.Manager, staticDir, attachDir string, assets fs.FS, conc concurrencyController) http.Handler {
 	s := &server{svc: svc, term: term, conc: conc, attachDir: attachDir}
 	// The orchestrator passed as conc also drives review send-backs; recover that
 	// capability without widening New's signature (a fake/nil conc simply lacks it).
@@ -148,10 +148,24 @@ func writeJSON(c *gin.Context, code int, v any) {
 	c.JSON(code, v)
 }
 
+// writeErr sends a plain-text error with the given status — the error-path mirror
+// of writeJSON, so a handler bails in one line (writeErr(c, code, msg)) instead of
+// repeating the c.Writer / http.Error boilerplate. Arg order matches writeJSON.
+func writeErr(c *gin.Context, code int, msg string) {
+	http.Error(c.Writer, msg, code)
+}
+
+// writeOK is the 200 acknowledgement the action handlers (retry, cancel, delete,
+// merge, …) return when there's nothing else to say. One helper keeps the success
+// envelope the frontend reads in a single place.
+func writeOK(c *gin.Context) {
+	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (s *server) listTasks(c *gin.Context) {
 	tasks, err := s.svc.ListTasks()
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if tasks == nil {
@@ -166,17 +180,17 @@ func (s *server) listTasks(c *gin.Context) {
 func (s *server) board(c *gin.Context) {
 	tasks, err := s.svc.ListTasks()
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	reqs, err := s.svc.PendingRequests()
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	activity, activityKind, err := s.svc.LatestActivity()
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if tasks == nil {
@@ -187,7 +201,7 @@ func (s *server) board(c *gin.Context) {
 	}
 	projects, err := s.svc.ListProjects()
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if projects == nil {
@@ -206,6 +220,9 @@ func (s *server) board(c *gin.Context) {
 		// fresh load isn't blank until the next transcript poll. Live updates arrive
 		// as "context" SSE events. Absent for tasks with no reading yet.
 		"context": s.svc.ContextTokens(),
+		// The configured per-agent context budget (0 = off), so the meter can scale
+		// to the real /compact threshold. Live changes arrive as "settings" events.
+		"contextCap": s.svc.ContextCap(),
 		// Latest per-task model name the agent is actually running (e.g.
 		// "claude-opus-4-8"), for the card's agent footer. Live updates arrive as
 		// "model" SSE events. Absent until the agent's first transcript line.
@@ -268,7 +285,7 @@ func (s *server) setTelegramHandler(c *gin.Context) {
 		ChatID  int64  `json:"chatId"`
 	}
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	old, _, _ := s.svc.TelegramSettings()
@@ -278,7 +295,7 @@ func (s *server) setTelegramHandler(c *gin.Context) {
 	}
 	cfg := core.TelegramSettings{Enabled: body.Enabled, Token: token, UserID: body.UserID, ChatID: body.ChatID}
 	if err := s.svc.SetTelegramSettings(cfg); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(c, http.StatusOK, map[string]any{"enabled": cfg.Enabled, "hasToken": cfg.Token != "", "userId": cfg.UserID, "chatId": cfg.ChatID})
@@ -292,16 +309,16 @@ func (s *server) setConcurrencyHandler(c *gin.Context) {
 		Value int `json:"value"`
 	}
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	if body.Value < core.MinConcurrent || body.Value > core.MaxConcurrentCap {
-		http.Error(c.Writer, fmt.Sprintf("value must be between %d and %d", core.MinConcurrent, core.MaxConcurrentCap), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, fmt.Sprintf("value must be between %d and %d", core.MinConcurrent, core.MaxConcurrentCap))
 		return
 	}
 	n, err := s.svc.SetMaxConcurrent(body.Value)
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if s.conc != nil {
@@ -318,16 +335,16 @@ func (s *server) setContextCapHandler(c *gin.Context) {
 		Value int `json:"value"`
 	}
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	if body.Value != 0 && (body.Value < core.MinContextCap || body.Value > core.MaxContextCap) {
-		http.Error(c.Writer, fmt.Sprintf("value must be 0 (off) or between %d and %d", core.MinContextCap, core.MaxContextCap), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, fmt.Sprintf("value must be 0 (off) or between %d and %d", core.MinContextCap, core.MaxContextCap))
 		return
 	}
 	n, err := s.svc.SetContextCap(body.Value)
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(c, http.StatusOK, map[string]any{"contextCap": n})
@@ -356,7 +373,7 @@ func (s *server) setPauseHandler(c *gin.Context) {
 func (s *server) listProjects(c *gin.Context) {
 	projects, err := s.svc.ListProjects()
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if projects == nil {
@@ -374,17 +391,17 @@ func (s *server) createProject(c *gin.Context) {
 		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	path := strings.TrimRight(strings.TrimSpace(body.Path), "/")
 	if err := validateRepoPath(path); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	p, err := s.svc.CreateProject(filepath.Base(path), path)
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusConflict)
+		writeErr(c, http.StatusConflict, err.Error())
 		return
 	}
 	writeJSON(c, http.StatusCreated, p)
@@ -415,10 +432,10 @@ func validateRepoPath(path string) error {
 
 func (s *server) deleteProject(c *gin.Context) {
 	if err := s.svc.DeleteProject(c.Param("id")); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+	writeOK(c)
 }
 
 // pickProject opens the OS-native folder chooser on the daemon's machine (this is
@@ -427,7 +444,7 @@ func (s *server) deleteProject(c *gin.Context) {
 func (s *server) pickProject(c *gin.Context) {
 	path, ok, err := pickFolder()
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if !ok {
@@ -436,7 +453,7 @@ func (s *server) pickProject(c *gin.Context) {
 	}
 	p, err := s.svc.CreateProject(filepath.Base(path), path)
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusConflict)
+		writeErr(c, http.StatusConflict, err.Error())
 		return
 	}
 	writeJSON(c, http.StatusCreated, p)
@@ -467,10 +484,10 @@ func pickFolder() (path string, ok bool, err error) {
 
 func (s *server) retryTask(c *gin.Context) {
 	if err := s.svc.RetryTask(c.Param("id")); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+	writeOK(c)
 }
 
 // cancelTask stops a running/queued/parked task: the service flips it to
@@ -481,7 +498,7 @@ func (s *server) cancelTask(c *gin.Context) {
 	id := c.Param("id")
 	stopped, err := s.svc.CancelTask(id)
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusConflict)
+		writeErr(c, http.StatusConflict, err.Error())
 		return
 	}
 	// Kill the agent AFTER the status is `cancelled`, so the orchestrator's self-heal
@@ -491,7 +508,7 @@ func (s *server) cancelTask(c *gin.Context) {
 			sess.Close()
 		}
 	}
-	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+	writeOK(c)
 }
 
 // deleteTask removes a not-live task (backlog or a terminal done/failed/cancelled)
@@ -499,10 +516,10 @@ func (s *server) cancelTask(c *gin.Context) {
 // in review — it must be stopped or finished first.
 func (s *server) deleteTask(c *gin.Context) {
 	if err := s.svc.DeleteTask(c.Param("id")); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusConflict)
+		writeErr(c, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+	writeOK(c)
 }
 
 // archiveClosed removes every closed (done or cancelled) task in one sweep — the
@@ -528,7 +545,7 @@ func (s *server) journalUI(c *gin.Context) {
 func (s *server) archiveClosed(c *gin.Context) {
 	n, err := s.svc.ArchiveClosed()
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(c, http.StatusOK, map[string]any{"removed": n})
@@ -545,31 +562,31 @@ func (s *server) mergeTask(c *gin.Context) {
 	err := s.svc.MergeTask(id)
 	if errors.Is(err, core.ErrRebaseConflict) {
 		if s.rebaser == nil {
-			http.Error(c.Writer, "the branch is behind main and needs the agent to rebase, which isn't available here", http.StatusServiceUnavailable)
+			writeErr(c, http.StatusServiceUnavailable, "the branch is behind main and needs the agent to rebase, which isn't available here")
 			return
 		}
 		if rerr := s.rebaser.Rebase(id); rerr != nil {
-			http.Error(c.Writer, rerr.Error(), http.StatusConflict)
+			writeErr(c, http.StatusConflict, rerr.Error())
 			return
 		}
 		writeJSON(c, http.StatusOK, map[string]string{"status": "rebasing"})
 		return
 	}
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusConflict)
+		writeErr(c, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+	writeOK(c)
 }
 
 // finishReview marks a reviewed task done without a merge — for tasks that ran in
 // place (no worktree to land), where "merge" doesn't apply.
 func (s *server) finishReview(c *gin.Context) {
 	if err := s.svc.FinishReview(c.Param("id")); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusConflict)
+		writeErr(c, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+	writeOK(c)
 }
 
 // diff returns the changes a reviewed task made in its worktree (magnitude +
@@ -578,7 +595,7 @@ func (s *server) finishReview(c *gin.Context) {
 func (s *server) diff(c *gin.Context) {
 	d, err := s.svc.TaskDiff(c.Param("id"))
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusNotFound)
+		writeErr(c, http.StatusNotFound, err.Error())
 		return
 	}
 	writeJSON(c, http.StatusOK, d)
@@ -589,21 +606,21 @@ func (s *server) diff(c *gin.Context) {
 // 503 if there's no live orchestrator to run the agent (API-only).
 func (s *server) revise(c *gin.Context) {
 	if s.reviser == nil {
-		http.Error(c.Writer, "sending back to the agent isn't available here", http.StatusServiceUnavailable)
+		writeErr(c, http.StatusServiceUnavailable, "sending back to the agent isn't available here")
 		return
 	}
 	var body struct {
 		Message string `json:"message"`
 	}
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.reviser.Revise(c.Param("id"), body.Message); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusConflict)
+		writeErr(c, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+	writeOK(c)
 }
 
 // listShots returns the screenshot filenames the agent left for a task, if any.
@@ -613,17 +630,26 @@ func (s *server) listShots(c *gin.Context) {
 	writeJSON(c, http.StatusOK, s.svc.TaskShots(c.Param("id")))
 }
 
-// getShot serves one screenshot image by name. The name is validated to a bare
-// image filename (no path separators or "..") so it can't escape the shots dir.
+// safeImageName reports whether name is a bare, renderable image filename safe to
+// join into a served directory: no path separators or ".." that could escape it,
+// and a real image extension. It is the single path-traversal guard behind both
+// getShot (the shots dir) and serveUpload (the attachments dir) — the two
+// user-supplied filenames the board serves back off disk.
+func safeImageName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, "/\\") && !strings.Contains(name, "..") && core.IsImageFile(name)
+}
+
+// getShot serves one screenshot image by name, guarded by safeImageName so the
+// name can't escape the shots dir.
 func (s *server) getShot(c *gin.Context) {
 	name := c.Param("name")
-	if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") || !core.IsImageFile(name) {
-		http.Error(c.Writer, "bad screenshot name", http.StatusBadRequest)
+	if !safeImageName(name) {
+		writeErr(c, http.StatusBadRequest, "bad screenshot name")
 		return
 	}
 	dir, err := s.svc.ShotsDir(c.Param("id"))
 	if err != nil {
-		http.Error(c.Writer, "not found", http.StatusNotFound)
+		writeErr(c, http.StatusNotFound, "not found")
 		return
 	}
 	http.ServeFile(c.Writer, c.Request, filepath.Join(dir, name))
@@ -637,7 +663,7 @@ func (s *server) getShot(c *gin.Context) {
 func (s *server) terminal(c *gin.Context) {
 	sess, ok := s.term.Get(c.Param("id"))
 	if !ok {
-		http.Error(c.Writer, "no live terminal for this task", http.StatusNotFound)
+		writeErr(c, http.StatusNotFound, "no live terminal for this task")
 		return
 	}
 	// This terminal drives an agent running with bypassPermissions, so only allow
@@ -713,7 +739,7 @@ func (s *server) terminal(c *gin.Context) {
 func (s *server) taskEvents(c *gin.Context) {
 	evs, err := s.svc.TaskEvents(c.Param("id"))
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if evs == nil {
@@ -731,23 +757,23 @@ func (s *server) createTask(c *gin.Context) {
 		Flow    string `json:"flow"`
 	}
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	if strings.TrimSpace(body.Title) == "" {
-		http.Error(c.Writer, "title is required", http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, "title is required")
 		return
 	}
 	// A project is mandatory: a task with no project runs in the shared workdir
 	// and its code is stranded uncommitted on main. The composer enforces this in
 	// the UI; guard the endpoint too so no path can create a project-less task.
 	if strings.TrimSpace(body.Project) == "" {
-		http.Error(c.Writer, "project is required", http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, "project is required")
 		return
 	}
 	t, err := s.svc.CreateTaskFull(body.Title, body.Body, body.Project, body.Agent, body.Flow)
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(c, http.StatusCreated, t)
@@ -756,7 +782,7 @@ func (s *server) createTask(c *gin.Context) {
 func (s *server) getTask(c *gin.Context) {
 	t, err := s.svc.GetTask(c.Param("id"))
 	if err != nil {
-		http.Error(c.Writer, "not found", http.StatusNotFound)
+		writeErr(c, http.StatusNotFound, "not found")
 		return
 	}
 	writeJSON(c, http.StatusOK, t)
@@ -765,7 +791,7 @@ func (s *server) getTask(c *gin.Context) {
 func (s *server) pendingRequests(c *gin.Context) {
 	reqs, err := s.svc.PendingRequests()
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if reqs == nil {
@@ -780,14 +806,14 @@ func (s *server) answer(c *gin.Context) {
 		Answer string `json:"answer"`
 	}
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.svc.AnswerHuman(c.Param("id"), body.Answer); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(c, http.StatusOK, map[string]string{"status": "ok"})
+	writeOK(c)
 }
 
 // maxUploadBytes caps a single uploaded image at 10MB — enough for a screenshot
@@ -801,7 +827,7 @@ const maxUploadBytes = 10 << 20
 // link for the thumbnail preview. Non-images and oversized files are rejected.
 func (s *server) uploadImages(c *gin.Context) {
 	if s.attachDir == "" {
-		http.Error(c.Writer, "image uploads aren't available here", http.StatusServiceUnavailable)
+		writeErr(c, http.StatusServiceUnavailable, "image uploads aren't available here")
 		return
 	}
 	// Bound the whole request so a client can't stream an unbounded body; each file
@@ -809,16 +835,16 @@ func (s *server) uploadImages(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<20)
 	form, err := c.MultipartForm()
 	if err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	files := form.File["files"]
 	if len(files) == 0 {
-		http.Error(c.Writer, "no files uploaded", http.StatusBadRequest)
+		writeErr(c, http.StatusBadRequest, "no files uploaded")
 		return
 	}
 	if err := os.MkdirAll(s.attachDir, 0o755); err != nil {
-		http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+		writeErr(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	type uploaded struct {
@@ -829,17 +855,17 @@ func (s *server) uploadImages(c *gin.Context) {
 	out := make([]uploaded, 0, len(files))
 	for _, fh := range files {
 		if !core.IsImageFile(fh.Filename) {
-			http.Error(c.Writer, fmt.Sprintf("%s isn't an image", fh.Filename), http.StatusBadRequest)
+			writeErr(c, http.StatusBadRequest, fmt.Sprintf("%s isn't an image", fh.Filename))
 			return
 		}
 		if fh.Size > maxUploadBytes {
-			http.Error(c.Writer, fmt.Sprintf("%s is too large (max 10MB)", fh.Filename), http.StatusBadRequest)
+			writeErr(c, http.StatusBadRequest, fmt.Sprintf("%s is too large (max 10MB)", fh.Filename))
 			return
 		}
 		saved := core.NewID() + strings.ToLower(filepath.Ext(fh.Filename))
 		dst := filepath.Join(s.attachDir, saved)
 		if err := saveUpload(fh, dst); err != nil {
-			http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
+			writeErr(c, http.StatusInternalServerError, err.Error())
 			return
 		}
 		abs, err := filepath.Abs(dst)
@@ -870,12 +896,11 @@ func saveUpload(fh *multipart.FileHeader, dst string) error {
 }
 
 // serveUpload serves an uploaded image by its saved name for the composer's
-// thumbnail preview. The name is validated to a bare image filename (no path
-// separators or "..") so it can't escape attachDir — same guard as getShot.
+// thumbnail preview, guarded by safeImageName so the name can't escape attachDir.
 func (s *server) serveUpload(c *gin.Context) {
 	name := c.Param("name")
-	if s.attachDir == "" || name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") || !core.IsImageFile(name) {
-		http.Error(c.Writer, "bad upload name", http.StatusBadRequest)
+	if s.attachDir == "" || !safeImageName(name) {
+		writeErr(c, http.StatusBadRequest, "bad upload name")
 		return
 	}
 	http.ServeFile(c.Writer, c.Request, filepath.Join(s.attachDir, name))
@@ -891,8 +916,8 @@ func (s *server) events(c *gin.Context) {
 	w.WriteHeader(http.StatusOK)
 	w.Flush()
 
-	ch := s.svc.Broker.Subscribe()
-	defer s.svc.Broker.Unsubscribe(ch)
+	ch := s.svc.Subscribe()
+	defer s.svc.Unsubscribe(ch)
 
 	for {
 		select {
