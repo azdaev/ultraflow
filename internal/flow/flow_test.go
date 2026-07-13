@@ -61,8 +61,7 @@ func TestWalkOrder(t *testing.T) {
 }
 
 // TestGateRouting checks the terminal gate's routing: approve finishes the flow
-// (next ""), a rejection loops back to build, and an unmatched/blank answer takes
-// the default (approve).
+// (next ""), while a rejection or free-form comment loops back to build.
 func TestGateRouting(t *testing.T) {
 	f := Resolve("plan-build-critic-gate")
 	gate, ok := f.Step("gate")
@@ -70,17 +69,42 @@ func TestGateRouting(t *testing.T) {
 		t.Fatal("gate step missing or not a gate")
 	}
 	cases := map[string]string{
-		"Approve":                     "",
-		"approve, looks great":        "",
-		"Request changes":             "build",
-		"please request changes here": "build",
-		"":                            "", // default → approve
-		"gibberish":                   "", // unmatched → default (first route = approve)
+		"Approve":                                   "",
+		"approve, looks great":                      "build", // comments use the fallback
+		"I cannot approve until retry works":        "build", // option text must not imply a click
+		"Request changes":                           "build",
+		"please request changes and add unit tests": "build", // comments use the same destination
+		"":                           "build", // explicit empty-answer fallback
+		"please fix the empty state": "build", // unmatched free-form feedback
 	}
 	for answer, want := range cases {
 		if got := gate.Route(answer); got != want {
 			t.Errorf("Route(%q) = %q, want %q", answer, got, want)
 		}
+	}
+}
+
+// TestGateRoutingWithoutExplicitFallback preserves existing custom-flow behavior:
+// if a gate does not declare an empty-answer route, an unmatched reply still uses
+// its first route, then Next when there are no routes.
+func TestGateRoutingWithoutExplicitFallback(t *testing.T) {
+	withRoutes := Step{
+		Gate: true,
+		Routes: []Route{
+			{Answer: "Approve", Next: "ship"},
+			{Answer: "Request changes", Next: "build"},
+		},
+	}
+	if got := withRoutes.Route("a free-form comment"); got != "ship" {
+		t.Fatalf("unmatched custom gate route = %q, want first route %q", got, "ship")
+	}
+	if got := withRoutes.Route("approve, looks good"); got != "ship" {
+		t.Fatalf("legacy substring route = %q, want %q", got, "ship")
+	}
+
+	withNext := Step{Gate: true, Next: []string{"continue"}}
+	if got := withNext.Route("a free-form comment"); got != "continue" {
+		t.Fatalf("unmatched route-less gate = %q, want Next %q", got, "continue")
 	}
 }
 
@@ -113,7 +137,7 @@ func TestGateRoutingExactWins(t *testing.T) {
 func TestGateOptions(t *testing.T) {
 	gate, _ := Resolve("plan-build-critic-gate").Step("gate")
 	opts := gate.GateOptions()
-	if len(opts) != 2 || opts[0] != "Approve" {
+	if len(opts) != 2 || opts[0] != "Approve" || opts[1] != "Request changes" {
 		t.Fatalf("gate options: got %v", opts)
 	}
 }

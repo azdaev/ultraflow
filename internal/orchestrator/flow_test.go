@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -286,6 +287,43 @@ func TestFlowGateRejectLoopsBack(t *testing.T) {
 	// initial three.
 	if n := len(fake.turns()); n <= 3 {
 		t.Fatalf("reject should re-run build→critic; turns=%d (want >3)", n)
+	}
+}
+
+// TestFlowGateFreeformFeedbackLoopsBack covers the comment input at the built-in
+// gate: text that does not match either button is feedback for Build, not implicit
+// approval. The feedback is carried into the new Build prompt and the task walks
+// Build→Critic→Gate again instead of entering Review.
+func TestFlowGateFreeformFeedbackLoopsBack(t *testing.T) {
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skip("true not available")
+	}
+	svc, o, fake := wireFlowOrch(t)
+	repo := gitRepo(t)
+	if _, err := svc.CreateProject("proj", repo); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, _ := svc.CreateTaskFull("t", "", "proj", "claude", "plan-build-critic-gate")
+
+	o.start(context.Background(), task)
+	waitFor(t, "first gate", func() bool {
+		got, _ := svc.GetTask(task.ID)
+		return got.Status == model.StatusNeedsHuman
+	})
+	reqs, _ := svc.PendingRequests()
+	feedback := "The empty state still needs a retry button"
+	if err := svc.AnswerHuman(reqs[0].ID, feedback); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+
+	waitFor(t, "re-parked after free-form gate feedback", func() bool {
+		got, _ := svc.GetTask(task.ID)
+		run, _ := svc.Run(task.ID)
+		return got.Status == model.StatusNeedsHuman && run.Cursor == "gate" && len(fake.turns()) >= 5
+	})
+	prompts := fake.turnPrompts()
+	if len(prompts) < 4 || !strings.Contains(prompts[3], feedback) {
+		t.Fatalf("rebuild prompt did not contain gate feedback %q; prompts=%v", feedback, prompts)
 	}
 }
 

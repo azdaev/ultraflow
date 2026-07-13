@@ -19,8 +19,12 @@ A `Step` is `{id, role, agent, prompt, gate, next[], routes[]}`:
   `next[0]`. An empty `next` is terminal → the task goes to review.
 - **gate step** (`gate:true`) — runs no agent. It parks the task as `needs_human`
   via the ordinary `ask_human` mechanism. The human's answer is routed through
-  `routes[]` (answer substring → next step); the first route is the default
-  (approve). A route to `""` finishes the flow (→ review).
+  `routes[]`. Exact option matches win. A route whose answer is `""` is an explicit
+  fallback for every non-exact, free-form reply; when it is absent, substring
+  matching and then the first route remain the defaults for compatibility. A route
+  whose next step is `""` finishes the flow (→ review). The built-in Gate therefore
+  routes the exact `Approve` action to review and both `Request changes` and any
+  typed feedback back to Build.
 
 `Flow = {key, label, start, steps[]}`. Presets ship in code and double as
 templates; a project can override or add flows in `.ultraflow/flows.yaml` (parsed
@@ -39,8 +43,8 @@ the unchanged solo path (so the default can't regress); a multi-step flow enters
 1. **enter step** → persist the cursor (publishes live progress over SSE).
 2. **gate** → `openGate` posts the checkpoint and the goroutine returns (freeing
    its concurrency slot). The answer re-enters via `AnswerHuman → Reengage →
-   resumeGate`, routed by the answer (approve → finish; reject → loop back,
-   seeding the feedback into the rebuild).
+   resumeGate`, routed by the answer (approve → finish; reject or free-form
+   feedback → loop back, seeding the feedback into the rebuild).
 3. **work step** → `runStep` runs one agent turn. A clean turn end (finish_task,
    an idle turn-end, or a clean exit) advances the graph; a crash self-heals in
    place up to the budget, then escalates as a `needs_human` item (resumed by
