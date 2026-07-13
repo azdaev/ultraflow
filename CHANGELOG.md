@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.20 — 2026-07-14
+
+- Ultraflow: Task outcomes beyond "merge to main"
+
 ## v0.10.19 — 2026-07-14
 
 - Ultraflow: Tab title shows running agent count
