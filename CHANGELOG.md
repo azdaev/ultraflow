@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.12 — 2026-07-13
+
+- Refresh the board UI with a cleaner layout and interface polish.
+
 ## v0.10.11 — 2026-07-13
 
 - Ultraflow: Skip workflow after rebase
