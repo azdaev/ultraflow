@@ -13,11 +13,15 @@ func TestCompleteTurnSoloGoesToReview(t *testing.T) {
 	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
 	_ = svc.UpdateStatus(task.ID, model.StatusRunning)
 
-	if err := svc.CompleteTurn(task.ID, "did it", "# report"); err != nil {
+	if err := svc.CompleteTurn(task.ID, "did it", "# report", "answer"); err != nil {
 		t.Fatalf("complete turn: %v", err)
 	}
-	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusReview {
+	got, _ := svc.GetTask(task.ID)
+	if got.Status != model.StatusReview {
 		t.Fatalf("solo finish should be review, got %s", got.Status)
+	}
+	if got.Outcome != "answer" {
+		t.Fatalf("declared outcome should persist, got %q", got.Outcome)
 	}
 	if _, ok := svc.Run(task.ID); ok {
 		t.Fatal("a solo task should have no run")
@@ -36,7 +40,7 @@ func TestCompleteTurnMidFlowMarksTurnDone(t *testing.T) {
 	svc.SetRunPhase(task.ID, model.RunActive)
 	_ = svc.UpdateStatus(task.ID, model.StatusRunning)
 
-	if err := svc.CompleteTurn(task.ID, "planned", "the plan"); err != nil {
+	if err := svc.CompleteTurn(task.ID, "planned", "the plan", ""); err != nil {
 		t.Fatalf("complete turn: %v", err)
 	}
 	got, _ := svc.GetTask(task.ID)
@@ -67,7 +71,7 @@ func TestCompleteTurnAfterCompletedFlowGoesStraightToReview(t *testing.T) {
 	}
 	_ = svc.UpdateStatus(task.ID, model.StatusRunning)
 
-	if err := svc.CompleteTurn(task.ID, "rebased", "conflicts resolved"); err != nil {
+	if err := svc.CompleteTurn(task.ID, "rebased", "conflicts resolved", ""); err != nil {
 		t.Fatalf("complete rebase turn: %v", err)
 	}
 	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusReview {
@@ -76,6 +80,45 @@ func TestCompleteTurnAfterCompletedFlowGoesStraightToReview(t *testing.T) {
 	run, ok := svc.Run(task.ID)
 	if !ok || run.Phase != model.RunComplete || run.Cursor != "" {
 		t.Fatalf("historical flow progress changed: %+v (ok=%v)", run, ok)
+	}
+}
+
+// TestCompleteTurnOutcomeLastNonEmptyWins: across a multi-step flow, the task's
+// outcome is the last non-empty one a step declared — an intermediate step that
+// omits it must not clobber an earlier declaration, and a later declaration wins.
+func TestCompleteTurnOutcomeLastNonEmptyWins(t *testing.T) {
+	svc := newTestService(t)
+	task, _ := svc.CreateTaskFull("t", "", "", "claude", "plan-build-critic-gate")
+	if err := svc.StartRun(task.ID, "plan-build-critic-gate", "plan"); err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	_ = svc.UpdateStatus(task.ID, model.StatusRunning)
+
+	// A step declares an outcome.
+	svc.SetRunPhase(task.ID, model.RunActive)
+	if err := svc.CompleteTurn(task.ID, "planned", "the plan", "design"); err != nil {
+		t.Fatalf("complete turn: %v", err)
+	}
+	if got, _ := svc.GetTask(task.ID); got.Outcome != "design" {
+		t.Fatalf("first declaration should persist, got %q", got.Outcome)
+	}
+
+	// A later step omits it — the earlier declaration must survive.
+	svc.SetRunPhase(task.ID, model.RunActive)
+	if err := svc.CompleteTurn(task.ID, "built", "the build", ""); err != nil {
+		t.Fatalf("complete turn: %v", err)
+	}
+	if got, _ := svc.GetTask(task.ID); got.Outcome != "design" {
+		t.Fatalf("empty outcome must not clobber, got %q", got.Outcome)
+	}
+
+	// A later non-empty declaration wins.
+	svc.SetRunPhase(task.ID, model.RunActive)
+	if err := svc.CompleteTurn(task.ID, "final", "final", "merge"); err != nil {
+		t.Fatalf("complete turn: %v", err)
+	}
+	if got, _ := svc.GetTask(task.ID); got.Outcome != "merge" {
+		t.Fatalf("last non-empty outcome should win, got %q", got.Outcome)
 	}
 }
 

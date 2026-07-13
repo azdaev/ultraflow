@@ -22,7 +22,7 @@ export const emptyBoardProjection: BoardProjection = {
   tasks: [], requests: [], activity: {}, activityKind: {}, projects: [], runs: {}, context: {}, contextCap: 0, models: {}, paused: false,
 };
 
-type TaskPatch = { taskId: string } & Partial<Pick<Task, "status" | "updatedAt" | "worktree" | "attempt" | "port" | "title" | "body">>;
+type TaskPatch = { taskId: string } & Partial<Pick<Task, "status" | "updatedAt" | "worktree" | "outcome" | "attempt" | "port" | "title" | "body">>;
 
 export type BoardEvent =
   | { kind: "snapshot"; data: BoardSnapshot }

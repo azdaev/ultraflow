@@ -30,6 +30,7 @@ type Repo interface {
 	SwapStatusFrom(id string, from []model.TaskStatus, to model.TaskStatus) (bool, error)
 	UpdateTaskTitleBody(id, title, body string) (time.Time, error)
 	SetWorktree(id, wt string) error
+	SetOutcome(id, outcome string) error
 	SetTaskAttempt(id string, attempt int) (time.Time, error)
 	SetPort(id string, port int) error
 	SetResume(id string, v bool) error

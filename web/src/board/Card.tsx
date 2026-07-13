@@ -16,7 +16,7 @@ import {
 import { useRun } from "../runsContext";
 import { ContextMenu, useContextMenu, type MenuItem } from "../components/ContextMenu";
 import { FlowStepper } from "../components/FlowStepper";
-import { ApproveAction, MergeAction } from "../components/ReviewActions";
+import { AcceptAction } from "../components/ReviewActions";
 import { AgentMark, CheckCircleIcon, ClockIcon, PromptIcon } from "./icons";
 
 // The meter's fallback scale when no context budget is set: the model window, a
@@ -63,8 +63,11 @@ export function Card({ task, activity, activityKind, now, contextTokens, context
   // from the previous TaskCard so behaviour is unchanged.
   const items: MenuItem[] = [{ label: "Open details", onSelect: () => onOpen(task.id) }];
   if (isReview) {
+    // Mirror the accept button: only a merge outcome (or a legacy worktree task
+    // with no declared outcome) lands a branch; everything else just closes.
+    const lands = task.outcome === "merge" || (!task.outcome && !!task.worktree);
     items.push(
-      task.worktree
+      lands
         ? { label: "Merge → done", onSelect: () => api.merge(task.id).catch(() => {}) }
         : { label: "Mark done", onSelect: () => api.markDone(task.id).catch(() => {}) },
     );
@@ -118,7 +121,7 @@ export function Card({ task, activity, activityKind, now, contextTokens, context
 
         {task.port > 0 && DEV_LINK_STATUSES.has(status) && <DevServerLink port={task.port} />}
 
-        {isReview && (task.worktree ? <MergeAction taskId={task.id} /> : <ApproveAction taskId={task.id} note={activity} />)}
+        {isReview && <AcceptAction task={task} note={activity} />}
 
         {showStepper && <FlowStepper flow={task.flow} status={status} run={run} />}
 

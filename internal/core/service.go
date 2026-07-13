@@ -455,7 +455,9 @@ func (s *Service) MergeTask(id string) error {
 }
 
 // FinishReview marks a reviewed task done without a merge — for tasks that ran in
-// place (no worktree to land), where "merge" is meaningless.
+// place (no worktree to land) and for worktree tasks whose outcome isn't a merge
+// (a question answered, a design explored, a change already applied), where
+// "merge" is meaningless.
 func (s *Service) FinishReview(id string) error {
 	t, err := s.store.GetTask(id)
 	if err != nil {
@@ -465,6 +467,11 @@ func (s *Service) FinishReview(id string) error {
 		return fmt.Errorf("only a task in review can be marked done (this one is %s)", t.Status)
 	}
 	s.releaseRuntime(t) // stop the dev server and free its port now the task is done
+	// Reclaim the worktree: a non-merge outcome still ran in one for every flow task,
+	// so finishing without a merge must tear it down too — otherwise each answered /
+	// explored task strands its git worktree and branch. Best-effort; in-place tasks
+	// (no worktree) no-op.
+	s.teardownWorktree(t)
 	if err := s.UpdateStatus(id, model.StatusDone); err != nil {
 		return err
 	}

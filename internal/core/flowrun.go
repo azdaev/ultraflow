@@ -103,8 +103,25 @@ func (s *Service) FinishFlow(taskID string) error {
 //     rebase), not another flow step. Finish directly back to review while keeping
 //     the completed run as historical progress.
 //
+// outcome is what the agent declared it produced ("merge"/"answer"/"design"/
+// "applied"/"none"); it drives the review accept-button label. Persisted before
+// routing when non-empty, so the last declaring step wins — an intermediate flow
+// step that omits it doesn't clobber the final step's declaration. Empty leaves
+// the task on the worktree+diff fallback.
+//
 // The caller (mcp finish_task) closes the live session regardless.
-func (s *Service) CompleteTurn(taskID, summary, report string) error {
+func (s *Service) CompleteTurn(taskID, summary, report, outcome string) error {
+	if outcome != "" {
+		if err := s.store.SetOutcome(taskID, outcome); err != nil {
+			log.Printf("task %s: set outcome: %v", taskID, err)
+		} else {
+			// Broadcast it: the board reaches review off live task_updated patches, and
+			// the imminent status→review patch carries only {status}. Without this the
+			// card never learns the outcome until a full reload and falls back to the
+			// worktree+diff heuristic — the very "Merge to main" this feature replaces.
+			s.publish("task_updated", map[string]any{"taskId": taskID, "outcome": outcome})
+		}
+	}
 	if report != "" {
 		s.appendEvent(taskID, "report", report)
 	}

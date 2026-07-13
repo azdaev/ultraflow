@@ -5,7 +5,7 @@ import { agentColor, agentLabel, friendlyModel, ago, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { useRun } from "../runsContext";
 import { AnswerBox } from "./AnswerBox";
-import { ApproveAction, MergeAction } from "./ReviewActions";
+import { AcceptAction } from "./ReviewActions";
 import { CheckpointContext } from "./CheckpointContext";
 import { AgentTerminal, type AgentTerminalHandle } from "./AgentTerminal";
 import { ReviewPanel } from "./ReviewPanel";
@@ -269,7 +269,7 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
                 {task.status === "review" && (
                   <div className="mb-5 rounded-xl border border-hairline bg-board p-4">
                     <h3 className="eyebrow mb-2 text-ink">Accept the work</h3>
-                    {task.worktree ? <MergeAction taskId={task.id} /> : <ApproveAction taskId={task.id} />}
+                    <AcceptAction task={task} />
                   </div>
                 )}
 
