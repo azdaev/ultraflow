@@ -207,7 +207,8 @@ export function DiffMagnitude({ added, removed, files }: { added: number; remove
 
 // DiffBody renders a unified patch with light per-line coloring (added green,
 // removed rust, hunk headers steel), horizontally scrollable so long lines don't
-// break the layout.
+// break the layout. The +/− tones are dark-bg variants (lighter than the light-
+// theme moss/diff-minus) so both read at AA contrast on the #17171A panel.
 export function DiffBody({ patch, truncated }: { patch: string; truncated: boolean }) {
   const lines = patch.split("\n");
   return (
@@ -215,7 +216,7 @@ export function DiffBody({ patch, truncated }: { patch: string; truncated: boole
       <pre className="font-mono text-[11px] leading-[1.5]">
         {lines.map((line, i) => {
           let color = "text-[#ECECEA]";
-          if (line.startsWith("+") && !line.startsWith("+++")) color = "text-moss";
+          if (line.startsWith("+") && !line.startsWith("+++")) color = "text-[#6FA96C]";
           else if (line.startsWith("-") && !line.startsWith("---")) color = "text-[#E4795F]";
           else if (line.startsWith("@@")) color = "text-steel";
           else if (line.startsWith("diff ") || line.startsWith("index ")) color = "text-muted";

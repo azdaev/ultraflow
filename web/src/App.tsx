@@ -133,6 +133,7 @@ export function App() {
         request={openRequest}
         activitySig={openTaskId ? activity[openTaskId] : undefined}
         model={openTaskId ? models[openTaskId] : undefined}
+        paused={paused}
         now={now}
         onClose={() => setOpenTaskId(null)}
       />

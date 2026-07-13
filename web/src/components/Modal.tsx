@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 interface Props {
@@ -15,6 +15,7 @@ interface Props {
 // enter springs in; the exit is a smaller, softer translate (enters should feel
 // livelier than exits).
 export function Modal({ open, onClose, className = "", title, children }: Props) {
+  const titleId = useId();
   // Escape-to-dismiss belongs to the shell so every consumer gets it for free.
   useEffect(() => {
     if (!open) return;
@@ -22,6 +23,18 @@ export function Modal({ open, onClose, className = "", title, children }: Props)
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+
+  // Lock body scroll while open so the board behind doesn't scroll through the
+  // scrim (the classic modal "scroll bleed"). Restores the prior value so nested
+  // or quickly-reopened modals don't clobber each other.
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
 
   return (
     <AnimatePresence>
@@ -37,6 +50,9 @@ export function Modal({ open, onClose, className = "", title, children }: Props)
         >
           <div className="absolute inset-0" onClick={onClose} />
           <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={title ? titleId : undefined}
             initial={{ opacity: 0, y: 12, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.98, transition: { duration: 0.15, ease: [0.4, 0, 1, 1] } }}
@@ -45,7 +61,7 @@ export function Modal({ open, onClose, className = "", title, children }: Props)
           >
             {title && (
               <div className="mb-5 flex items-center justify-between">
-                <h2 className="text-[17px] font-semibold text-ink">{title}</h2>
+                <h2 id={titleId} className="text-[17px] font-semibold text-ink">{title}</h2>
                 <button
                   onClick={onClose}
                   className="rounded-lg px-2 py-1 text-[13px] text-muted hover:bg-board"

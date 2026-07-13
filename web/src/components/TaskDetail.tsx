@@ -16,6 +16,7 @@ interface Props {
   request?: HumanRequest;
   activitySig?: string; // changes when a new event lands → re-fetch thread
   model?: string; // real model the agent ran (e.g. "claude-opus-4-8"), if detected
+  paused?: boolean; // all agents globally held: a live terminal is frozen, not working
   now: number;
   onClose: () => void;
 }
@@ -23,7 +24,7 @@ interface Props {
 // TaskDetail is a large, near-fullscreen modal: the live terminal takes most of
 // the space (that IS the activity view — no duplicated tool-by-tool thread), with
 // task details and the decision panel in a side rail.
-export function TaskDetail({ task, request, activitySig, model, now, onClose }: Props) {
+export function TaskDetail({ task, request, activitySig, model, paused, now, onClose }: Props) {
   const run = useRun(task?.id ?? "");
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const termRef = useRef<AgentTerminalHandle>(null);
@@ -128,11 +129,18 @@ export function TaskDetail({ task, request, activitySig, model, now, onClose }: 
                   <>
                     <div className="mb-2 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
-                        <span className="relative flex h-1.5 w-1.5">
-                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-moss opacity-60" />
-                          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-moss" />
-                        </span>
-                        <h3 className="eyebrow text-muted">Terminal · live</h3>
+                        {/* Globally paused: the agent is SIGSTOP-frozen, so drop the
+                            pinging "live" dot for a static amber one — an animation
+                            implying active work would misrepresent a held agent. */}
+                        {paused ? (
+                          <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                        ) : (
+                          <span className="relative flex h-1.5 w-1.5">
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-moss opacity-60" />
+                            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-moss" />
+                          </span>
+                        )}
+                        <h3 className="eyebrow text-muted">Terminal · {paused ? "paused" : "live"}</h3>
                       </div>
                       <div className="flex items-center gap-2.5">
                         {/* Interrupt sends Esc to the agent (a soft "stop the

@@ -203,8 +203,39 @@ func (s *Service) appendEvent(taskID, kind, data string) {
 
 // --- tasks ---
 
+// CreateTask is the external (MCP create_task) entry. Its `project` is advertised
+// as "name or repo path", so it's resolved to a registered project's canonical name
+// before storage — otherwise a caller passing the repo path (a natural thing for an
+// agent that knows its cwd) would fail the orchestrator's name-keyed lookup and get
+// silently stranded in the shared workdir. See resolveProjectRef.
 func (s *Service) CreateTask(title, body, project string) (model.Task, error) {
-	return s.CreateTaskFull(title, body, project, "", "")
+	return s.CreateTaskFull(title, body, s.resolveProjectRef(project), "", "")
+}
+
+// resolveProjectRef maps a project reference to a registered project's canonical
+// name: it accepts the name as-is, else matches a registered repo path (exact or
+// path-cleaned). A value matching nothing is returned unchanged — the task still
+// lands (running in the shared workdir, as before), we just no longer silently miss
+// when the caller passed a perfectly valid path instead of the display name.
+func (s *Service) resolveProjectRef(project string) string {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return ""
+	}
+	if _, err := s.store.ProjectByName(project); err == nil {
+		return project // already a registered name
+	}
+	projects, err := s.store.ListProjects()
+	if err != nil {
+		return project
+	}
+	want := filepath.Clean(project)
+	for _, p := range projects {
+		if p.RepoPath == project || filepath.Clean(p.RepoPath) == want {
+			return p.Name
+		}
+	}
+	return project
 }
 
 // implementedAgents is what the orchestrator can actually execute. A task's stored

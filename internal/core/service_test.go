@@ -50,6 +50,34 @@ func TestSelfHealAttemptFields(t *testing.T) {
 	}
 }
 
+// TestCreateTaskResolvesProjectRef covers the MCP create_task contract ("project
+// name or repo path"): a registered name is kept, a registered repo path (exact or
+// needing cleaning) resolves to that project's canonical name, and an unknown value
+// is left as-is so the task still lands rather than erroring.
+func TestCreateTaskResolvesProjectRef(t *testing.T) {
+	svc := newTestService(t)
+	if _, err := svc.CreateProject("MyApp", "/repos/myapp"); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	cases := []struct{ in, want string }{
+		{"MyApp", "MyApp"},               // already the name
+		{"/repos/myapp", "MyApp"},        // exact repo path → name
+		{"/repos/myapp/", "MyApp"},       // path needing cleaning → name
+		{"/repos/other", "/repos/other"}, // unregistered path → unchanged
+		{"Nope", "Nope"},                 // unregistered name → unchanged
+		{"", ""},                         // blank stays blank
+	}
+	for _, c := range cases {
+		task, err := svc.CreateTask("t", "", c.in)
+		if err != nil {
+			t.Fatalf("create task with project %q: %v", c.in, err)
+		}
+		if task.Project != c.want {
+			t.Errorf("CreateTask(project=%q) stored %q; want %q", c.in, task.Project, c.want)
+		}
+	}
+}
+
 // TestAnswerEscalationReengages covers the self-heal escalation answer: when the
 // answered checkpoint's agent is no longer live, AnswerHuman re-engages the agent
 // with the human's guidance (rather than stranding the task) — captured here by a

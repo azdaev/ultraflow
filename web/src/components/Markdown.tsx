@@ -98,6 +98,44 @@ function blocks(src: string, resolveImg: ResolveImg): ReactNode[] {
       continue;
     }
 
+    // GFM table: a `| a | b |` header, a `|---|---|` separator, then body rows.
+    // Gated on the separator so ordinary prose with a stray "|" stays a paragraph.
+    if (tableStartsAt(lines, i)) {
+      const header = tableCells(line);
+      i += 2; // header + separator
+      const body: string[][] = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+        body.push(tableCells(lines[i++]));
+      }
+      out.push(
+        <div key={key++} className="overflow-x-auto">
+          <table className="w-full border-collapse text-[13px] text-ink">
+            <thead>
+              <tr>
+                {header.map((c, n) => (
+                  <th key={n} className="border border-hairline bg-board px-2.5 py-1.5 text-left font-semibold">
+                    {inline(c, resolveImg)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {body.map((row, r) => (
+                <tr key={r}>
+                  {header.map((_, n) => (
+                    <td key={n} className="border border-hairline px-2.5 py-1.5 align-top">
+                      {inline(row[n] ?? "", resolveImg)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+
     // list (unordered or ordered) — consume consecutive item lines
     if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
       const ordered = /^\s*\d+\.\s+/.test(line);
@@ -136,7 +174,8 @@ function blocks(src: string, resolveImg: ResolveImg): ReactNode[] {
       !/^(#{1,6})\s/.test(lines[i]) &&
       !/^>\s?/.test(lines[i]) &&
       !/^\s*([-*+]|\d+\.)\s+/.test(lines[i]) &&
-      !/^(-{3,}|\*{3,}|_{3,})$/.test(lines[i].trim())
+      !/^(-{3,}|\*{3,}|_{3,})$/.test(lines[i].trim()) &&
+      !tableStartsAt(lines, i)
     ) {
       para.push(lines[i++]);
     }
@@ -148,6 +187,30 @@ function blocks(src: string, resolveImg: ResolveImg): ReactNode[] {
   }
 
   return out;
+}
+
+// tableStartsAt reports whether a GFM table begins at line idx: a row containing a
+// pipe, immediately followed by a `---|---` separator (dashes, pipes, optional
+// alignment colons). Requiring the separator keeps a stray "|" in prose from
+// tripping table mode.
+function tableStartsAt(lines: string[], idx: number): boolean {
+  return (
+    idx + 1 < lines.length &&
+    lines[idx].includes("|") &&
+    lines[idx + 1].includes("|") &&
+    // separator row: only dashes/colons/pipes/space, with at least one dash. The
+    // pipe requirement above means this never matches a plain `---` rule.
+    /^[\s:|-]*-[\s:|-]*$/.test(lines[idx + 1])
+  );
+}
+
+// tableCells splits one table row into trimmed cells, dropping the empty cells the
+// leading/trailing pipes produce.
+function tableCells(row: string): string[] {
+  let s = row.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|")) s = s.slice(0, -1);
+  return s.split("|").map((c) => c.trim());
 }
 
 // inline renders bold, italic, inline code, links, and images within one line. It
