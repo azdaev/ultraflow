@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.19 — 2026-07-14
+
+- Ultraflow: Tab title shows running agent count
+
 ## v0.10.18 — 2026-07-14
 
 - Ultraflow: Вернуть задачу в разработку после комментария
