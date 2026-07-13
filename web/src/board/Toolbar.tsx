@@ -7,7 +7,7 @@ interface Props {
   tasks: Task[];
   selected: string | null; // null = "All projects"
   onSelect: (project: string | null) => void;
-  attentionCount: number; // requests needing an answer (+ failed)
+  attentionCount: number; // requests, failed tasks, and failed merges
   onOpenAttention: () => void;
 }
 
@@ -74,8 +74,10 @@ function AttentionIndicator({ count, onClick }: { count: number; onClick: () => 
   return (
     <motion.button
       layout
-      onClick={needsYou ? onClick : undefined}
-      aria-disabled={!needsYou}
+      onClick={onClick}
+      // Calm state is a status pill, not an action: really disable it so it drops
+      // out of the tab order instead of being a focusable button that does nothing.
+      disabled={!needsYou}
       animate={{ scale: needsYou ? [1, 1.04, 1] : 1 }}
       transition={{ duration: 0.28 }}
       className={`flex items-center gap-1.75 rounded-full py-1.25 pl-2.25 pr-2.75 transition-colors ${

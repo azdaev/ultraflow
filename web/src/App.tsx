@@ -23,6 +23,12 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  // One logged entry point for opening a task's detail, shared by the board cards
+  // and the toolbar attention jump so both record the same journal event.
+  const openTaskDetail = (id: string) => {
+    logUI("open_task", { task: id });
+    setOpenTaskId(id);
+  };
 
   // Verbose activity journal (see ./journal): a delegated click listener records
   // every actionable click for a couple of days of after-the-fact analysis.
@@ -75,6 +81,16 @@ export function App() {
     return items;
   }, [requests, tasks, byId, activity, activityKind]);
 
+  // The toolbar's attention badge and its jump target read off this one list — the
+  // same set the OS notifications use — so the count can never disagree with what
+  // actually needs the human (a failed merge included, not just asks + failures).
+  const first = attention[0];
+  const attentionTarget = !first
+    ? undefined
+    : first.type === "needs_human"
+      ? first.request.taskId
+      : first.task.id;
+
   // OS notifications for a backgrounded tab: a new rail item raises one, clicking
   // it focuses Ultraflow on that task, answering it clears it.
   useAttentionNotifications(attention, setOpenTaskId);
@@ -91,7 +107,6 @@ export function App() {
     <RunsContext.Provider value={runs}>
       <BoardPage
         tasks={tasks}
-        requests={requests}
         activity={activity}
         activityKind={activityKind}
         context={context}
@@ -102,14 +117,13 @@ export function App() {
         running={running}
         queued={queued}
         paused={paused}
+        attentionCount={attention.length}
+        onOpenAttention={() => attentionTarget && openTaskDetail(attentionTarget)}
         onTogglePause={() => {
           logUI("toggle_pause", { paused: !paused });
           void api.setPaused(!paused).catch(() => {});
         }}
-        onOpenTask={(id) => {
-          logUI("open_task", { task: id });
-          setOpenTaskId(id);
-        }}
+        onOpenTask={openTaskDetail}
         onNewTask={openComposer}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenChangelog={() => setChangelogOpen(true)}

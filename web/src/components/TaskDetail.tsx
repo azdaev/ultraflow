@@ -10,6 +10,7 @@ import { CheckpointContext } from "./CheckpointContext";
 import { AgentTerminal, type AgentTerminalHandle } from "./AgentTerminal";
 import { ReviewPanel } from "./ReviewPanel";
 import { ReviseBox } from "./ReviseBox";
+import { useBodyScrollLock } from "../useBodyScrollLock";
 
 interface Props {
   task: Task | null;
@@ -76,6 +77,10 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Lock body scroll while the drawer is open so the board behind it can't scroll
+  // through — same behavior as Modal (see useBodyScrollLock).
+  useBodyScrollLock(!!task);
 
   return (
     <AnimatePresence>

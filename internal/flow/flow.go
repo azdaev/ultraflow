@@ -84,17 +84,25 @@ func (s Step) DefaultNext() string {
 	return ""
 }
 
-// Route resolves a gate's answer to its successor step id. It matches an answer
-// case-insensitively by substring against each route (so "Approve" matches a
-// reply of "approve, looks good"), and falls back to the first route, then Next,
-// then "" (finish). A returned "" means: finish the flow (→ review).
+// Route resolves a gate's answer to its successor step id. An exact
+// (case-insensitive) match wins first; failing that it matches by substring (so
+// "Approve" matches a reply of "approve, looks good"), then falls back to the first
+// route, then Next, then "" (finish). A returned "" means: finish the flow (→ review).
 func (s Step) Route(answer string) string {
 	a := strings.ToLower(strings.TrimSpace(answer))
+	// Exact match first, so a route whose answer is a substring of another (e.g.
+	// "yes" declared before "yes, redeploy") can't shadow the longer one in a
+	// custom flows.yaml gate.
+	for _, r := range s.Routes {
+		if r.Answer != "" && a == strings.ToLower(strings.TrimSpace(r.Answer)) {
+			return r.Next
+		}
+	}
 	for _, r := range s.Routes {
 		if r.Answer == "" {
 			continue
 		}
-		if strings.Contains(a, strings.ToLower(r.Answer)) {
+		if strings.Contains(a, strings.ToLower(strings.TrimSpace(r.Answer))) {
 			return r.Next
 		}
 	}

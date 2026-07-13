@@ -84,6 +84,32 @@ func TestGateRouting(t *testing.T) {
 	}
 }
 
+// TestGateRoutingExactWins covers a custom gate whose options overlap: an exact
+// reply must hit its own route, not a shorter option that is its substring (here
+// "yes" is declared before "yes, redeploy"). A substringing freeform reply still
+// falls back to the substring pass.
+func TestGateRoutingExactWins(t *testing.T) {
+	gate := Step{
+		Gate: true,
+		Routes: []Route{
+			{Answer: "yes", Next: "ship"},
+			{Answer: " yes, redeploy ", Next: "redeploy"},
+		},
+	}
+	cases := map[string]string{
+		"yes":              "ship",     // exact → own route, not shadowed
+		"yes, redeploy":    "redeploy", // exact → longer route, reachable now
+		"Yes, Redeploy":    "redeploy", // case-insensitive exact
+		"sure, yes please": "ship",     // no exact → substring pass ("yes")
+		"nonsense":         "ship",     // unmatched → default (first route)
+	}
+	for answer, want := range cases {
+		if got := gate.Route(answer); got != want {
+			t.Errorf("Route(%q) = %q, want %q", answer, got, want)
+		}
+	}
+}
+
 func TestGateOptions(t *testing.T) {
 	gate, _ := Resolve("plan-build-critic-gate").Step("gate")
 	opts := gate.GateOptions()

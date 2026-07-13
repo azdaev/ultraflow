@@ -52,7 +52,11 @@ function MossAction({
           aria-disabled={busy}
           onClick={go}
           onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") go(e);
+            // preventDefault so Space runs the action instead of scrolling the page.
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              go(e);
+            }
           }}
           className={`inline-flex items-center gap-1.5 rounded-lg bg-moss px-3 py-1.75 text-[12.5px] font-semibold leading-4 text-white transition hover:brightness-105 ${
             busy ? "opacity-60" : ""

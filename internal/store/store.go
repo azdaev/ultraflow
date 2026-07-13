@@ -321,13 +321,6 @@ func (s *Store) SetRunTurnDone(taskID string, done bool) (bool, error) {
 	return n == 1, err
 }
 
-// DeleteRun removes a task's run row (called when the task is deleted, so no
-// orphan progress lingers).
-func (s *Store) DeleteRun(taskID string) error {
-	_, err := s.db.Exec(`DELETE FROM runs WHERE task_id=?`, taskID)
-	return err
-}
-
 // RunsForTasks returns the runs for the given task ids as a map, for the board
 // snapshot (one query instead of N). An empty id list returns an empty map.
 func (s *Store) RunsForTasks(ids []string) (map[string]model.Run, error) {

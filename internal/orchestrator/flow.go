@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"time"
 
+	"ultraflow/internal/agent"
 	"ultraflow/internal/flow"
 	"ultraflow/internal/model"
 	"ultraflow/internal/terminal"
@@ -101,6 +102,8 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 		o.fail(t.ID, "no runnable interactive agent for the "+step.Role+" step")
 		return stepHalted
 	}
+	// Same as the solo path: only claude sessions get the context-cap monitor.
+	_, isClaude := ia.(*agent.Claude)
 
 	budget := retryBudget(t)
 	retries := 0
@@ -140,7 +143,7 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 		}
 		injectPort(cmd, prt)
 
-		werr, started := o.runStepTurn(t.ID, cmd, cleanup, caption)
+		werr, started := o.runStepTurn(t.ID, dir, isClaude, cmd, cleanup, caption)
 		if !started {
 			return stepHalted // runStepTurn already failed the task
 		}
@@ -181,7 +184,7 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 // runAgent it does NOT drive the task to review on a turn end — the flow runner owns
 // that — it only flips the card to running and waits. started is false only when the
 // terminal couldn't start (task already failed).
-func (o *Orchestrator) runStepTurn(taskID string, cmd *exec.Cmd, cleanup func(), runningMsg string) (werr error, started bool) {
+func (o *Orchestrator) runStepTurn(taskID, dir string, isClaude bool, cmd *exec.Cmd, cleanup func(), runningMsg string) (werr error, started bool) {
 	defer cleanup()
 
 	sess, err := o.term.Start(taskID, cmd)
@@ -197,6 +200,14 @@ func (o *Orchestrator) runStepTurn(taskID string, cmd *exec.Cmd, cleanup func(),
 	// End a bare turn (idled without finish_task) so the step advances; unlike the
 	// solo watcher this marks the turn done rather than sending the task to review.
 	go o.watchStepIdle(sess, taskID)
+
+	// Same per-turn watchers as the solo path (runAgent), which a flow step otherwise
+	// missed: enforce the context cap (inject /compact — claude only) and surface the
+	// real model on the card. Both stop on sess.Done(), so a step turn leaks neither.
+	if isClaude {
+		go o.watchContext(sess, taskID, dir)
+	}
+	go o.watchModel(sess, taskID, dir, isClaude)
 
 	werr = sess.Wait()
 	return werr, true

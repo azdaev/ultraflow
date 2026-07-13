@@ -1,5 +1,6 @@
 import { useEffect, useId } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { useBodyScrollLock } from "../useBodyScrollLock";
 
 interface Props {
   open: boolean;
@@ -24,17 +25,8 @@ export function Modal({ open, onClose, className = "", title, children }: Props)
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  // Lock body scroll while open so the board behind doesn't scroll through the
-  // scrim (the classic modal "scroll bleed"). Restores the prior value so nested
-  // or quickly-reopened modals don't clobber each other.
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [open]);
+  // Lock body scroll while open so the board behind doesn't scroll through the scrim.
+  useBodyScrollLock(open);
 
   return (
     <AnimatePresence>

@@ -94,6 +94,17 @@ func (s *Service) releaseRuntime(t model.Task) {
 	}
 }
 
+// clearRuntimeState drops a task's in-memory context/model readings. Called only
+// when a task is deleted for good — a terminal-but-live card (done/review) still
+// shows them in the board snapshot — so these maps don't grow unbounded over the
+// life of a daemon that churns through many tasks.
+func (s *Service) clearRuntimeState(id string) {
+	s.ctxMu.Lock()
+	delete(s.ctxTokens, id)
+	delete(s.modelName, id)
+	s.ctxMu.Unlock()
+}
+
 func NewService(st Repo) *Service {
 	return &Service{
 		store:     st,
@@ -514,6 +525,7 @@ func (s *Service) DeleteTask(id string) error {
 	if err := s.store.DeleteTask(id); err != nil {
 		return err
 	}
+	s.clearRuntimeState(id)
 	s.publish("task_deleted", map[string]any{"id": id})
 	return nil
 }

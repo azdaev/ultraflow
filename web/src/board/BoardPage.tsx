@@ -1,13 +1,12 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { motion } from "motion/react";
-import type { HumanRequest, Project, Task } from "../api";
+import type { Project, Task } from "../api";
 import { TopBar } from "./TopBar";
 import { Toolbar } from "./Toolbar";
 import { Board } from "./Board";
 
 interface Props {
   tasks: Task[];
-  requests: HumanRequest[];
   activity: Record<string, string>;
   activityKind: Record<string, string>;
   context: Record<string, number>;
@@ -18,6 +17,10 @@ interface Props {
   running: number;
   queued: number;
   paused: boolean;
+  // Attention count + jump target are derived once in App (same list the OS
+  // notifications use) and passed down, so the toolbar badge can't drift from it.
+  attentionCount: number;
+  onOpenAttention: () => void;
   onTogglePause: () => void;
   onOpenTask: (taskId: string) => void;
   onNewTask: (title?: string, project?: string) => void;
@@ -29,7 +32,6 @@ interface Props {
 // project-filter selection; task data, modals, and notifications stay in App.
 export function BoardPage({
   tasks,
-  requests,
   activity,
   activityKind,
   context,
@@ -40,6 +42,8 @@ export function BoardPage({
   running,
   queued,
   paused,
+  attentionCount,
+  onOpenAttention,
   onTogglePause,
   onOpenTask,
   onNewTask,
@@ -70,16 +74,6 @@ export function BoardPage({
     else if (filtered.length === 0) onNewTask(query.trim(), effective ?? "");
   };
 
-  // The attention indicator is global (like the old rail): every task that needs a
-  // human answer, plus any failed task. Clicking jumps to the first such task's
-  // detail, where the answer box lives.
-  const failed = useMemo(() => tasks.filter((t) => t.status === "failed"), [tasks]);
-  const attentionCount = requests.length + failed.length;
-  const openAttention = () => {
-    const target = requests[0]?.taskId ?? failed[0]?.id;
-    if (target) onOpenTask(target);
-  };
-
   return (
     <div className="flex min-h-full flex-col">
       <TopBar
@@ -100,7 +94,7 @@ export function BoardPage({
         selected={effective}
         onSelect={setSelected}
         attentionCount={attentionCount}
-        onOpenAttention={openAttention}
+        onOpenAttention={onOpenAttention}
       />
 
       {tasks.length === 0 ? (

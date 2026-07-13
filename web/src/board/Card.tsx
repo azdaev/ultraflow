@@ -336,7 +336,11 @@ function DevServerLink({ port }: { port: number }) {
       tabIndex={0}
       onClick={open}
       onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") open(e);
+        // preventDefault so Space activates the link instead of scrolling the page.
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open(e);
+        }
       }}
       title={`Open this task's dev server (${url})`}
       className="inline-flex w-fit items-center gap-1.5 rounded-lg border-[0.75px] border-hairline bg-board px-2.25 py-1 font-mono text-[10.5px] leading-[14px] text-steel transition hover:border-steel/40 hover:text-ink"

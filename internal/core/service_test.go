@@ -78,6 +78,32 @@ func TestCreateTaskResolvesProjectRef(t *testing.T) {
 	}
 }
 
+// TestDeleteTaskClearsRuntimeState covers the runtime-map prune: deleting a task
+// drops its in-memory context/model readings, so those maps don't grow unbounded
+// over the life of a long-running daemon that churns through many tasks.
+func TestDeleteTaskClearsRuntimeState(t *testing.T) {
+	svc := newTestService(t)
+	task, err := svc.CreateTask("t", "", "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	svc.PublishContext(task.ID, 1234)
+	svc.PublishModel(task.ID, "claude-opus-4-8")
+	if svc.ContextTokens()[task.ID] == 0 || svc.Models()[task.ID] == "" {
+		t.Fatalf("precondition: runtime state not recorded")
+	}
+
+	if err := svc.DeleteTask(task.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, ok := svc.ContextTokens()[task.ID]; ok {
+		t.Errorf("ctxTokens still holds %s after delete", task.ID)
+	}
+	if _, ok := svc.Models()[task.ID]; ok {
+		t.Errorf("modelName still holds %s after delete", task.ID)
+	}
+}
+
 // TestAnswerEscalationReengages covers the self-heal escalation answer: when the
 // answered checkpoint's agent is no longer live, AnswerHuman re-engages the agent
 // with the human's guidance (rather than stranding the task) — captured here by a

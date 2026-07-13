@@ -57,7 +57,7 @@ export function reduceBoardEvent(state: BoardProjection, event: BoardEvent): Boa
     }
     case "task_created": return state.tasks.some(t => t.id === event.data.id) ? state : { ...state, tasks:[event.data, ...state.tasks] };
     case "task_updated": return { ...state, tasks:state.tasks.map(t => t.id === event.data.taskId ? { ...t, ...withoutTaskID(event.data) } : t) };
-    case "task_deleted": { const id = event.data.id; return { ...state, tasks:state.tasks.filter(t => t.id !== id), requests:state.requests.filter(r => r.taskId !== id), runs:withoutKey(state.runs, id), activity:withoutKey(state.activity, id), activityKind:withoutKey(state.activityKind, id), context:withoutKey(state.context, id) }; }
+    case "task_deleted": { const id = event.data.id; return { ...state, tasks:state.tasks.filter(t => t.id !== id), requests:state.requests.filter(r => r.taskId !== id), runs:withoutKey(state.runs, id), activity:withoutKey(state.activity, id), activityKind:withoutKey(state.activityKind, id), context:withoutKey(state.context, id), models:withoutKey(state.models, id) }; }
     case "project_created": return state.projects.some(p => p.id === event.data.id) ? state : { ...state, projects:[...state.projects, event.data] };
     case "project_deleted": return { ...state, projects:state.projects.filter(p => p.id !== event.data.id) };
     case "human_request": return state.requests.some(r => r.id === event.data.id) ? state : { ...state, requests:[...state.requests, event.data] };
