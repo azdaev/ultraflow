@@ -42,7 +42,12 @@ func (o *Orchestrator) runFlow(ctx context.Context, t model.Task, dir string, pr
 	renameOnEntry := false
 	if run, ok := o.svc.Run(t.ID); ok {
 		if run.Cursor == "" {
-			return // the run already completed — nothing to resume
+			// The flow already completed. This is reached when a task with a finished run
+			// gets re-picked without the resume marker that routes a post-review repair to
+			// its solo session (runClaimed). There's no step to walk, and a complete flow
+			// means review — send it there rather than strand it silently in queued.
+			o.svc.FinishForReview(t.ID)
+			return
 		}
 		cursor = run.Cursor
 		resume = run.Phase == model.RunActive

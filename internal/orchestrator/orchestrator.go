@@ -274,9 +274,17 @@ func (o *Orchestrator) runClaimed(ctx context.Context, t model.Task) {
 	if cur.Resume {
 		o.svc.SetResume(cur.ID, false)
 		if cur.Worktree != "" && isDir(cur.Worktree) {
+			// A multi-step flow with a still-live cursor resumes through its graph walker.
+			// But a flow whose run already COMPLETED and was then re-engaged for a
+			// post-review repair (Revise/Rebase) has an empty cursor — routing it into the
+			// flow runner would hit its "already completed → nothing to resume" bail and
+			// strand the task in queued forever. That repair is a solo conversation, so
+			// resume it in place like any solo task (its finish routes back to review).
 			if fl := flow.ResolveFor(o.repoPath(cur), cur.Flow); fl.Multi() {
-				o.resumeFlowAfterRestart(ctx, cur, fl)
-				return
+				if run, ok := o.svc.Run(cur.ID); !ok || run.Cursor != "" {
+					o.resumeFlowAfterRestart(ctx, cur, fl)
+					return
+				}
 			}
 			o.resumeAfterRestart(ctx, cur, ia)
 			return

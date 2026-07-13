@@ -375,6 +375,59 @@ func TestFlowResumeInPlaceWalksGraph(t *testing.T) {
 	}
 }
 
+// TestFlowResumeCompletedRunAfterRestart guards the stranded-in-queued bug: a flow
+// whose run already COMPLETED (cursor cleared, sent to review) and was then
+// re-engaged for a post-review repair (Revise) — status flipped back to running in
+// the same worktree — must, if a restart catches that repair mid-run, resume as a
+// SOLO conversation and reach review. Routing it into the flow runner (fl.Multi())
+// would hit its empty-cursor bail and leave the task pinned at queued forever.
+func TestFlowResumeCompletedRunAfterRestart(t *testing.T) {
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skip("true not available")
+	}
+	svc, o, fake := wireFlowOrch(t)
+	repo := gitRepo(t)
+	if _, err := svc.CreateProject("proj", repo); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, _ := svc.CreateTaskFull("t", "", "proj", "claude", "plan-build-critic-gate")
+
+	// Drive the run to completion (cursor cleared, phase=complete) as a full
+	// plan→build→critic→gate→approve would have, leaving the worktree in place.
+	dir := o.prepareWorkdir(task)
+	sentinel := filepath.Join(dir, "REVISE_WORK.txt")
+	if err := os.WriteFile(sentinel, []byte("post-review repair in progress"), 0o644); err != nil {
+		t.Fatalf("seed worktree file: %v", err)
+	}
+	if err := svc.StartRun(task.ID, "plan-build-critic-gate", "plan"); err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	svc.AdvanceRun(task.ID, "plan", "build")
+	svc.AdvanceRun(task.ID, "build", "critic")
+	svc.AdvanceRun(task.ID, "critic", "gate")
+	if err := svc.FinishFlow(task.ID); err != nil { // clears the cursor, phase=complete
+		t.Fatalf("finish flow: %v", err)
+	}
+	// The state RecoverInFlight leaves after a restart caught the Revise mid-run:
+	// requeued to backlog (CreateTaskFull already left it there) with the resume marker.
+	svc.SetResume(task.ID, true)
+
+	o.start(context.Background(), task)
+	waitFor(t, "completed-run resume reaches review, not stuck queued", func() bool {
+		got, _ := svc.GetTask(task.ID)
+		return got.Status == model.StatusReview
+	})
+
+	// It resumed the existing conversation in place (ResumeCommand = claude --continue),
+	// not a fresh flow walk, and kept the worktree's in-progress repair work.
+	if n := fake.resumeTurns(); n != 1 {
+		t.Fatalf("a completed-run repair must resume its solo session, resume calls=%d", n)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("resume must reuse the worktree; repair work was lost: %v", err)
+	}
+}
+
 // A pending cursor means the graph selected the step but never launched an
 // agent. Recovery must cold-start exactly that step; trying to resume here could
 // attach to the previous step's conversation.
