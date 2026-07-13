@@ -86,10 +86,12 @@ func TestFlowTurnPublishesDetectedModel(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, started := o.runStepTurn(task.ID, dir, tt.isClaude,
-				exec.Command("sh", "-c", "sleep 0.05"), func() {}, "running test step")
-			if !started {
-				t.Fatal("flow turn did not start")
+			result := o.turns.Run(context.Background(), turnRequest{
+				taskID: task.ID, dir: dir, agent: &shellAgent{script: "sleep 0.05"},
+				runningMsg: "running test step", completion: turnCompletesStep, isClaude: tt.isClaude,
+			})
+			if result.outcome != turnCompleted {
+				t.Fatalf("flow turn outcome = %s, want completed", result.outcome.String())
 			}
 			if got := svc.Models()[task.ID]; got != tt.model {
 				t.Fatalf("flow turn model = %q; want %s", got, tt.model)

@@ -21,18 +21,15 @@ killed`.
 `signal: killed` is the **daemon SIGKILLing its own agent PTY**, and in the common
 case that is **normal**:
 
-- `internal/orchestrator/flow.go` — when a flow step (Plan→Build→Critic→Gate) ends
-  its turn, the daemon marks the turn done, appends "step ended its turn —
-  advancing the flow", and `sess.Close()` → SIGKILLs the PTY to move to the next
-  step. This is by design.
-- `internal/orchestrator/orchestrator.go` `watchIdle` — a bare turn-end (agent idle
-  at its prompt for `idleTimeout = 90s` without `finish_task`) sends the task to
-  review and `sess.Close()` (SIGKILL) to free the slot.
+- `internal/orchestrator/turn.go` owns both intentional idle endings. A flow step
+  marks its turn done and appends "step ended its turn — advancing the flow"; a
+  solo task goes to review. Both call `sess.Close()` → SIGKILL the PTY after the
+  shared 90-second idle timeout. This is by design.
 
-Both surface at `orchestrator.go:~450` as `agent exited before finishing: signal:
-killed` — **the same line a genuine crash would log.** So the existing log cannot
-tell a normal step/idle close from a real premature kill. That ambiguity is the
-whole reason a real problem (if there is one) has been impossible to see.
+The turn runner classifies the durable state after the process exits and journals
+an explicit `outcome` (`completed`, `crashed`, `stopped`, `parked`, and so on).
+This separates an expected finish/idle close from a genuine crash even when both
+surface from the operating system as `signal: killed`.
 
 Suspicious signal still worth confirming with data: the redesign task 0292 was
 killed every ~1–2 min (21:38, 21:39, 21:40, 21:42) — *faster* than the 90s idle
@@ -50,9 +47,10 @@ Categories:
 
 - `bus` — every board fan-out: `task_updated` (status moves, port reservations),
   `event` (all task events), `context`, `runs`. taskId is under `.data.taskId`.
-- `agent` — `start` and `exit`. `exit` carries `human_stop` (true = SIGINT/SIGTERM,
-  a deliberate stop) and `err`; the reason for a kill is the `bus` event logged
-  just before it ("advancing the flow" / "went idle" / an error line).
+- `agent` — `start` and `exit`. `exit` carries the classified `outcome`,
+  `human_stop` (true = SIGINT/SIGTERM, a deliberate stop), and `err`. The nearby
+  `bus` event still gives the detailed reason ("advancing the flow" / "went idle"
+  / an error line).
 - `ui` — `click` (with a `label`) for every actionable click, plus `open_task`.
 - `journal` — bookkeeping (`opened`).
 
@@ -61,8 +59,8 @@ Categories:
 ```bash
 J=~/.ultraflow/journal.jsonl
 
-# Every agent exit and how it died. human_stop=false AND no "advancing the flow"
-# / idle event just before it (see the task timeline) = a suspicious kill.
+# Every agent exit and how it was classified. outcome="crashed" is suspicious;
+# completed/stopped/parked are deliberate orchestration outcomes.
 jq -c 'select(.cat=="agent" and .event=="exit")' "$J"
 
 # Full timeline for one task (interleaves ui + bus + agent, chronological).
@@ -74,14 +72,12 @@ jq -c 'select(.cat=="ui")' "$J"
 # Status transitions only, most useful for "task bounced back to review".
 jq -c 'select(.event=="task_updated") | {ts, task:.data.taskId, status:.data.status}' "$J"
 
-# Count exits vs how many were clean step/idle closes vs real errors.
-jq -rc 'select(.cat=="agent" and .event=="exit") | .human_stop' "$J" | sort | uniq -c
+# Count exits by orchestration outcome.
+jq -rc 'select(.cat=="agent" and .event=="exit") | .outcome' "$J" | sort | uniq -c
 ```
 
-The tell we're looking for: an `agent exit` whose immediately-preceding `bus`
-events for that task are **not** "advancing the flow" and **not** "went idle" —
-that's the daemon killing a genuinely-working agent, and whatever event precedes it
-is the trigger to fix.
+The tell we're looking for is an `agent exit` classified as `crashed`; inspect the
+immediately preceding `bus` events for that task to identify the trigger.
 
 ## Next step
 

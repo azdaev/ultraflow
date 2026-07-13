@@ -85,39 +85,31 @@ the acceptance path; listed so the follow-on tasks ("flow templates + graph loop
    tasks; wasteful at scale. **Fix:** resolve projects once per request, and
    memoize `flow.Load` per repo (invalidate on mtime).
 
-3. **A mid-step restart resumes with a FRESH conversation, losing in-step memory.**
-   `RecoverInFlight` requeues an interrupted flow task to backlog; the runner resumes
-   at the persisted cursor but re-enters the step via `Command` (not `--continue`),
-   so a long build step redoes its turn from zero rather than picking up its own
-   conversation. The worktree state persists, so it's correct — just not efficient.
-   Solo self-heal keeps memory via `--continue`; flow step *resume* deliberately
-   doesn't (a gate reroute must start fresh; restart-resume rides the same path).
-
-4. **A custom flow's step `agent` isn't validated against wired adapters.**
+3. **A custom flow's step `agent` isn't validated against wired adapters.**
    `flow.ParseYAML` validates the graph shape (start exists, no dangling successors)
    but not that `step.agent` names an implemented adapter. `stepAgent` silently
    falls back to claude for an unknown/unwired name — a presentation-honesty gap for
    custom flows (mirrors the `implementedAgents` normalization that task creation
    does for the task-level agent).
 
-5. **Completed `runs` rows linger until the task is deleted.** `FinishFlow` clears
+4. **Completed `runs` rows linger until the task is deleted.** `FinishFlow` clears
    the cursor (`""`) but keeps the row so the board can render "Flow complete";
    it's only removed by `DeleteTask`. Harmless (one row per task) but rows
    accumulate until Archive. **Fix:** drop the run on merge/mark-done, or fold
    "complete" into the task status the card already reads.
 
-6. **`turn_done` is a transient flag persisted in the `runs` row.** It's a
+5. **`turn_done` is a transient flag persisted in the `runs` row.** It's a
    single-use per-step signal (finish_task/idle → runner) that only needs to survive
    the finish_task→runner handoff. It lives in the DB (not memory) on purpose — the
    single-connection store serializes the write-then-read so the handoff is
    race-safe against `sess.Close()` — but a schema column for an ephemeral flag is a
    smell. Acceptable given the concurrency model; revisit if runs move off SQLite.
 
-7. **Step idle-timeout is the solo 90s.** A step whose agent ends its turn silently
-   (no `finish_task`) costs up to ~90s of dead time before `watchStepIdle` advances
-   the flow. Agents that call `finish_task` advance instantly; only the silent
-   fallback is slow. The generous timeout is deliberate (biases against killing a
-   working agent) — noted because it compounds across a multi-step flow.
+6. **Flow steps share the conservative 90s idle timeout.** A step whose agent ends
+   its turn silently (no `finish_task`) costs up to ~90s before the shared turn
+   runner advances the flow. Agents that call `finish_task` advance instantly; only
+   the silent fallback is slow. The generous timeout is deliberate (biases against
+   killing a working agent) — noted because it compounds across a multi-step flow.
 
 ---
 

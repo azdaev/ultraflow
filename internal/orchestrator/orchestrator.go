@@ -20,7 +20,6 @@ import (
 	"ultraflow/internal/core"
 	"ultraflow/internal/devserver"
 	"ultraflow/internal/flow"
-	"ultraflow/internal/journal"
 	"ultraflow/internal/model"
 	"ultraflow/internal/port"
 	"ultraflow/internal/terminal"
@@ -43,6 +42,7 @@ type Orchestrator struct {
 	term    *terminal.Manager
 	ports   *port.Allocator    // reserves a distinct dev-server port per task
 	dev     *devserver.Manager // runs the per-project dev-server hook, detached
+	turns   turnRunner         // deep seam for one live agent turn
 	baseCtx context.Context    // daemon lifetime; used by out-of-band launches (Revise)
 
 	// Resizable concurrency limit (mutex+cond, not a fixed channel semaphore, so
@@ -74,7 +74,6 @@ type launchIntent struct {
 	port       int
 	fresh      bool
 	runningMsg string
-	buildErr   string
 }
 
 func (o *Orchestrator) interactiveAgent(t model.Task) (interactiveAgent, error) {
@@ -99,20 +98,12 @@ func (o *Orchestrator) launch(intent launchIntent) {
 }
 
 func (o *Orchestrator) execute(ctx context.Context, intent launchIntent) {
-	var cmd *exec.Cmd
-	var cleanup func()
-	var err error
-	if intent.fresh {
-		cmd, cleanup, err = intent.agent.Command(ctx, intent.dir, intent.prompt)
-	} else {
-		cmd, cleanup, err = intent.agent.ResumeCommand(ctx, intent.dir, intent.prompt)
-	}
-	if err != nil {
-		o.fail(intent.task.ID, intent.buildErr+err.Error())
-		return
-	}
-	injectPort(cmd, intent.port)
-	o.runWithSelfHeal(ctx, intent.task, intent.dir, intent.agent, cmd, cleanup, intent.runningMsg)
+	_, isClaude := intent.agent.(*agent.Claude)
+	o.runWithSelfHeal(ctx, intent.task, turnRequest{
+		taskID: intent.task.ID, dir: intent.dir, agent: intent.agent,
+		prompt: intent.prompt, port: intent.port, resume: !intent.fresh,
+		runningMsg: intent.runningMsg, completion: turnCompletesTask, isClaude: isClaude,
+	})
 }
 
 func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal.Manager, ports *port.Allocator, dev *devserver.Manager, mcpURL string, maxConcurrent int) *Orchestrator {
@@ -134,6 +125,7 @@ func New(svc *core.Service, workdir string, wt *worktree.Manager, term *terminal
 		healing: map[string]bool{},
 	}
 	o.cond = sync.NewCond(&o.mu)
+	o.turns = newTerminalTurnRunner(svc, term, o.startTurnObservers)
 	return o
 }
 
@@ -307,7 +299,7 @@ func (o *Orchestrator) runClaimed(ctx context.Context, t model.Task) {
 	}
 
 	o.execute(ctx, launchIntent{task: cur, dir: dir, agent: ia, prompt: buildPrompt(cur, prt), port: prt, fresh: true,
-		runningMsg: "running — open the card to watch progress (Ctrl-C to interrupt)", buildErr: "couldn't build the agent command: "})
+		runningMsg: "running — open the card to watch progress (Ctrl-C to interrupt)"})
 }
 
 // resumeAfterRestart re-launches a solo task a daemon restart cut short. It reuses
@@ -321,7 +313,7 @@ func (o *Orchestrator) resumeAfterRestart(ctx context.Context, t model.Task, ia 
 
 	prt := o.restorePort(t)
 	o.execute(ctx, launchIntent{task: t, dir: t.Worktree, agent: ia, prompt: buildResumePrompt(t, prt), port: prt, fresh: false,
-		runningMsg: "resuming after restart (Ctrl-C to interrupt)", buildErr: "couldn't relaunch the agent to resume: "})
+		runningMsg: "resuming after restart (Ctrl-C to interrupt)"})
 }
 
 // resumeFlowAfterRestart resumes a multi-step FLOW task after a restart. Like
@@ -357,66 +349,26 @@ func (o *Orchestrator) restorePort(t model.Task) int {
 //
 // While its goroutine is live it marks the task `healing`, so an answer-driven
 // re-engage stands down and can't race a second agent onto the worktree.
-// `cmd`/`cleanup` are the first attempt; further attempts are built here.
-func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, dir string, ia interactiveAgent, cmd *exec.Cmd, cleanup func(), runningMsg string) {
+func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, initial turnRequest) {
 	o.beginHeal(t.ID)
 	defer o.endHeal(t.ID)
-
-	budget := retryBudget(t)
-	retries := 0
-	o.svc.SetAttempt(t.ID, retries) // 0 = the original run, no sub-state
-
-	// Only claude sessions get the context-cap monitor: it reads Claude Code's
-	// transcript format (see watchContext). Resolved once from the concrete adapter,
-	// not t.Agent, so a fallback-to-claude is still covered.
-	_, isClaude := ia.(*agent.Claude)
-
-	for {
-		werr, started := o.runAgent(t.ID, dir, isClaude, cmd, cleanup, runningMsg)
-		if !started {
-			return // runAgent already failed the task
-		}
-		if ctx.Err() != nil {
-			return // daemon shutting down — startup recovery requeues it
-		}
-		// finish_task/idle-watcher (→ review) and human Stop (→ cancelled) both Close
-		// the session, so the exit looks like a crash. If the task already reached one
-		// of those states, it ended on purpose — don't self-heal into a spurious retry.
-		if cur, _ := o.svc.GetTask(t.ID); cur.Status == model.StatusReview || cur.Status == model.StatusCancelled {
-			return
-		}
-		if werr == nil {
-			// Clean exit — the guarded resolver handles every case, race-safe against a
-			// concurrent answer.
-			o.svc.ResolveAgentExit(t.ID, false, "")
-			return
-		}
-		if stoppedByHuman(werr) {
-			o.fail(t.ID, "you stopped this task") // Ctrl-C = you-said-stop → terminal
-			return
-		}
-
-		// The agent errored. If the budget is spent, escalate to the human as an
-		// ordinary needs_human item — never a raw red dump.
-		if retries >= budget {
-			o.escalate(t.ID, budget, werr.Error())
-			return
-		}
-
-		retries++
-		// Raw error is a collapsed thread disclosure; the friendly sub-state leads the card.
-		o.svc.AppendTaskEvent(t.ID, "error", fmt.Sprintf("attempt failed: %s", truncateErr(werr.Error())))
-		o.svc.AbandonRequests(t.ID) // a stale parked checkpoint would linger otherwise
-		o.svc.SetAttempt(t.ID, retries)
-		o.svc.AppendTaskEvent(t.ID, "status",
-			fmt.Sprintf("fixing itself · %d/%d — diagnosing the error and retrying", retries, budget))
-
-		next, ncleanup, berr := ia.ResumeCommand(ctx, dir, buildSelfHealPrompt(t, retries, budget, werr.Error()))
-		if berr != nil {
-			o.escalate(t.ID, budget, "couldn't relaunch the agent to retry: "+berr.Error())
-			return
-		}
-		cmd, cleanup, runningMsg = next, ncleanup, fmt.Sprintf("fixing itself · %d/%d (Ctrl-C to interrupt)", retries, budget)
+	result := o.runRetryingTurns(ctx, retryPlan{
+		task: t,
+		makeTurn: func(retry, budget int, lastErr error) turnRequest {
+			if retry == 0 {
+				return initial
+			}
+			return turnRequest{taskID: t.ID, dir: initial.dir, agent: initial.agent,
+				prompt: buildSelfHealPrompt(t, retry, budget, lastErr.Error()), port: initial.port,
+				resume: true, runningMsg: fmt.Sprintf("fixing itself · %d/%d (Ctrl-C to interrupt)", retry, budget),
+				completion: turnCompletesTask, isClaude: initial.isClaude}
+		},
+	})
+	if result.outcome == turnCompleted {
+		// A clean process exit may not have called finish_task. Resolve that final
+		// durable transition here; explicit finish and idle completion already made
+		// it a guarded no-op.
+		o.svc.ResolveAgentExit(t.ID, false, "")
 	}
 }
 
@@ -429,48 +381,6 @@ func (o *Orchestrator) startTurnObservers(sess *terminal.Session, taskID, dir st
 		go o.watchContext(sess, taskID, dir)
 	}
 	go o.watchModel(sess, taskID, dir, isClaude)
-}
-
-// runAgent runs cmd as the task's live PTY agent for one attempt: register the
-// session, flip the card to running only once the terminal exists (never a 404),
-// wait, and return the exit error (nil = clean). started is false only when the
-// terminal couldn't start, in which case the task is already failed.
-func (o *Orchestrator) runAgent(taskID, dir string, isClaude bool, cmd *exec.Cmd, cleanup func(), runningMsg string) (werr error, started bool) {
-	defer cleanup()
-
-	sess, err := o.term.Start(taskID, cmd)
-	if err != nil {
-		o.fail(taskID, "couldn't start the agent terminal: "+err.Error())
-		return nil, false
-	}
-	o.svc.AgentStarted(taskID)
-	o.svc.AppendTaskEvent(taskID, "status", runningMsg)
-	journal.Log("agent", "start", map[string]any{"task": taskID, "dir": dir, "claude": isClaude})
-
-	// An interactive TUI never exits on its own, so a turn-end without finish_task
-	// would hold the slot forever: watchIdle sends an idle turn-end to review and
-	// kills the session (which self-heal reads as an intentional end, not a crash).
-	go o.watchIdle(sess, taskID, idleTimeout, idlePoll)
-
-	// Publish transcript-backed context/model data for this attempt. A fallback-model
-	// retry starts fresh observers and is therefore re-detected.
-	o.startTurnObservers(sess, taskID, dir, isClaude)
-
-	werr = sess.Wait()
-	if werr != nil {
-		log.Printf("task %s: agent exited before finishing: %v", taskID, werr)
-	}
-	// Journal the exit with its signal disposition so the analysis can finally tell
-	// a normal step/idle close (the daemon SIGKILLs the PTY to end a turn) from a
-	// human stop (SIGINT/SIGTERM) or a real crash. The event stream just above in
-	// the journal ("advancing the flow" / "went idle" / an error) gives the reason.
-	fields := map[string]any{"task": taskID, "ok": werr == nil}
-	if werr != nil {
-		fields["err"] = werr.Error()
-		fields["human_stop"] = stoppedByHuman(werr)
-	}
-	journal.Log("agent", "exit", fields)
-	return werr, true
 }
 
 // beginHeal / endHeal / isHealing track whether a self-heal loop is live for a task
@@ -567,35 +477,6 @@ const (
 	idlePoll    = 5 * time.Second
 )
 
-// watchIdle sends a task to review and kills the session when its agent goes idle
-// without finish_task, freeing the slot. It runs until the session ends.
-//
-// The guarded FinishForReview swap is what protects the intentional ask_human wait:
-// a parked agent is SUPPOSED to idle, but ask_human already moved it to needs_human,
-// so running→review fails and we keep watching (a later answer returns it to running,
-// where a fresh idle can be caught). The swap also arbitrates an ask_human racing in
-// as we act.
-func (o *Orchestrator) watchIdle(sess *terminal.Session, taskID string, timeout, poll time.Duration) {
-	ticker := time.NewTicker(poll)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-sess.Done():
-			return
-		case <-ticker.C:
-			if sess.IdleFor() < timeout {
-				continue
-			}
-			if o.svc.FinishForReview(taskID) {
-				o.svc.AppendTaskEvent(taskID, "status",
-					"agent went idle without calling finish_task — sent to review and freed the slot")
-				sess.Close()
-				return
-			}
-		}
-	}
-}
-
 // Revise re-engages a reviewed/failed task's agent in the SAME worktree with the
 // human's feedback (and, via `claude --continue`, its conversation memory), flipping
 // the card back to running. This is what makes review a conversation rather than a
@@ -638,7 +519,7 @@ func (o *Orchestrator) Revise(taskID, feedback string) error {
 	}
 
 	o.launch(launchIntent{task: t, dir: dir, agent: ia, prompt: buildRevisePrompt(t, feedback, prt), port: prt,
-		runningMsg: "reworking on your feedback (Ctrl-C to interrupt)", buildErr: "couldn't build the agent command: "})
+		runningMsg: "reworking on your feedback (Ctrl-C to interrupt)"})
 	return nil
 }
 
@@ -678,7 +559,7 @@ func (o *Orchestrator) Reengage(taskID, guidance string) error {
 	}
 
 	o.launch(launchIntent{task: t, dir: dir, agent: ia, prompt: buildReengagePrompt(t, guidance), port: t.Port,
-		runningMsg: "back on it with your guidance (Ctrl-C to interrupt)", buildErr: "couldn't relaunch the agent: "})
+		runningMsg: "back on it with your guidance (Ctrl-C to interrupt)"})
 	return nil
 }
 
@@ -725,7 +606,7 @@ func (o *Orchestrator) Rebase(taskID string) error {
 	o.svc.AppendTaskEvent(taskID, "status", "auto-rebasing onto "+base+" — resolving conflicts")
 
 	o.launch(launchIntent{task: t, dir: t.Worktree, agent: ia, prompt: buildRebasePrompt(t, base, behind), port: t.Port,
-		runningMsg: "rebasing onto " + base + " — resolving conflicts (Ctrl-C to interrupt)", buildErr: "couldn't build the agent command: "})
+		runningMsg: "rebasing onto " + base + " — resolving conflicts (Ctrl-C to interrupt)"})
 	return nil
 }
 
