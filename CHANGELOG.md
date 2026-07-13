@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.10.13 — 2026-07-13
+
+- Sharper diff contrast for clearer added/removed lines
+- Rebuilt the task modal for a cleaner review layout
+- Render Markdown tables properly in agent output and reports
+- Tasks now resolve to the correct project when invoked over MCP
+- Honest pause state: agents show as truly paused instead of faking activity
+
 ## v0.10.12 — 2026-07-13
 
 - Refresh the board UI with a cleaner layout and interface polish.
