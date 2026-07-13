@@ -24,6 +24,18 @@ func askHumanContract(taskID string) string {
 		`call it, STOP and end your turn; the human's answer arrives as your next input.`, taskID)
 }
 
+// renameTaskContract tells the first agent handling a task to turn the human's
+// raw one-line request into a concise card label. RenameTask preserves the full
+// request in the task body, so later prompts still receive the original context.
+// Keep this shared by solo tasks and a flow's entry step so the two launch paths
+// cannot silently drift apart again.
+func renameTaskContract(taskID string) string {
+	return fmt.Sprintf(`FIRST, before doing anything else: this title is a raw one-liner — call the MCP
+tool "rename_task" with task_id="%s" and a short, clear title (a handful of words)
+so the board card reads cleanly. Your full instructions are preserved; only the
+card's label changes.`, taskID)
+}
+
 // stepFinishContract tells a step agent how to end its step. Finishing advances
 // the flow to the next step automatically — the runner owns that — so the agent
 // must not try to complete the whole task, nor idle after its step's work.
@@ -56,9 +68,14 @@ in this working directory, so build on it rather than starting over.`,
 
 // buildStepPrompt is the fresh-conversation prompt for entering a work step. seed
 // is optional guidance (e.g. a gate "send it back" note) folded in when present.
-func (o *Orchestrator) buildStepPrompt(t model.Task, fl flow.Flow, step flow.Step, prt int, seed string) string {
+// rename is true only for the flow's first-ever agent turn.
+func (o *Orchestrator) buildStepPrompt(t model.Task, fl flow.Flow, step flow.Step, prt int, seed string, rename bool) string {
 	var b strings.Builder
 	b.WriteString(stepHeader(t, fl, step))
+	if rename {
+		b.WriteString("\n\n")
+		b.WriteString(renameTaskContract(t.ID))
+	}
 	if s := strings.TrimSpace(seed); s != "" {
 		b.WriteString("\n\nNote from the human's review: " + s)
 	}
