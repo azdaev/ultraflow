@@ -207,13 +207,9 @@ func (o *Orchestrator) runStepTurn(taskID, dir string, isClaude bool, cmd *exec.
 	// solo watcher this marks the turn done rather than sending the task to review.
 	go o.watchStepIdle(sess, taskID)
 
-	// Same per-turn watchers as the solo path (runAgent), which a flow step otherwise
-	// missed: enforce the context cap (inject /compact — claude only) and surface the
-	// real model on the card. Both stop on sess.Done(), so a step turn leaks neither.
-	if isClaude {
-		go o.watchContext(sess, taskID, dir)
-	}
-	go o.watchModel(sess, taskID, dir, isClaude)
+	// Use the same transcript observers as the solo path. They stop on sess.Done(),
+	// so a completed flow turn leaks neither context nor model watchers.
+	o.startTurnObservers(sess, taskID, dir, isClaude)
 
 	werr = sess.Wait()
 	return werr, true
