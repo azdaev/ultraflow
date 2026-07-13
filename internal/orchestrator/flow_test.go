@@ -66,6 +66,7 @@ func TestFlowTurnPublishesDetectedModel(t *testing.T) {
 type fakeFlowAgent struct {
 	mu      sync.Mutex
 	dirs    []string
+	prompts []string
 	resumes int
 }
 
@@ -77,9 +78,10 @@ func (a *fakeFlowAgent) Run(ctx context.Context, dir, prompt string, out chan<- 
 	return nil
 }
 
-func (a *fakeFlowAgent) record(dir string) {
+func (a *fakeFlowAgent) record(dir, prompt string) {
 	a.mu.Lock()
 	a.dirs = append(a.dirs, dir)
+	a.prompts = append(a.prompts, prompt)
 	a.mu.Unlock()
 }
 
@@ -89,8 +91,14 @@ func (a *fakeFlowAgent) turns() []string {
 	return append([]string(nil), a.dirs...)
 }
 
+func (a *fakeFlowAgent) turnPrompts() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.prompts...)
+}
+
 func (a *fakeFlowAgent) Command(ctx context.Context, dir, prompt string) (*exec.Cmd, func(), error) {
-	a.record(dir)
+	a.record(dir, prompt)
 	return exec.Command("true"), func() {}, nil
 }
 
@@ -98,7 +106,7 @@ func (a *fakeFlowAgent) ResumeCommand(ctx context.Context, dir, prompt string) (
 	a.mu.Lock()
 	a.resumes++
 	a.mu.Unlock()
-	a.record(dir)
+	a.record(dir, prompt)
 	return exec.Command("true"), func() {}, nil
 }
 
@@ -174,6 +182,12 @@ func TestFlowWalksSharedWorktreeToGateThenApprove(t *testing.T) {
 		if d != got.Worktree {
 			t.Fatalf("step ran in %q, not the shared worktree %q", d, got.Worktree)
 		}
+	}
+	// The automatic title compaction belongs only to the flow's first-ever
+	// agent turn. Later steps must not keep rewriting the card label.
+	prompts := fake.turnPrompts()
+	for i, prompt := range prompts {
+		assertRenameContract(t, prompt, task.ID, i == 0)
 	}
 
 	// The gate is a real needs_human checkpoint on the rail.
@@ -339,4 +353,27 @@ func TestFlowRestartColdStartsPendingStep(t *testing.T) {
 	if n := fake.resumeTurns(); n != 0 {
 		t.Fatalf("a never-started pending step must use a fresh session, resume calls=%d", n)
 	}
+}
+
+// If the daemon stopped after persisting a brand-new run but before launching
+// its first agent, recovery still owes the task its one-time title compaction.
+func TestFlowRestartColdStartsPendingEntryWithRename(t *testing.T) {
+	svc, o, fake := wireFlowOrch(t)
+	task, _ := svc.CreateTaskFull("a long raw request", "", "", "claude", "plan-build")
+	if err := svc.StartRun(task.ID, "plan-build", "plan"); err != nil {
+		t.Fatal(err)
+	}
+
+	o.start(context.Background(), task)
+	waitFor(t, "pending entry flow completes", func() bool {
+		got, _ := svc.GetTask(task.ID)
+		return got.Status == model.StatusReview
+	})
+
+	prompts := fake.turnPrompts()
+	if len(prompts) != 2 {
+		t.Fatalf("want plan and build prompts, got %d", len(prompts))
+	}
+	assertRenameContract(t, prompts[0], task.ID, true)
+	assertRenameContract(t, prompts[1], task.ID, false)
 }

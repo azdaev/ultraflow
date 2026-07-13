@@ -39,24 +39,30 @@ func (o *Orchestrator) runFlow(ctx context.Context, t model.Task, dir string, pr
 
 	cursor := fl.Start
 	resume := false
+	renameOnEntry := false
 	if run, ok := o.svc.Run(t.ID); ok {
 		if run.Cursor == "" {
 			return // the run already completed — nothing to resume
 		}
 		cursor = run.Cursor
 		resume = run.Phase == model.RunActive
+		// A pending start cursor with no completed steps means the daemon stopped
+		// before the first agent ever launched, so the first prompt still owns the
+		// one-time rename. Any later graph re-entry has completed history.
+		renameOnEntry = run.Cursor == fl.Start && run.Phase == model.RunPending && len(run.Completed) == 0
 		o.svc.AppendTaskEvent(t.ID, "status", "resuming flow at the "+stepRole(fl, cursor)+" step")
 	} else {
 		o.svc.StartRun(t.ID, fl.Key, fl.Start)
+		renameOnEntry = true
 	}
-	o.walkFlow(ctx, t, dir, prt, fl, cursor, "", resume)
+	o.walkFlow(ctx, t, dir, prt, fl, cursor, "", resume, renameOnEntry)
 }
 
 // walkFlow is the graph loop, shared by a fresh run and by the answer-driven
 // re-entries (a gate reroute, a step-escalation resume). seed/resume apply ONLY to
 // the entry step: seed is optional guidance to fold into its prompt, and resume
 // picks up that step's prior conversation (`--continue`) instead of a fresh one.
-func (o *Orchestrator) walkFlow(ctx context.Context, t model.Task, dir string, prt int, fl flow.Flow, cursor, seed string, resume bool) {
+func (o *Orchestrator) walkFlow(ctx context.Context, t model.Task, dir string, prt int, fl flow.Flow, cursor, seed string, resume, renameOnEntry bool) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -74,8 +80,8 @@ func (o *Orchestrator) walkFlow(ctx context.Context, t model.Task, dir string, p
 			return // parked for the human; an answer re-enters via resumeGate
 		}
 
-		outcome := o.runStep(ctx, t, dir, prt, fl, step, seed, resume)
-		seed, resume = "", false // consumed by the entry step only
+		outcome := o.runStep(ctx, t, dir, prt, fl, step, seed, resume, renameOnEntry)
+		seed, resume, renameOnEntry = "", false, false // consumed by the entry step only
 
 		switch outcome {
 		case stepStopped, stepHalted, stepDaemonDown:
@@ -96,7 +102,7 @@ func (o *Orchestrator) walkFlow(ctx context.Context, t model.Task, dir string, p
 // a crash (retry the step up to the budget, then escalate as a needs_human item).
 // It returns why the turn ended. A clean turn end — the agent called finish_task,
 // idled out, or its process exited 0 — is stepDone: the caller advances the graph.
-func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, prt int, fl flow.Flow, step flow.Step, seed string, resume bool) stepOutcome {
+func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, prt int, fl flow.Flow, step flow.Step, seed string, resume, rename bool) stepOutcome {
 	ia, ok := o.stepAgent(t, step)
 	if !ok {
 		o.fail(t.ID, "no runnable interactive agent for the "+step.Role+" step")
@@ -133,7 +139,7 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 				cmd, cleanup, err = ia.ResumeCommand(ctx, dir, o.buildStepReengagePrompt(t, step, seed))
 			}
 		case retries == 0:
-			cmd, cleanup, err = ia.Command(ctx, dir, o.buildStepPrompt(t, fl, step, prt, seed))
+			cmd, cleanup, err = ia.Command(ctx, dir, o.buildStepPrompt(t, fl, step, prt, seed, rename))
 		default:
 			cmd, cleanup, err = ia.ResumeCommand(ctx, dir, o.buildStepSelfHealPrompt(t, step, retries, budget))
 		}
@@ -267,7 +273,7 @@ func (o *Orchestrator) launchWalk(t model.Task, fl flow.Flow, cursor, seed strin
 		defer o.release()
 		o.beginHeal(t.ID)
 		defer o.endHeal(t.ID)
-		o.walkFlow(o.ctx(), t, dir, t.Port, fl, cursor, seed, resume)
+		o.walkFlow(o.ctx(), t, dir, t.Port, fl, cursor, seed, resume, false)
 	}()
 }
 
