@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.14 — 2026-07-13
+
+- Clearer flow visibility: see at a glance what each agent is doing and where it stands.
+- Board now surfaces tasks needing your attention more reliably.
+
 ## v0.10.13 — 2026-07-13
 
 - Sharper diff contrast for clearer added/removed lines
