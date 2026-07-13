@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.18 — 2026-07-14
+
+- Ultraflow: Вернуть задачу в разработку после комментария
+- Ultraflow: Custom dropdown component
+
 ## v0.10.17 — 2026-07-13
 
 - Ultraflow: Refactor Orchestrator Logic
