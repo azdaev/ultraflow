@@ -98,6 +98,15 @@ export function App() {
   const running = tasks.filter((t) => IN_FLIGHT.has(t.status)).length;
   const queued = tasks.filter((t) => WAITING.has(t.status)).length;
 
+  // Live tab title so a backgrounded tab shows board state at a glance: how many
+  // agents are working, and — louder — how many cards are waiting on the human.
+  // index.html ships the plain "Ultraflow" as the pre-hydration/idle title.
+  const needsHuman = attention.length;
+  useEffect(() => {
+    const base = running > 0 ? `${running} running · Ultraflow` : "Ultraflow";
+    document.title = needsHuman > 0 ? `(${needsHuman}!) ${base}` : base;
+  }, [running, needsHuman]);
+
   const openTask = openTaskId ? (byId.get(openTaskId) ?? null) : null;
   const openRequest = openTaskId
     ? requests.find((r) => r.taskId === openTaskId)
