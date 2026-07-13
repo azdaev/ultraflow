@@ -28,6 +28,10 @@ export interface Task {
   flow: string;
   status: TaskStatus;
   worktree: string;
+  // What the agent declared it produced at finish_task; drives the review accept-
+  // button label so not every task shows "Merge to main". One of "merge" | "answer"
+  // | "design" | "applied" | "none", or "" when unset (fall back to worktree+diff).
+  outcome: string;
   // Self-heal sub-state: attempt is how many auto-retries the agent has spent on an
   // error (0 = the original run; k>0 renders "fixing itself · k/N" on the running
   // card), maxAttempts is the retry budget before it escalates to the human.

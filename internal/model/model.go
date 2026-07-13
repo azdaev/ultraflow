@@ -39,6 +39,14 @@ type Task struct {
 	Flow     string     `json:"flow"`  // flow preset name
 	Status   TaskStatus `json:"status"`
 	Worktree string     `json:"worktree"`
+	// Outcome is what the agent declared it produced at finish_task, which drives
+	// the label of the review accept-button (see spec: not every task lands in
+	// main). One of "merge" (code to land), "answer" (a question/audit answered —
+	// the report is the deliverable), "design" (visual exploration), "applied"
+	// (already applied outside the repo), "none" (nothing to change), or "" when
+	// unset (legacy tasks / agents that don't declare one → fall back to the
+	// worktree+diff heuristic). Only "merge" merges a branch; the rest just finish.
+	Outcome string `json:"outcome"`
 	// Self-heal sub-state. On an agent error the orchestrator auto-diagnoses and
 	// re-runs the task up to MaxAttempts times while it STAYS `running` — Attempt is
 	// how many auto-retries it has spent (0 = the original run, no sub-state; k>0 =

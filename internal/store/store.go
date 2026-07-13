@@ -57,6 +57,7 @@ var migrations = []string{
 	resumeSchema,       // migration 6: tasks.resume
 	runsSchema,         // migration 7: runs (multi-step flow progress)
 	runPhaseSchema,     // migration 8: explicit recoverable step lifecycle
+	outcomeSchema,      // migration 9: tasks.outcome (declared task result)
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -200,6 +201,13 @@ CREATE TABLE IF NOT EXISTS runs (
 // cursor is preserved, but we do not claim a session exists unless a subsequent
 // launch records it as active.
 const runPhaseSchema = `ALTER TABLE runs ADD COLUMN phase TEXT NOT NULL DEFAULT 'pending';`
+
+// outcomeSchema (migration 9) records what an agent declared it produced at
+// finish_task ("merge", "answer", "design", "applied", "none"), which drives the
+// review accept-button label — not every task lands in main. Empty for legacy
+// rows and agents that don't declare one, which fall back to the worktree+diff
+// heuristic.
+const outcomeSchema = `ALTER TABLE tasks ADD COLUMN outcome TEXT NOT NULL DEFAULT '';`
 
 // rowScanner is the read side shared by *sql.Row and *sql.Rows, so one scan
 // function serves both a single-row Get and a multi-row list query.
@@ -348,19 +356,19 @@ func (s *Store) RunsForTasks(ids []string) (map[string]model.Run, error) {
 
 func (s *Store) CreateTask(t model.Task) error {
 	_, err := s.db.Exec(
-		`INSERT INTO tasks (id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,port,created_at,updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.Title, t.Body, t.Project, t.Agent, t.Flow, string(t.Status), t.Worktree, t.Attempt, t.MaxAttempts, t.Port, t.CreatedAt, t.UpdatedAt)
+		`INSERT INTO tasks (id,title,body,project,agent,flow,status,worktree,outcome,attempt,max_attempts,port,created_at,updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.Title, t.Body, t.Project, t.Agent, t.Flow, string(t.Status), t.Worktree, t.Outcome, t.Attempt, t.MaxAttempts, t.Port, t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
-const taskCols = `id,title,body,project,agent,flow,status,worktree,attempt,max_attempts,port,resume,created_at,updated_at`
+const taskCols = `id,title,body,project,agent,flow,status,worktree,outcome,attempt,max_attempts,port,resume,created_at,updated_at`
 
 func scanTask(sc rowScanner) (model.Task, error) {
 	var t model.Task
 	var status string
 	var resume int
-	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Attempt, &t.MaxAttempts, &t.Port, &resume, &t.CreatedAt, &t.UpdatedAt)
+	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Outcome, &t.Attempt, &t.MaxAttempts, &t.Port, &resume, &t.CreatedAt, &t.UpdatedAt)
 	t.Status = model.TaskStatus(status)
 	t.Resume = resume != 0
 	return t, err
@@ -458,6 +466,14 @@ func (s *Store) UpdateTaskTitleBody(id, title, body string) (time.Time, error) {
 
 func (s *Store) SetWorktree(id, wt string) error {
 	_, err := s.touchField(id, "worktree", wt)
+	return err
+}
+
+// SetOutcome records what the agent declared it produced at finish_task, which
+// drives the review accept-button label. Empty is left untouched by the caller so
+// an intermediate flow step that omits it doesn't clobber the final step's value.
+func (s *Store) SetOutcome(id, outcome string) error {
+	_, err := s.touchField(id, "outcome", outcome)
 	return err
 }
 

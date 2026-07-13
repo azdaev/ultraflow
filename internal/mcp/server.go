@@ -105,6 +105,7 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 		TaskID  string `json:"task_id" jsonschema:"the id of the task you are working on (given at start)"`
 		Summary string `json:"summary" jsonschema:"one line: what you did, so the human can review"`
 		Report  string `json:"report" jsonschema:"the full result of the task written as Markdown for the human to read on the review screen: for a question or audit, the answer and findings; for a code change, what you did and why and anything to check. Always write it — this is where the human reads your work, not the terminal."`
+		Outcome string `json:"outcome,omitempty" jsonschema:"what you produced — it decides the accept button the human sees, so not every task shows 'Merge to main'. Use exactly one of these values: 'merge' when you changed code that should land in main; 'answer' when a question, audit, or investigation was answered and the report itself is the deliverable (nothing to land); 'design' for a visual or design exploration where screenshots are the deliverable; 'applied' when the change was already applied outside this repo (e.g. a release cut, a DB write, an external branch or PR); 'none' when there is nothing to change (inconclusive or a no-op). Pick 'merge' ONLY if there is real code to land; otherwise choose the honest outcome. Leave empty if you are unsure."`
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "finish_task",
@@ -115,7 +116,9 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 			"For a question or audit task the report IS the deliverable. If you changed anything VISUAL, also " +
 			"save screenshots (PNG) into .ultraflow/shots/ in your working directory so they show on review — " +
 			"and you can embed them inline in the report with Markdown image syntax `![caption](shot.png)` " +
-			"(reference the bare filename; it resolves to the saved screenshot).",
+			"(reference the bare filename; it resolves to the saved screenshot). Set `outcome` to say what you " +
+			"produced — it decides the accept button the human sees, so a task that only answered a question or " +
+			"explored a design no longer shows a scary 'Merge to main'. Use 'merge' only when there is real code to land.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, a finishArgs) (*mcp.CallToolResult, any, error) {
 		// CompleteTurn records the report + one-line summary and decides the task's
 		// next state: a solo task (no run) does the guarded finish to review, while a
@@ -123,7 +126,7 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 		// advances the graph — the card doesn't flash to review between steps. Report
 		// is appended first inside CompleteTurn so the summary stays the latest
 		// non-empty event (what the card's activity strip shows).
-		if err := svc.CompleteTurn(a.TaskID, a.Summary, a.Report); err != nil {
+		if err := svc.CompleteTurn(a.TaskID, a.Summary, a.Report, a.Outcome); err != nil {
 			return nil, nil, err
 		}
 		// End the live session so the slot frees (and, mid-flow, so the runner's

@@ -105,6 +105,7 @@ func TestFinishTaskSendsToReviewSummaryLatest(t *testing.T) {
 		"task_id": task.ID,
 		"summary": "did the thing",
 		"report":  "# Result\nfull writeup",
+		"outcome": "answer",
 	})
 
 	got, err := svc.GetTask(task.ID)
@@ -113,6 +114,10 @@ func TestFinishTaskSendsToReviewSummaryLatest(t *testing.T) {
 	}
 	if got.Status != model.StatusReview {
 		t.Fatalf("finish_task status = %q; want review", got.Status)
+	}
+	// The declared outcome must reach the store via the tool → CompleteTurn wiring.
+	if got.Outcome != "answer" {
+		t.Fatalf("finish_task outcome = %q; want answer", got.Outcome)
 	}
 
 	act, kind, err := svc.LatestActivity()
