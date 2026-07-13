@@ -48,6 +48,7 @@ var presets = map[string]Flow{
 				Routes: []Route{
 					{Answer: "Approve", Next: ""},              // accept → finish → review
 					{Answer: "Request changes", Next: "build"}, // loop back to rebuild
+					{Answer: "", Next: "build"},                // free-form feedback → rebuild
 				},
 			},
 		},

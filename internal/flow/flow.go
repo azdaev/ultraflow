@@ -21,7 +21,8 @@ import (
 // Step is one node in a flow graph. A work step (Gate=false) runs Agent in the
 // task's worktree seeded with Prompt, then advances along Next. A gate step
 // (Gate=true) runs no agent: it parks the task as needs_human and, on the human's
-// answer, routes along Routes (falling back to Next / the first route).
+// answer, routes along Routes (falling back to an explicit empty-answer route,
+// then the first route / Next).
 type Step struct {
 	ID     string   `yaml:"id" json:"id"`
 	Role   string   `yaml:"role" json:"role"`     // human-facing label: plan, build, critic, gate…
@@ -32,9 +33,10 @@ type Step struct {
 	Routes []Route  `yaml:"routes" json:"routes"` // gate answer → successor; overrides Next for gates
 }
 
-// Route maps a gate's answer to the next step. Answer "" (or the first route) is
-// the default taken on approve / an unmatched reply. Next "" means finish the flow
-// (send the task to review) — an approve at a terminal gate.
+// Route maps a gate's answer to the next step. Answer "" is an explicit fallback
+// for an unmatched reply; when absent, the first route remains the default for
+// compatibility. Next "" means finish the flow (send the task to review) — an
+// approve at a terminal gate.
 type Route struct {
 	Answer string `yaml:"answer" json:"answer"`
 	Next   string `yaml:"next" json:"next"`
@@ -85,29 +87,40 @@ func (s Step) DefaultNext() string {
 }
 
 // Route resolves a gate's answer to its successor step id. An exact
-// (case-insensitive) match wins first; failing that it matches by substring (so
-// "Approve" matches a reply of "approve, looks good"), then falls back to the first
-// route, then Next, then "" (finish). A returned "" means: finish the flow (→ review).
+// (case-insensitive) match wins first. When the gate declares an empty-answer
+// fallback, every non-exact reply takes it; this keeps free-form feedback from
+// accidentally approving a gate merely because it contains an option label. For
+// compatibility, gates without an explicit fallback then match by substring
+// before falling back to the first route, Next, and finally "" (finish). A returned
+// "" means: finish the flow (→ review).
 func (s Step) Route(answer string) string {
 	a := strings.ToLower(strings.TrimSpace(answer))
 	// Exact match first, so a route whose answer is a substring of another (e.g.
 	// "yes" declared before "yes, redeploy") can't shadow the longer one in a
 	// custom flows.yaml gate.
 	for _, r := range s.Routes {
-		if r.Answer != "" && a == strings.ToLower(strings.TrimSpace(r.Answer)) {
+		if strings.TrimSpace(r.Answer) != "" && a == strings.ToLower(strings.TrimSpace(r.Answer)) {
 			return r.Next
 		}
 	}
+	// An explicit fallback makes option selection intentional: the UI's buttons
+	// submit their exact labels, while anything typed into the comment input is
+	// feedback. Check it before legacy substring matching so comments such as
+	// "I can't approve until the retry works" cannot finish the flow.
 	for _, r := range s.Routes {
-		if r.Answer == "" {
-			continue
+		if strings.TrimSpace(r.Answer) == "" {
+			return r.Next
 		}
+	}
+	// Gates without an explicit fallback retain their historical permissive
+	// matching for custom-flow compatibility.
+	for _, r := range s.Routes {
 		if strings.Contains(a, strings.ToLower(strings.TrimSpace(r.Answer))) {
 			return r.Next
 		}
 	}
-	// No explicit match: take the default (approve) path — the first route, else
-	// the declared Next, else finish.
+	// Preserve compatibility for gates without an explicit fallback: the first
+	// route remains the default, then the declared Next, then finish.
 	if len(s.Routes) > 0 {
 		return s.Routes[0].Next
 	}
@@ -119,7 +132,7 @@ func (s Step) Route(answer string) string {
 func (s Step) GateOptions() []string {
 	var opts []string
 	for _, r := range s.Routes {
-		if r.Answer != "" {
+		if strings.TrimSpace(r.Answer) != "" {
 			opts = append(opts, r.Answer)
 		}
 	}
