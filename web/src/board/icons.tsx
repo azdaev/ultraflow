@@ -154,6 +154,16 @@ export function DotsIcon({ size = 15, className }: IconProps) {
   );
 }
 
+// ChevronIcon — the down-caret on a dropdown trigger. Rotate via the caller's
+// data-state if an "open" flip is wanted.
+export function ChevronIcon({ size = 15, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={className} style={{ flexShrink: 0 }} aria-hidden>
+      <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function PlusIcon({ size = 14, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" className={className} style={{ flexShrink: 0 }} aria-hidden>

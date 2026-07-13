@@ -20,7 +20,10 @@ export function Modal({ open, onClose, className = "", title, children }: Props)
   // Escape-to-dismiss belongs to the shell so every consumer gets it for free.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // Skip if a nested layer already handled Escape (e.g. a Radix Select closing
+    // its listbox calls preventDefault in a capture-phase handler that runs first);
+    // otherwise one Escape would dismiss the dropdown AND tear down the modal.
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);

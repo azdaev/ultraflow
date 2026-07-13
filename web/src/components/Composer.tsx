@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errMsg, type Project } from "../api";
 import { AGENTS, FLOWS } from "../util";
+import { AgentMark } from "../board/icons";
 import { Modal } from "./Modal";
+import { Select } from "./Select";
 import { ImageAttachStrip, useImageAttach, withAttachments } from "./ImageAttach";
 
 interface Props {
@@ -109,40 +111,39 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
 
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label="Project">
-            <Select value={project} onChange={setProject}>
-              {/* A project is required — the placeholder can't be submitted, so a
-                  task never lands with no project (stranded on main). */}
-              <option value="" disabled>
-                {projects.length ? "Select a project…" : "No projects — add one in Settings"}
-              </option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.name}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
+            {/* A project is required — the placeholder can't be submitted, so a
+                task never lands with no project (stranded on main). */}
+            <Select
+              ariaLabel="Project"
+              value={project}
+              onChange={setProject}
+              placeholder={projects.length ? "Select a project…" : "No projects — add one in Settings"}
+              options={projects.map((p) => ({ value: p.name, label: p.name }))}
+            />
           </Field>
           <Field label="Flow">
-            <Select value={flow} onChange={setFlow}>
-              {Object.values(FLOWS)
+            <Select
+              ariaLabel="Flow"
+              value={flow}
+              onChange={setFlow}
+              options={Object.values(FLOWS)
                 .filter((f) => f.available)
-                .map((f) => (
-                  <option key={f.key} value={f.key}>
-                    {f.label}
-                  </option>
-                ))}
-              <SoonGroup labels={Object.values(FLOWS).filter((f) => !f.available).map((f) => f.label)} />
-            </Select>
+                .map((f) => ({ value: f.key, label: f.label }))}
+              soon={Object.values(FLOWS).filter((f) => !f.available).map((f) => f.label)}
+            />
           </Field>
           <Field label="Agent">
-            <Select value={agent} onChange={setAgent}>
-              {AGENTS.filter((a) => a.available).map((a) => (
-                <option key={a.key} value={a.key}>
-                  {a.label}
-                </option>
-              ))}
-              <SoonGroup labels={AGENTS.filter((a) => !a.available).map((a) => a.label)} />
-            </Select>
+            <Select
+              ariaLabel="Agent"
+              value={agent}
+              onChange={setAgent}
+              options={AGENTS.filter((a) => a.available).map((a) => ({
+                value: a.key,
+                label: a.label,
+                icon: <AgentMark agent={a.key} color={a.color} size={14} />,
+              }))}
+              soon={AGENTS.filter((a) => !a.available).map((a) => a.label)}
+            />
           </Field>
         </div>
 
@@ -162,49 +163,13 @@ export function Composer({ open, onClose, projects, initialTitle, initialProject
   );
 }
 
-// SoonGroup tucks the not-yet-available choices into a single disabled "Coming
-// soon" section at the bottom of a select, so the picker leads with what you can
-// actually run instead of a wall of greyed-out "· soon" rows that read as broken.
-function SoonGroup({ labels }: { labels: string[] }) {
-  if (labels.length === 0) return null;
-  return (
-    <optgroup label="Coming soon">
-      {labels.map((label) => (
-        <option key={label} value="" disabled>
-          {label}
-        </option>
-      ))}
-    </optgroup>
-  );
-}
-
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="block">
+    <div className="block">
       <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.07em] text-muted">
         {label}
       </span>
       {children}
-    </label>
-  );
-}
-
-function Select({
-  value,
-  onChange,
-  children,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="w-full rounded-lg border border-hairline bg-surface px-2.5 py-2 text-[13px] outline-none focus:border-ink/40"
-    >
-      {children}
-    </select>
+    </div>
   );
 }
