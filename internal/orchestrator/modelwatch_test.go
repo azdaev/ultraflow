@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestClaudeSessionModel(t *testing.T) {
@@ -72,5 +73,41 @@ func TestCodexSessionModel(t *testing.T) {
 	// unrelated session's model.
 	if _, ok := codexSessionModel(t.TempDir()); ok {
 		t.Fatal("codexSessionModel with no matching rollout: ok=true, want false")
+	}
+}
+
+func TestCodexSessionModelDoesNotFallBackToOlderSession(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	work := t.TempDir()
+	canon, err := filepath.EvalSymlinks(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := filepath.Join(codexHome, "sessions", "2026", "07", "13")
+	if err := os.MkdirAll(sess, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	old := filepath.Join(sess, "rollout-old.jsonl")
+	writeLines(t, old, []string{
+		`{"type":"session_meta","payload":{"cwd":"` + canon + `"}}`,
+		`{"type":"turn_context","payload":{"model":"gpt-old"}}`,
+	})
+	newest := filepath.Join(sess, "rollout-new.jsonl")
+	writeLines(t, newest, []string{
+		`{"type":"session_meta","payload":{"cwd":"` + canon + `"}}`,
+	})
+	now := time.Now()
+	if err := os.Chtimes(old, now.Add(-time.Minute), now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newest, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := codexSessionModel(work); ok || got != "" {
+		t.Fatalf("codexSessionModel = %q,%v; want empty,false until the new session writes its model", got, ok)
 	}
 }

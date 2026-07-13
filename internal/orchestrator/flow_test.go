@@ -19,43 +19,82 @@ import (
 )
 
 // TestFlowTurnPublishesDetectedModel guards the watcher wiring that flow steps
-// share with solo runs. A short real PTY turn must inspect the matching Codex
-// rollout and leave the detected model in the board snapshot before it exits.
+// share with solo runs. A short real PTY turn must inspect each adapter's
+// transcript and leave the detected model in the board snapshot before it exits.
 func TestFlowTurnPublishesDetectedModel(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
-	dir := t.TempDir()
-	canonicalDir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sessions := filepath.Join(codexHome, "sessions", "2026", "07", "13")
-	if err := os.MkdirAll(sessions, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeLines(t, filepath.Join(sessions, "rollout-flow.jsonl"), []string{
-		`{"type":"session_meta","payload":{"cwd":"` + canonicalDir + `"}}`,
-		`{"type":"turn_context","payload":{"cwd":"` + canonicalDir + `","model":"gpt-5.6-sol"}}`,
-	})
 
 	svc := newTestSvc(t)
 	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")),
 		terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", 1)
-	task, err := svc.CreateTaskFull("model watcher", "", "", "codex", "plan-build")
-	if err != nil {
-		t.Fatal(err)
+
+	tests := []struct {
+		name     string
+		agent    string
+		model    string
+		isClaude bool
+		fixture  func(*testing.T, string)
+	}{
+		{
+			name:  "codex rollout",
+			agent: "codex",
+			model: "gpt-5.6-sol",
+			fixture: func(t *testing.T, dir string) {
+				canonicalDir, err := filepath.EvalSymlinks(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sessions := filepath.Join(codexHome, "sessions", "2026", "07", "13")
+				if err := os.MkdirAll(sessions, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeLines(t, filepath.Join(sessions, "rollout-flow.jsonl"), []string{
+					`{"type":"session_meta","payload":{"cwd":"` + canonicalDir + `"}}`,
+					`{"type":"turn_context","payload":{"cwd":"` + canonicalDir + `","model":"gpt-5.6-sol"}}`,
+				})
+			},
+		},
+		{
+			name:     "claude transcript",
+			agent:    "claude",
+			model:    "claude-sonnet-4-8",
+			isClaude: true,
+			fixture: func(t *testing.T, dir string) {
+				project := filepath.Join(home, ".claude", "projects", encodeClaudeCwd(dir))
+				if err := os.MkdirAll(project, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeLines(t, filepath.Join(project, "flow-session.jsonl"), []string{
+					`{"type":"assistant","message":{"model":"claude-sonnet-4-8"}}`,
+				})
+			},
+		},
 	}
 
-	_, started := o.runStepTurn(task.ID, dir, false,
-		exec.Command("sh", "-c", "sleep 0.05"), func() {}, "running test step")
-	if !started {
-		t.Fatal("flow turn did not start")
-	}
-	if got := svc.Models()[task.ID]; got != "gpt-5.6-sol" {
-		t.Fatalf("flow turn model = %q; want gpt-5.6-sol", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tt.fixture(t, dir)
+			task, err := svc.CreateTaskFull("model watcher", "", "", tt.agent, "plan-build")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, started := o.runStepTurn(task.ID, dir, tt.isClaude,
+				exec.Command("sh", "-c", "sleep 0.05"), func() {}, "running test step")
+			if !started {
+				t.Fatal("flow turn did not start")
+			}
+			if got := svc.Models()[task.ID]; got != tt.model {
+				t.Fatalf("flow turn model = %q; want %s", got, tt.model)
+			}
+		})
 	}
 }
 

@@ -146,18 +146,23 @@ func codexSessionModel(dir string) (string, bool) {
 	sort.Slice(rollouts, func(i, j int) bool { return rollouts[i].mod.After(rollouts[j].mod) })
 
 	for _, r := range rollouts {
-		if m, ok := codexRolloutModel(r.path, canon); ok {
-			return m, true
+		m, matched := codexRolloutModel(r.path, canon)
+		if matched {
+			// The newest rollout for this worktree is the current session. If its
+			// turn_context has not been written yet, report not-found for now rather
+			// than falling through to a stale model from an older session.
+			return m, m != ""
 		}
 	}
 	return "", false
 }
 
 // codexRolloutModel reads one rollout file: if its session_meta cwd matches
-// wantCwd, it returns the last turn_context model in the file (and true).
-// Otherwise it returns false so the caller tries the next rollout. Returning true
-// only on a cwd match (even if no model line exists yet) is deliberate — this is
-// the right session, so we shouldn't fall through to an unrelated one.
+// wantCwd, it returns the last turn_context model in the file and matched=true.
+// Otherwise matched=false tells the caller to try the next rollout. A matching
+// session_meta with no model yet still returns matched=true: this is the current
+// session, so the caller must not fall through to an older rollout for the same
+// worktree and briefly publish a stale model.
 func codexRolloutModel(path, wantCwd string) (string, bool) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -183,7 +188,7 @@ func codexRolloutModel(path, wantCwd string) (string, bool) {
 		}
 		if first {
 			first = false
-			if line.Type == "session_meta" && line.Payload.Cwd != wantCwd {
+			if line.Type != "session_meta" || line.Payload.Cwd != wantCwd {
 				return "", false // different worktree — not this task's session
 			}
 			matched = true
@@ -195,5 +200,5 @@ func codexRolloutModel(path, wantCwd string) (string, bool) {
 	if !matched {
 		return "", false
 	}
-	return model, model != ""
+	return model, matched
 }

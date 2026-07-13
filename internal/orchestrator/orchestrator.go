@@ -412,6 +412,17 @@ func (o *Orchestrator) runWithSelfHeal(ctx context.Context, t model.Task, dir st
 	}
 }
 
+// startTurnObservers starts the transcript-backed observers shared by solo runs
+// and flow steps. Keeping this wiring in one place ensures every live agent turn
+// publishes its concrete model, regardless of which execution path started it.
+// Claude additionally exposes context usage through the same transcript.
+func (o *Orchestrator) startTurnObservers(sess *terminal.Session, taskID, dir string, isClaude bool) {
+	if isClaude {
+		go o.watchContext(sess, taskID, dir)
+	}
+	go o.watchModel(sess, taskID, dir, isClaude)
+}
+
 // runAgent runs cmd as the task's live PTY agent for one attempt: register the
 // session, flip the card to running only once the terminal exists (never a 404),
 // wait, and return the exit error (nil = clean). started is false only when the
@@ -433,15 +444,9 @@ func (o *Orchestrator) runAgent(taskID, dir string, isClaude bool, cmd *exec.Cmd
 	// kills the session (which self-heal reads as an intentional end, not a crash).
 	go o.watchIdle(sess, taskID, idleTimeout, idlePoll)
 
-	// Inject /compact when the context crosses the cap (claude only; no-op when unset).
-	if isClaude {
-		go o.watchContext(sess, taskID, dir)
-	}
-
-	// Surface the real model the agent is running (e.g. "Opus 4.8") on the card, for
-	// both adapters — it reads each agent's own transcript. Same per-attempt lifetime
-	// as the watchers above, so a fallback-model retry re-detects.
-	go o.watchModel(sess, taskID, dir, isClaude)
+	// Publish transcript-backed context/model data for this attempt. A fallback-model
+	// retry starts fresh observers and is therefore re-detected.
+	o.startTurnObservers(sess, taskID, dir, isClaude)
 
 	werr = sess.Wait()
 	if werr != nil {
