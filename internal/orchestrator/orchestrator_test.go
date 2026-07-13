@@ -23,6 +23,18 @@ import (
 // handed out (initial + retries).
 type crashingAgent struct{ cmds int }
 
+// shellAgent is a tiny real-process adapter for tests that exercise the PTY
+// boundary. Policy tests use scripted turnRunner implementations instead.
+type shellAgent struct{ script string }
+
+func (a *shellAgent) Name() string { return "test" }
+func (a *shellAgent) Command(context.Context, string, string) (*exec.Cmd, func(), error) {
+	return exec.Command("sh", "-c", a.script), func() {}, nil
+}
+func (a *shellAgent) ResumeCommand(context.Context, string, string) (*exec.Cmd, func(), error) {
+	return a.Command(context.Background(), "", "")
+}
+
 func crashCmd() (*exec.Cmd, func(), error) {
 	return exec.Command("sh", "-c", "exit 1"), func() {}, nil
 }
@@ -50,8 +62,10 @@ func TestSelfHealRetriesThenEscalates(t *testing.T) {
 	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
 
 	ia := &crashingAgent{}
-	cmd, cleanup, _ := ia.Command(context.Background(), "", "")
-	o.runWithSelfHeal(context.Background(), task, t.TempDir(), ia, cmd, cleanup, "running")
+	o.runWithSelfHeal(context.Background(), task, turnRequest{
+		taskID: task.ID, dir: t.TempDir(), agent: ia, runningMsg: "running",
+		completion: turnCompletesTask, isClaude: true,
+	})
 
 	got, _ := svc.GetTask(task.ID)
 	// Never a raw failed card — it escalates as an ordinary needs_human item.
@@ -85,8 +99,10 @@ func TestSelfHealSucceedsMidRetry(t *testing.T) {
 	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
 
 	ia := &flakyAgent{}
-	cmd, cleanup, _ := ia.Command(context.Background(), "", "")
-	o.runWithSelfHeal(context.Background(), task, t.TempDir(), ia, cmd, cleanup, "running")
+	o.runWithSelfHeal(context.Background(), task, turnRequest{
+		taskID: task.ID, dir: t.TempDir(), agent: ia, runningMsg: "running",
+		completion: turnCompletesTask, isClaude: true,
+	})
 
 	// A clean exit with no finish_task (as here) resolves to review, not failed.
 	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusReview {
@@ -336,7 +352,9 @@ func TestWatchIdleClosesFinishedTurn(t *testing.T) {
 	}
 	defer sess.Close()
 
-	go o.watchIdle(sess, task.ID, 30*time.Millisecond, 5*time.Millisecond)
+	runner := o.turns.(*terminalTurnRunner)
+	runner.timeout, runner.poll = 30*time.Millisecond, 5*time.Millisecond
+	go runner.watchIdle(sess, turnRequest{taskID: task.ID, completion: turnCompletesTask})
 
 	waitFor(t, "task to land in review", func() bool {
 		got, _ := svc.GetTask(task.ID)
@@ -371,7 +389,9 @@ func TestWatchIdleLeavesAskHumanParked(t *testing.T) {
 	}
 	defer sess.Close()
 
-	go o.watchIdle(sess, task.ID, 30*time.Millisecond, 5*time.Millisecond)
+	runner := o.turns.(*terminalTurnRunner)
+	runner.timeout, runner.poll = 30*time.Millisecond, 5*time.Millisecond
+	go runner.watchIdle(sess, turnRequest{taskID: task.ID, completion: turnCompletesTask})
 
 	// Give the watcher well past its timeout to (wrongly) act, then assert it didn't.
 	time.Sleep(200 * time.Millisecond)

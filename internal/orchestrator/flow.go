@@ -4,13 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os/exec"
-	"time"
 
 	"ultraflow/internal/agent"
 	"ultraflow/internal/flow"
 	"ultraflow/internal/model"
-	"ultraflow/internal/terminal"
 )
 
 // This file is the multi-step flow runner. Where the solo path runs ONE agent to
@@ -115,138 +112,60 @@ func (o *Orchestrator) runStep(ctx context.Context, t model.Task, dir string, pr
 	}
 	// Same as the solo path: only claude sessions get the context-cap monitor.
 	_, isClaude := ia.(*agent.Claude)
-
-	budget := retryBudget(t)
-	retries := 0
-	o.svc.SetAttempt(t.ID, 0)
 	caption := fl.Caption(step.ID)
-
-	for {
-		// Reset per-turn: only finish_task or an idle turn-end sets it; a bare crash
-		// leaves it false, which is how we tell a clean end from a crash below.
-		o.svc.SetTurnDone(t.ID, false)
-		// Persist active before process creation, so a daemon death here resumes this
-		// step's session on restart.
-		o.svc.SetRunPhase(t.ID, model.RunActive)
-
-		var (
-			cmd     *exec.Cmd
-			cleanup func()
-			err     error
-		)
-		switch {
-		case retries == 0 && resume:
-			// Resuming: a restart interrupted an active session, or a human-guided
-			// re-entry (which carries the answer as seed).
-			if seed == "" {
-				cmd, cleanup, err = ia.ResumeCommand(ctx, dir, o.buildStepRestartPrompt(t, step))
-			} else {
-				cmd, cleanup, err = ia.ResumeCommand(ctx, dir, o.buildStepReengagePrompt(t, step, seed))
+	result := o.runRetryingTurns(ctx, retryPlan{
+		task: t,
+		beforeTurn: func() {
+			// Persist the active phase before process creation so restart recovery
+			// knows this exact step had a live conversation to resume.
+			o.svc.SetTurnDone(t.ID, false)
+			o.svc.SetRunPhase(t.ID, model.RunActive)
+		},
+		makeTurn: func(retry, budget int, _ error) turnRequest {
+			prompt, shouldResume := o.stepTurnPrompt(t, fl, step, prt, seed, resume, rename, retry, budget)
+			return turnRequest{
+				taskID: t.ID, dir: dir, agent: ia, prompt: prompt, port: prt,
+				resume: shouldResume, runningMsg: caption,
+				completion: turnCompletesStep, isClaude: isClaude,
 			}
-		case retries == 0:
-			cmd, cleanup, err = ia.Command(ctx, dir, o.buildStepPrompt(t, fl, step, prt, seed, rename))
-		default:
-			cmd, cleanup, err = ia.ResumeCommand(ctx, dir, o.buildStepSelfHealPrompt(t, step, retries, budget))
-		}
-		if err != nil {
-			o.fail(t.ID, "couldn't build the agent command: "+err.Error())
-			return stepHalted
-		}
-		injectPort(cmd, prt)
-
-		werr, started := o.runStepTurn(t.ID, dir, isClaude, cmd, cleanup, caption)
-		if !started {
-			return stepHalted // runStepTurn already failed the task
-		}
-		if ctx.Err() != nil {
-			return stepDaemonDown
-		}
-
-		// A clean turn end: finish_task / idle set turn_done, or the process exited 0.
-		if run, _ := o.svc.Run(t.ID); run.TurnDone || werr == nil {
-			return stepDone
-		}
-		// The human stopped the task while the step ran.
-		if cur, _ := o.svc.GetTask(t.ID); cur.Status == model.StatusCancelled {
-			return stepStopped
-		}
-		if stoppedByHuman(werr) {
-			o.fail(t.ID, "you stopped this task")
-			return stepStopped
-		}
-
-		// A genuine crash. Retry the step in place (resuming its conversation) up to
-		// the budget, then escalate to the human as an ordinary checkpoint.
-		if retries >= budget {
+		},
+		beforeEscalation: func() {
 			o.svc.SetRunPhase(t.ID, model.RunWaiting)
-			o.escalate(t.ID, budget, werr.Error())
-			return stepHalted
-		}
-		retries++
-		o.svc.AppendTaskEvent(t.ID, "error", fmt.Sprintf("%s step failed: %s", step.Role, truncateErr(werr.Error())))
-		o.svc.AbandonRequests(t.ID)
-		o.svc.SetAttempt(t.ID, retries)
-		o.svc.AppendTaskEvent(t.ID, "status",
-			fmt.Sprintf("fixing itself · %d/%d — diagnosing the %s step and retrying", retries, budget, step.Role))
+		},
+		failureEvent: func(err error) string {
+			return fmt.Sprintf("%s step failed: %s", step.Role, truncateErr(err.Error()))
+		},
+		retryStatus: func(retry, budget int) string {
+			return fmt.Sprintf("fixing itself · %d/%d — diagnosing the %s step and retrying", retry, budget, step.Role)
+		},
+	})
+
+	switch result.outcome {
+	case turnCompleted:
+		return stepDone
+	case turnStopped:
+		return stepStopped
+	case turnDaemonDown:
+		return stepDaemonDown
+	default:
+		return stepHalted
 	}
 }
 
-// runStepTurn runs cmd as the step's live PTY agent for one turn. Unlike the solo
-// runAgent it does NOT drive the task to review on a turn end — the flow runner owns
-// that — it only flips the card to running and waits. started is false only when the
-// terminal couldn't start (task already failed).
-func (o *Orchestrator) runStepTurn(taskID, dir string, isClaude bool, cmd *exec.Cmd, cleanup func(), runningMsg string) (werr error, started bool) {
-	defer cleanup()
-
-	sess, err := o.term.Start(taskID, cmd)
-	if err != nil {
-		o.fail(taskID, "couldn't start the agent terminal: "+err.Error())
-		return nil, false
+// stepTurnPrompt is the complete command-selection policy for a flow step. The
+// first turn may be fresh, restart-resumed, or answer-resumed; every retry resumes
+// the same conversation with a focused recovery prompt.
+func (o *Orchestrator) stepTurnPrompt(t model.Task, fl flow.Flow, step flow.Step, prt int, seed string, resume, rename bool, retry, budget int) (string, bool) {
+	if retry > 0 {
+		return o.buildStepSelfHealPrompt(t, step, retry, budget), true
 	}
-	// Guarded transition: a task cancelled between slot and start isn't revived —
-	// runStep sees the cancelled status after the turn and stops walking.
-	o.svc.AgentStarted(taskID)
-	o.svc.AppendTaskEvent(taskID, "status", runningMsg)
-
-	// End a bare turn (idled without finish_task) so the step advances; unlike the
-	// solo watcher this marks the turn done rather than sending the task to review.
-	go o.watchStepIdle(sess, taskID)
-
-	// Use the same transcript observers as the solo path. They stop on sess.Done(),
-	// so a completed flow turn leaks neither context nor model watchers.
-	o.startTurnObservers(sess, taskID, dir, isClaude)
-
-	werr = sess.Wait()
-	return werr, true
-}
-
-// watchStepIdle ends a step's turn when its agent goes idle at the prompt without
-// calling finish_task: it marks the turn done and closes the session, so the flow
-// runner advances. It must NOT act while the agent is legitimately parked on its
-// OWN ask_human (status needs_human) — that agent is supposed to idle; a later
-// answer returns it to running, where a fresh idle can be caught.
-func (o *Orchestrator) watchStepIdle(sess *terminal.Session, taskID string) {
-	ticker := time.NewTicker(idlePoll)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-sess.Done():
-			return
-		case <-ticker.C:
-			if sess.IdleFor() < idleTimeout {
-				continue
-			}
-			if cur, _ := o.svc.GetTask(taskID); cur.Status != model.StatusRunning {
-				continue // parked on a mid-step ask_human — leave it be
-			}
-			if !o.svc.SetTurnDone(taskID, true) {
-				return
-			}
-			o.svc.AppendTaskEvent(taskID, "status", "step ended its turn — advancing the flow")
-			sess.Close()
-			return
-		}
+	if !resume {
+		return o.buildStepPrompt(t, fl, step, prt, seed, rename), false
 	}
+	if seed == "" {
+		return o.buildStepRestartPrompt(t, step), true
+	}
+	return o.buildStepReengagePrompt(t, step, seed), true
 }
 
 // openGate parks a task at a human gate: post the gate's question (needs_human) with
