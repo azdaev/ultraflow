@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.22 — 2026-07-14
+
+- Ultraflow: Отчёт для review-задач
+- Ultraflow: Проверить автозапуск dev server
+
 ## v0.10.21 — 2026-07-14
 
 - Ultraflow: Dark theme
