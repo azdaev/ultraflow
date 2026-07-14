@@ -9,16 +9,17 @@ import { DotsIcon, PlusIcon } from "./icons";
 // of its header dot + count pill. One entry per pipeline stage.
 export interface ColumnKind {
   label: string;
-  dot: string; // hex
-  pillBg: string; // hex
-  pillText: string; // hex
+  dot: string; // CSS color (token var) for the header dot
+  pillBg: string; // CSS color (token var) for the count pill fill
+  pillText: string; // CSS color (token var) for the count pill text
 }
 
+// Colors are token vars so the header dot + count pill flip with the theme.
 export const COLUMNS: Record<"backlog" | "running" | "review" | "done", ColumnKind> = {
-  backlog: { label: "Backlog", dot: "#6E6E68", pillBg: "#E4E4E1", pillText: "#6E6E68" },
-  running: { label: "Running", dot: "#2F6DB0", pillBg: "#E9F0F7", pillText: "#2F6DB0" },
-  review: { label: "Review", dot: "#B45309", pillBg: "#F6ECD9", pillText: "#B45309" },
-  done: { label: "Done", dot: "#4F7A4D", pillBg: "#E8EFE7", pillText: "#4F7A4D" },
+  backlog: { label: "Backlog", dot: "var(--color-muted)", pillBg: "var(--color-hairline)", pillText: "var(--color-muted)" },
+  running: { label: "Running", dot: "var(--color-steel)", pillBg: "var(--color-steel-tint)", pillText: "var(--color-steel)" },
+  review: { label: "Review", dot: "var(--color-nearcap)", pillBg: "var(--color-amber-tint)", pillText: "var(--color-nearcap)" },
+  done: { label: "Done", dot: "var(--color-moss)", pillBg: "var(--color-moss-pill)", pillText: "var(--color-moss)" },
 };
 
 interface Props {
@@ -61,7 +62,7 @@ export function Column({ kind, tasks, now, activity, activityKind, context, cont
             <button
               onClick={menu.openMenu}
               aria-label={`${kind.label} column actions`}
-              className="grid size-5 shrink-0 place-items-center rounded-md text-[#B4B4AD] transition hover:bg-board hover:text-muted"
+              className="grid size-5 shrink-0 place-items-center rounded-md text-faint transition hover:bg-board hover:text-muted"
             >
               <DotsIcon />
             </button>
@@ -92,7 +93,7 @@ export function Column({ kind, tasks, now, activity, activityKind, context, cont
         {onAddTask && (
           <button
             onClick={onAddTask}
-            className="flex w-full items-center gap-1.75 rounded-xl border border-dashed border-[#D6D6D0] px-3 py-2.5 text-faint transition hover:border-ink/30 hover:text-muted"
+            className="flex w-full items-center gap-1.75 rounded-xl border border-dashed border-hairline px-3 py-2.5 text-faint transition hover:border-ink/30 hover:text-muted"
           >
             <PlusIcon />
             <span className="text-[12.5px] font-medium leading-4">Add task</span>

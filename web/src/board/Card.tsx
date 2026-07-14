@@ -99,7 +99,7 @@ export function Card({ task, activity, activityKind, now, contextTokens, context
         transition={{ type: "spring", stiffness: 320, damping: 30, delay: Math.min(index * 0.03, 0.18) }}
         className={`flex w-full flex-col gap-2.25 rounded-xl border-[0.75px] p-3 text-left transition ${
           closed
-            ? "border-[#E7E7E3] bg-[#FBFBFA]"
+            ? "border-cardline bg-chip"
             : needsHuman
               ? "border-accent-line bg-surface hover:border-accent/40"
               : "border-hairline bg-surface hover:border-ink/20"
@@ -157,7 +157,7 @@ function StatusRow({ task, now }: { task: Task; now: number }) {
   if (s === "done") {
     return (
       <Row right={ago(task.updatedAt, now)} rightMuted>
-        <span className="flex items-center gap-1.25 text-[#8A8F86]">
+        <span className="flex items-center gap-1.25 text-muted">
           <CheckCircleIcon className="text-moss" />
           <span className="text-[11px] font-medium leading-[14px]">Done</span>
         </span>
@@ -243,7 +243,7 @@ function Row({
   return (
     <div className="flex items-center justify-between gap-2">
       {children}
-      <span className={`shrink-0 font-mono text-[11px] leading-[14px] ${rightMuted ? "text-[#A6A6A0]" : "text-faint"}`}>
+      <span className={`shrink-0 font-mono text-[11px] leading-[14px] ${rightMuted ? "text-muted" : "text-faint"}`}>
         {right}
       </span>
     </div>
@@ -287,10 +287,10 @@ function AgentFooter({ agent, model, flow, closed }: { agent: string; model?: st
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="flex items-center gap-1.75">
-        <AgentMark size={closed ? 12 : 13} color={closed ? "#C99180" : agentColor(agent)} agent={agent} />
+        <AgentMark size={closed ? 12 : 13} color={closed ? "var(--color-faint)" : agentColor(agent)} agent={agent} />
         <span className={`text-xs leading-4 ${closed ? "text-faint" : "text-muted"}`}>{model ? friendlyModel(model) : agentLabel(agent)}</span>
       </span>
-      <span className={`font-mono text-[10px] leading-3 tracking-[0.04em] ${closed ? "text-[#B0B0AA]" : "text-faint"}`}>
+      <span className="font-mono text-[10px] leading-3 tracking-[0.04em] text-faint">
         {flowOf(flow).label.toUpperCase()}
       </span>
     </div>
@@ -308,7 +308,7 @@ function ContextMeter({ tokens, cap }: { tokens: number; cap: number }) {
   return (
     <div className="flex w-full flex-col gap-1.25">
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-[9px] leading-3 tracking-[0.08em] text-[#B0B0AA]">CONTEXT</span>
+        <span className="font-mono text-[9px] leading-3 tracking-[0.08em] text-faint">CONTEXT</span>
         <span className={`font-mono text-[9.5px] leading-3 ${near ? "text-nearcap" : "text-faint"}`}>
           {k}K/{scaleLabel}{near ? " · near cap" : ""}
         </span>

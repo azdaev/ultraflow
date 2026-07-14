@@ -41,7 +41,7 @@ function blocks(src: string, resolveImg: ResolveImg): ReactNode[] {
       out.push(
         <pre
           key={key++}
-          className="overflow-x-auto rounded-lg border border-white/10 bg-[#17171A] p-3 font-mono text-[12px] leading-[1.55] text-[#ECECEA]"
+          className="overflow-x-auto rounded-lg border border-white/10 bg-terminal p-3 font-mono text-[12px] leading-[1.55] text-terminal-ink"
         >
           {body.join("\n")}
         </pre>,
@@ -260,7 +260,7 @@ function inline(src: string, resolveImg: ResolveImg): ReactNode {
           <img
             src={resolveImg(im[2])}
             alt={im[1]}
-            className="max-h-80 w-full object-contain bg-[#17171A]"
+            className="max-h-80 w-full object-contain bg-terminal"
           />
           {im[1] && (
             <span className="block truncate px-2 py-1 text-[11px] text-muted">{im[1]}</span>

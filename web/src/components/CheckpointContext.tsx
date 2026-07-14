@@ -92,7 +92,7 @@ function RawDiff({ taskId }: { taskId: string }) {
         <p className="mt-1 font-mono text-[11px] text-muted">couldn't load the diff</p>
       )}
       {diff && diff.patch && (
-        <div className="mt-1.5 overflow-hidden rounded-lg border border-hairline bg-[#17171A]">
+        <div className="mt-1.5 overflow-hidden rounded-lg border border-hairline bg-terminal">
           <DiffBody patch={diff.patch} truncated={diff.truncated} />
         </div>
       )}

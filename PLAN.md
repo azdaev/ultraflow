@@ -1,105 +1,100 @@
-# Plan: task outcomes beyond "Merge to main"
+# Plan: Dark theme
 
-## Problem
+## Goal
 
-The review accept-action is binary today, keyed purely off `task.worktree`:
+Add a dark theme to the Ultraflow board web UI. Users get a dark palette that
+mirrors the current "industrial concrete" light design, toggleable and remembered
+across reloads.
 
-- `web/src/board/Card.tsx:121` and `web/src/components/TaskDetail.tsx:272`:
-  `task.worktree ? <MergeAction> : <ApproveAction>`
-- `MergeAction` → **"Merge to main"**; `ApproveAction` → **"Approve & close · no diff"**.
+## Diagnosis (how theming works today)
 
-But "did it run in a worktree" is a poor proxy for "what did the agent actually
-produce". Every flow task runs in a worktree, so a question that was merely
-*answered*, an *audit*, or a *design exploration* all show a scary **"Merge to
-main"** button even though there is nothing to land. The human wants the accept
-control to say the true outcome.
+- The web UI is **Tailwind v4** with a `@theme` block in `web/src/index.css` that
+  defines every color as a `--color-*` token (board, surface, ink, muted, hairline,
+  steel, moss, rust, amber, accent, agent colors, …). Tailwind compiles utilities
+  like `bg-surface` / `text-ink` / `border-hairline` to `var(--color-surface)` etc.
+- **~95% of the UI already routes through these semantic tokens** (top usages:
+  `text-muted` ×82, `border-hairline` ×56, `text-ink` ×54, `bg-surface` ×34,
+  `bg-board` ×28…). This is the key win: **redefining the tokens under a dark scope
+  re-skins almost the whole app for free**, because the utilities read the variables.
+- **No theming infrastructure exists yet** — no `prefers-color-scheme`, no
+  `localStorage`, no `data-theme`, no `color-scheme`. `main.tsx` just renders `<App/>`.
+- Settings persist to the **backend** via `api.*`; but theme is a pure client-side
+  visual preference, so **localStorage** is the right store (no backend/SSE needed).
+- **Hardcoded, light-only colors** that will NOT adapt automatically (must be
+  tokenized). ~18 arbitrary-hex Tailwind utilities + inline hex, in:
+  - `web/src/board/Card.tsx` — `bg-[#FBFBFA]`, `border-[#E7E7E3]`, `text-[#8A8F86]`,
+    `text-[#A6A6A0]`, `text-[#B0B0AA]`, `#C99180` (closed-agent mark).
+  - `web/src/board/Column.tsx`, `web/src/components/AgentTerminal.tsx`,
+    `CheckpointContext.tsx`, `Markdown.tsx`, `ReviewPanel.tsx`, `TaskDetail.tsx` —
+    e.g. `bg-[#17171A]` (dark chips/terminals), `text-[#ECECEA]`, `text-[#B4B4AD]`,
+    `text-[#6FA96C]`, `text-[#E4795F]`.
+  - Note several of these (`#17171A`, `#ECECEA`) are already the *ink/board* tokens
+    inlined — in dark mode ink and board roughly swap, so they must become tokens.
+- A handful of Tailwind-default utilities (`text-white`, `bg-amber-500`,
+  `text-amber-600`) are used on colored button fills; those read fine in dark and
+  can stay, reviewed case-by-case.
 
-## The ~10 task-outcome scenarios (from history + reasoning)
+## Approach (token override — the minimal, idiomatic path)
 
-Looking at real board history (`list_tasks`) the outcomes cluster like this:
+1. **Dark token set** in `web/src/index.css`. Keep the `@theme` block as the light
+   defaults, then add an override scope that redefines the same `--color-*` names:
+   ```css
+   :root[data-theme="dark"] { --color-board:#17171a; --color-surface:#1e1e22; ... }
+   @media (prefers-color-scheme: dark) {
+     :root:not([data-theme="light"]) { /* same dark values */ }
+   }
+   ```
+   Also set `color-scheme: dark` in that scope so native scrollbars/inputs match, and
+   give the thin-scrollbar rule (`* { scrollbar-color }`) a dark variant.
+   Palette derived from the existing industrial system (dark concrete ground, raised
+   surfaces, inverted ink, and slightly-brightened steel/moss/rust/amber/accent so
+   the state colors keep their meaning on a dark ground). **Safety-orange `accent`
+   stays reserved for `needs_human`.**
 
-| # | Scenario | Example from history | Land in main? | Good accept label |
-|---|----------|----------------------|:---:|---|
-| 1 | Code change to ship | feedback button `bdeecbea`, dropdown `2ad6179`, tab-title `baa3219` | yes | **Merge to main** (+diff) |
-| 2 | Question answered | "task done / in prod?" `23845f` | no | **Close · answered** |
-| 3 | Audit / investigation findings | stuck-slot audit `df39754`, model-name probe `0525bd9` | no | **Accept findings** |
-| 4 | Design / visual exploration (Paper, screenshots) | squid hero 10 variants `5754795` | no | **Approve design** |
-| 5 | Research / gathered artifacts (links, images) | (subset of squid task) | no | **Accept** |
-| 6 | Repro / diagnosis, no fix yet | — | no (spawns follow-up) | **Accept · no change** |
-| 7 | Side-effect already applied outside the repo (release cut, DB write, external branch/PR) | — | no (already done) | **Mark done** |
-| 8 | Spike / throwaway prototype (code exists, not for main) | "refactor from scratch" `da38c78` (kept) | optional | **Merge to main** stays available |
-| 9 | Inconclusive / no-op ("couldn't reproduce", nothing to change) | — | no | **Acknowledge** |
-| 10 | Blocked / needs a decision | handled today by `ask_human` before finish | — | (n/a) |
+2. **Tokenize the hardcoded hexes** listed above so they flip with the theme — map
+   each to the nearest semantic token (e.g. `bg-[#17171A]` → `bg-ink` or a new
+   `--color-terminal` token; `#FBFBFA/#E7E7E3` → `surface`/`hairline`;
+   `#8A8F86/#A6A6A0/#B0B0AA` → `muted`/`faint`). Add 1–2 new tokens only where no
+   existing one fits (e.g. terminal background).
 
-The functional axis is only two backend paths — **merge a branch**
-(`api.merge` → `Service.MergeTask`) vs **finish without merging**
-(`api.markDone` → `Service.FinishReview`). What actually varies across the 10 is
-the **label / tone**. So the fix is: let the agent declare a small `outcome`,
-persist it, and drive the accept label from it. `merge` is just one outcome, no
-longer the default.
+3. **Toggle + persistence** (client-only):
+   - A tiny theme module: read `localStorage.theme` (`"dark" | "light" | null`);
+     null = follow system. Apply by setting `document.documentElement.dataset.theme`.
+   - **Anti-flash**: inline a 3-line script in `web/index.html` `<head>` that sets
+     `data-theme` from localStorage/system *before* paint (so no light flash on load).
+   - A **sun/moon icon button in the TopBar** (`web/src/board/TopBar.tsx`), sitting
+     with the pause / what's-new / gear controls, cycling light⇄dark and writing
+     localStorage. Add a `MoonIcon`/`SunIcon` to `web/src/board/icons.tsx`.
 
-## Approach (minimal, matches existing patterns)
+## Files to change
 
-Add a first-class `outcome` string the agent sets at `finish_task`, collapsed to
-a compact enum. Keep the current worktree/diff heuristic as the fallback for
-unset (legacy tasks + agents that don't declare one).
-
-Compact enum (agent-declared): `merge`, `answer`, `design`, `applied`, `none`.
-Scenarios above map onto these (2/3/5/6 → `answer`, 4 → `design`, 7 → `applied`,
-9 → `none`, 1/8 → `merge`). Only `merge` uses `api.merge`; the rest use
-`api.markDone`, differing only in label/sublabel.
-
-### Backend
-
-1. **`internal/model/model.go`** — add `Outcome string \`json:"outcome"\`` to
-   `Task` (near `Worktree`).
-2. **`internal/store/store.go`** — new migration string appended to `migrations`:
-   `ALTER TABLE tasks ADD COLUMN outcome TEXT NOT NULL DEFAULT ''`; add `outcome`
-   to `taskCols` + the `scanTask` scan + the `INSERT INTO tasks` column list;
-   add a `SetOutcome(id, outcome)` via the existing `touchField` helper (mirrors
-   `SetWorktree`).
-3. **`internal/core/flowrun.go`** — `CompleteTurn(taskID, summary, report string)`
-   gains an `outcome string` param; when non-empty, persist via the store setter
-   *before* routing (last non-empty wins, so the final flow step / solo finish
-   sets the task's outcome; intermediate steps that omit it don't clobber).
-4. **`internal/mcp/server.go`** — add `Outcome string` to `finishArgs` with a
-   jsonschema enum + one-line-per-value description; pass to `CompleteTurn`.
-   Extend the `finish_task` tool description: "Set `outcome` to say what you
-   produced — `merge` (code to land in main), `answer` (a question/audit was
-   answered — the report is the deliverable), `design` (visual exploration /
-   screenshots), `applied` (already applied outside the repo), `none` (nothing to
-   change). It decides the accept button the human sees; default `merge` only if
-   you actually changed code to land."
-
-### Frontend
-
-5. **`web/src/api.ts`** — add `outcome?: string` to the `Task` type.
-6. **`web/src/components/ReviewActions.tsx`** — collapse `MergeAction` /
-   `ApproveAction` into one outcome-driven `AcceptAction({ task })`: a small map
-   `outcome → { label, busyLabel, icon, run }`. `merge` keeps the diff fetch +
-   `+add −rem` trailing and calls `api.merge`; the others call `api.markDone`
-   with their label. Reuse the existing `MossAction` pill unchanged.
-7. **Action resolution** in `Card.tsx:121` and `TaskDetail.tsx:272`: pick from
-   `task.outcome`; when unset, fall back to the current rule but tightened —
-   treat a worktree with an **empty diff** as no-merge (a question answered
-   inside a worktree no longer shows "Merge to main"). Update the right-click
-   menu label in `Card.tsx:67-70` the same way.
+- `web/src/index.css` — dark token override block, `color-scheme`, dark scrollbar.
+- `web/index.html` — pre-paint anti-flash theme script.
+- `web/src/board/TopBar.tsx` — theme toggle button + wire to theme module.
+- `web/src/board/icons.tsx` — `SunIcon` / `MoonIcon`.
+- New tiny `web/src/theme.ts` — get/set/apply theme + system-preference read.
+- Tokenize hardcoded hexes in: `board/Card.tsx`, `board/Column.tsx`,
+  `components/AgentTerminal.tsx`, `CheckpointContext.tsx`, `Markdown.tsx`,
+  `ReviewPanel.tsx`, `TaskDetail.tsx`.
 
 ## Verification
 
-- `go build ./...` and `go test ./internal/core ./internal/store ./internal/mcp ./...`;
-  add/extend a `CompleteTurn` test asserting the outcome is persisted (final
-  non-empty wins; empty doesn't clobber) and an `mcp` test that `finish_task`
-  with `outcome` reaches the store.
-- Frontend: `npm run build` in `web/` (node via nvm — prepend nvm bin).
-- Drive it e2e per the board's SSE pattern: daemon on `$PORT=52876` with an
-  isolated DB, headless Chrome; finish one task with `outcome:"answer"` and one
-  with `outcome:"merge"`, confirm the review card renders **"Close · answered"**
-  vs **"Merge to main"**. Capture both review cards to `.ultraflow/shots/`.
+- Build: prepend the nvm bin dir to PATH (node/npm aren't on PATH), then
+  `cd web && npm run build` — must type-check and bundle clean.
+- Run the daemon on reserved `PORT=52595` against a seeded/live DB, open
+  `http://localhost:52595`, and check:
+  - Toggle flips the whole board (columns, cards, topbar, terminal, review panel,
+    settings modal, markdown) with no light-mode islands left behind.
+  - Reload keeps the chosen theme; first paint shows no light flash.
+  - With no stored pref, the OS dark setting is respected.
+  - State colors (running steel / done moss / failed rust / needs_human orange /
+    stale amber) stay legible and keep their meaning on the dark ground.
+- Screenshots of light + dark board (and one detail/review screen) into
+  `.ultraflow/shots/` for the review screen.
 
-## Open decision (ask the human if build stalls on it)
+## Decision (confirmed by human)
 
-Exact button wording per outcome is a judgement call — the labels above are a
-proposal. If the human wants different words (e.g. "Got it" vs "Close ·
-answered"), that's a one-line map change; surface via `ask_human` rather than
-guessing if it feels load-bearing.
+**TopBar sun/moon toggle, default = follow system.** The human picked this over
+system-only and Settings-modal placement. So Build implements the toggle exactly as
+described in "Approach → 3": a sun/moon button in the TopBar controls row, choice
+persisted in localStorage, and no stored pref = follow the OS `prefers-color-scheme`.

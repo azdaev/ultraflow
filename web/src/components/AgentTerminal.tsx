@@ -44,6 +44,20 @@ function macEditSeq(e: KeyboardEvent): string | null {
   return null;
 }
 
+// The xterm palette, read from the live theme tokens so the console matches the
+// active theme (dark island in light mode, raised panel in dark). xterm needs
+// concrete colors, so we resolve the CSS vars off <html> at read time; the
+// "themechange" listener re-applies them when the user toggles.
+function termTheme() {
+  const s = getComputedStyle(document.documentElement);
+  const v = (name: string, fallback: string) => s.getPropertyValue(name).trim() || fallback;
+  return {
+    background: v("--color-terminal", "#17171a"),
+    foreground: v("--color-terminal-ink", "#ececea"),
+    cursor: v("--color-accent", "#f5501e"),
+  };
+}
+
 // AgentTerminal is a real, interactive terminal bound to the task's live agent
 // PTY over a WebSocket: it renders the actual CLI output and sends keystrokes
 // back (including Esc and Ctrl-C). xterm.js is the emulator; the Go daemon bridges
@@ -81,7 +95,7 @@ export const AgentTerminal = forwardRef<AgentTerminalHandle, { taskId: string }>
         fontSize: 12,
         lineHeight: 1.2,
         cursorBlink: true,
-        theme: { background: "#17171A", foreground: "#ECECEA", cursor: "#F5501E" },
+        theme: termTheme(),
       });
       termRef.current = term;
       const fit = new FitAddon();
@@ -206,6 +220,15 @@ export const AgentTerminal = forwardRef<AgentTerminalHandle, { taskId: string }>
         term.dispose();
       };
     }, [taskId]);
+
+    // Re-tint the live terminal when the theme toggles (xterm can't read CSS vars).
+    useEffect(() => {
+      const onTheme = () => {
+        if (termRef.current) termRef.current.options.theme = termTheme();
+      };
+      document.addEventListener("themechange", onTheme);
+      return () => document.removeEventListener("themechange", onTheme);
+    }, []);
 
     return <div ref={elRef} className="h-full w-full" />;
   },

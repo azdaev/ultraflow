@@ -242,7 +242,7 @@ export function Settings({ open, onClose, projects }: Props) {
           </div>
           <div className="mt-3 flex items-center justify-between gap-3">
             <p className="text-[11px] leading-snug text-muted">Create a bot in @BotFather, send it /start, then add your numeric IDs. The token stays on this device.</p>
-            <button onClick={() => void saveTelegram()} disabled={telegramSaving || (telegramEnabled && ((!telegramHasToken && !telegramToken.trim()) || !telegramUserId || !telegramChatId))} className="shrink-0 rounded-lg bg-ink px-3 py-2 text-[12px] font-semibold text-white transition hover:bg-ink/85 disabled:opacity-40">
+            <button onClick={() => void saveTelegram()} disabled={telegramSaving || (telegramEnabled && ((!telegramHasToken && !telegramToken.trim()) || !telegramUserId || !telegramChatId))} className="shrink-0 rounded-lg bg-ink px-3 py-2 text-[12px] font-semibold text-surface transition hover:bg-ink/85 disabled:opacity-40">
               {telegramSaving ? "Saving…" : "Save"}
             </button>
           </div>

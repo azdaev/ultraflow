@@ -61,7 +61,7 @@ function MossAction({
               go(e);
             }
           }}
-          className={`inline-flex items-center gap-1.5 rounded-lg bg-moss px-3 py-1.75 text-[12.5px] font-semibold leading-4 text-white transition hover:brightness-105 ${
+          className={`inline-flex items-center gap-1.5 rounded-lg bg-moss-solid px-3 py-1.75 text-[12.5px] font-semibold leading-4 text-white transition hover:brightness-105 ${
             busy ? "opacity-60" : ""
           }`}
         >

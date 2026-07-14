@@ -41,7 +41,7 @@ export function Modal({ open, onClose, className = "", title, children }: Props)
           // fade-out reach the board instead of the still-mounted scrim.
           exit={{ opacity: 0, pointerEvents: "none" }}
           transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/25 p-4 pt-[8vh] backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/25 p-4 pt-[8vh] backdrop-blur-sm"
         >
           <div className="absolute inset-0" onClick={onClose} />
           <motion.div

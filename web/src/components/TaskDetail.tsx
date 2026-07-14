@@ -91,7 +91,7 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="absolute inset-0 bg-ink/30 backdrop-blur-[2px]"
+            className="absolute inset-0 bg-black/30 backdrop-blur-[2px]"
           />
           <motion.div
             initial={{ opacity: 0, scale: 0.97, y: 8 }}
@@ -167,7 +167,7 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
                     {/* focus-within ring: when the terminal has focus your keys go
                         to the agent (Esc interrupts); click outside it and Esc
                         closes the card instead. The ring makes that state visible. */}
-                    <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-hairline bg-[#17171A] p-2 transition-colors focus-within:border-accent">
+                    <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-hairline bg-terminal p-2 transition-colors focus-within:border-accent">
                       <AgentTerminal ref={termRef} taskId={task.id} />
                     </div>
                   </>

@@ -63,8 +63,8 @@ function Chip({
       }`}
     >
       {color && <span className="size-1.75 shrink-0 rounded-full" style={{ backgroundColor: color }} />}
-      <span className={`text-xs font-medium ${active ? "text-white" : "text-ink"}`}>{label}</span>
-      <span className={`font-mono text-[11px] font-medium ${active ? "text-white/60" : "text-faint"}`}>{count}</span>
+      <span className={`text-xs font-medium ${active ? "text-surface" : "text-ink"}`}>{label}</span>
+      <span className={`font-mono text-[11px] font-medium ${active ? "text-surface/60" : "text-faint"}`}>{count}</span>
     </button>
   );
 }
