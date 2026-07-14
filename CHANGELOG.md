@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.23 — 2026-07-14
+
+- Ultraflow: Restore attention indicator for ask_human
+
 ## v0.10.22 — 2026-07-14
 
 - Ultraflow: Отчёт для review-задач
