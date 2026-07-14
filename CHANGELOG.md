@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.24 — 2026-07-14
+
+- Ultraflow: Animate kanban card state transitions
+
 ## v0.10.23 — 2026-07-14
 
 - Ultraflow: Restore attention indicator for ask_human
