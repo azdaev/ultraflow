@@ -19,6 +19,12 @@ func TestTaskLifecycleModule(t *testing.T) {
 	if !svc.AgentStarted(task.ID) {
 		t.Fatal("queued task should start")
 	}
+	if svc.FinishForReview(task.ID) {
+		t.Fatal("review must reject a turn with no report handoff")
+	}
+	if err := svc.store.SetHandoff(task.ID, true); err != nil {
+		t.Fatal(err)
+	}
 	if !svc.FinishForReview(task.ID) || svc.FinishForReview(task.ID) {
 		t.Fatal("finish must move running to review exactly once")
 	}

@@ -89,9 +89,9 @@ func TestSelfHealRetriesThenEscalates(t *testing.T) {
 	}
 }
 
-// TestSelfHealSucceedsMidRetry: an agent that errors once then succeeds ends in
-// review (the normal finish path), not escalated — self-heal is transparent.
-func TestSelfHealSucceedsMidRetry(t *testing.T) {
+// TestCleanRetryStillRequiresHandoff: even after recovering from a crash, exit 0
+// without finish_task is incomplete and must not become review.
+func TestCleanRetryStillRequiresHandoff(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -105,9 +105,8 @@ func TestSelfHealSucceedsMidRetry(t *testing.T) {
 		completion: turnCompletesTask, isClaude: true,
 	})
 
-	// A clean exit with no finish_task (as here) resolves to review, not failed.
-	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusReview {
-		t.Fatalf("a run that recovered should end in review, got %s", got.Status)
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusFailed {
+		t.Fatalf("a clean retry without handoff should fail, got %s", got.Status)
 	}
 	if reqs, _ := svc.PendingRequests(); len(reqs) != 0 {
 		t.Fatalf("a recovered run must not escalate, got %d pending", len(reqs))
@@ -173,9 +172,9 @@ func TestResumeAfterRestartKeepsWorktree(t *testing.T) {
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("resume must preserve the worktree's uncommitted work, sentinel gone: %v", err)
 	}
-	// A clean exit with no finish_task resolves to review (same as any bare turn-end).
-	if got, _ := o.svc.GetTask(task.ID); got.Status != model.StatusReview {
-		t.Fatalf("a clean resume run should end in review, got %s", got.Status)
+	// Resuming preserves the worktree but still requires an explicit report handoff.
+	if got, _ := o.svc.GetTask(task.ID); got.Status != model.StatusFailed {
+		t.Fatalf("a clean resume without handoff should fail, got %s", got.Status)
 	}
 }
 
@@ -392,10 +391,9 @@ func waitFor(t *testing.T, why string, cond func() bool) {
 	}
 }
 
-// TestWatchIdleClosesFinishedTurn: an agent that ends its turn at its prompt
-// without finish_task (a silent, still-alive process) is sent to review and its
-// session killed, so the slot frees — the whole point of this change.
-func TestWatchIdleClosesFinishedTurn(t *testing.T) {
+// TestWatchIdleFailsIncompleteTurn: a silent agent that never called finish_task
+// is failed and its session killed, so the slot frees without inventing a review.
+func TestWatchIdleFailsIncompleteTurn(t *testing.T) {
 	svc := newTestSvc(t)
 	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", 1)
 
@@ -415,9 +413,9 @@ func TestWatchIdleClosesFinishedTurn(t *testing.T) {
 	runner.timeout, runner.poll = 30*time.Millisecond, 5*time.Millisecond
 	go runner.watchIdle(sess, turnRequest{taskID: task.ID, completion: turnCompletesTask})
 
-	waitFor(t, "task to land in review", func() bool {
+	waitFor(t, "task to fail its incomplete handoff", func() bool {
 		got, _ := svc.GetTask(task.ID)
-		return got.Status == model.StatusReview
+		return got.Status == model.StatusFailed
 	})
 	waitFor(t, "the idle session to be closed", func() bool {
 		select {

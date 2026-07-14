@@ -51,6 +51,7 @@ const (
 	turnDaemonDown
 	turnLaunchFailed
 	turnParked
+	turnIncomplete
 )
 
 type turnResult struct {
@@ -72,8 +73,7 @@ type terminalTurnRunner struct {
 type turnState interface {
 	AgentStarted(string) bool
 	AppendTaskEvent(string, string, string)
-	FinishForReview(string) bool
-	SetTurnDone(string, bool) bool
+	FailExecution(string, string) bool
 	GetTask(string) (model.Task, error)
 	Run(string) (model.Run, bool)
 }
@@ -149,6 +149,11 @@ func (r *terminalTurnRunner) classify(ctx context.Context, req turnRequest, werr
 	if task.Status == model.StatusNeedsHuman {
 		return turnResult{outcome: turnParked, err: werr}
 	}
+	// The idle watcher records the incomplete handoff before killing the PTY. Do
+	// not reinterpret that deliberate failure as a crash eligible for self-heal.
+	if task.Status == model.StatusFailed {
+		return turnResult{outcome: turnIncomplete, err: werr}
+	}
 	if req.completion == turnCompletesStep {
 		if run, ok := r.svc.Run(req.taskID); ok && run.TurnDone {
 			return turnResult{outcome: turnCompleted}
@@ -157,7 +162,9 @@ func (r *terminalTurnRunner) classify(ctx context.Context, req turnRequest, werr
 		return turnResult{outcome: turnCompleted}
 	}
 	if werr == nil {
-		return turnResult{outcome: turnCompleted}
+		reason := "agent exited without calling finish_task — no report was submitted"
+		r.svc.FailExecution(req.taskID, reason)
+		return turnResult{outcome: turnIncomplete, err: errors.New(reason)}
 	}
 	if stoppedByHuman(werr) {
 		return turnResult{outcome: turnStopped, err: werr}
@@ -179,20 +186,16 @@ func (r *terminalTurnRunner) watchIdle(sess *terminal.Session, req turnRequest) 
 			if sess.IdleFor() < r.timeout {
 				continue
 			}
-			if req.completion == turnCompletesTask {
-				if !r.svc.FinishForReview(req.taskID) {
-					continue // usually parked on ask_human
-				}
-				r.svc.AppendTaskEvent(req.taskID, "status", "agent went idle without calling finish_task — sent to review and freed the slot")
-			} else {
-				cur, _ := r.svc.GetTask(req.taskID)
-				if cur.Status != model.StatusRunning {
-					continue // parked on a mid-step ask_human
-				}
-				if !r.svc.SetTurnDone(req.taskID, true) {
-					return
-				}
-				r.svc.AppendTaskEvent(req.taskID, "status", "step ended its turn — advancing the flow")
+			cur, err := r.svc.GetTask(req.taskID)
+			if err != nil || (cur.Status != model.StatusRunning && cur.Status != model.StatusQueued) {
+				continue // ask_human is a deliberate idle wait, never an incomplete handoff
+			}
+			reason := "agent went idle without calling finish_task — no report was submitted"
+			if req.completion == turnCompletesStep {
+				reason = "flow step went idle without calling finish_task — no report was submitted"
+			}
+			if !r.svc.FailExecution(req.taskID, reason) {
+				continue // usually parked on ask_human
 			}
 			sess.Close()
 			return
@@ -214,6 +217,8 @@ func (o turnOutcome) String() string {
 		return "launch_failed"
 	case turnParked:
 		return "parked"
+	case turnIncomplete:
+		return "incomplete"
 	default:
 		return "unknown"
 	}

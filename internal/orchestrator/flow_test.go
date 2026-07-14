@@ -87,10 +87,25 @@ func TestFlowTurnPublishesDetectedModel(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			result := o.turns.Run(context.Background(), turnRequest{
-				taskID: task.ID, dir: dir, agent: &shellAgent{script: "sleep 0.05"},
-				runningMsg: "running test step", completion: turnCompletesStep, isClaude: tt.isClaude,
+			if err := svc.StartRun(task.ID, "plan-build", "plan"); err != nil {
+				t.Fatal(err)
+			}
+			resultCh := make(chan turnResult, 1)
+			go func() {
+				resultCh <- o.turns.Run(context.Background(), turnRequest{
+					taskID: task.ID, dir: dir, agent: &shellAgent{script: "sleep 0.05"},
+					runningMsg: "running test step", completion: turnCompletesStep, isClaude: tt.isClaude,
+				})
+			}()
+			waitFor(t, "model test turn to start", func() bool {
+				got, _ := svc.GetTask(task.ID)
+				return got.Status == model.StatusRunning
 			})
+			svc.SetRunPhase(task.ID, model.RunActive)
+			if err := svc.CompleteTurn(task.ID, "model detected", "test report", ""); err != nil {
+				t.Fatal(err)
+			}
+			result := <-resultCh
 			if result.outcome != turnCompleted {
 				t.Fatalf("flow turn outcome = %s, want completed", result.outcome.String())
 			}
@@ -110,6 +125,29 @@ type fakeFlowAgent struct {
 	dirs    []string
 	prompts []string
 	resumes int
+}
+
+// completingFlowTurns models the explicit finish_task protocol while retaining
+// fakeFlowAgent's command/resume recording used by the graph tests.
+type completingFlowTurns struct {
+	svc *core.Service
+}
+
+func (r *completingFlowTurns) Run(ctx context.Context, req turnRequest) turnResult {
+	_, cleanup, err := buildTurnCommand(ctx, req)
+	if err != nil {
+		return turnResult{outcome: turnLaunchFailed, err: err}
+	}
+	if cleanup != nil {
+		cleanup()
+	}
+	if !r.svc.AgentStarted(req.taskID) {
+		return turnResult{outcome: turnStopped}
+	}
+	if err := r.svc.CompleteTurn(req.taskID, "completed test step", "test report", ""); err != nil {
+		return turnResult{outcome: turnIncomplete, err: err}
+	}
+	return turnResult{outcome: turnCompleted}
 }
 
 func (a *fakeFlowAgent) Name() string { return "claude" }
@@ -169,6 +207,7 @@ func wireFlowOrch(t *testing.T) (*core.Service, *Orchestrator, *fakeFlowAgent) {
 	o := New(svc, "/shared", wt, term, port.NewAllocator(), devserver.NewManager(), "http://mcp", 2)
 	fake := &fakeFlowAgent{}
 	o.agents["claude"] = fake
+	o.turns = &completingFlowTurns{svc: svc}
 	svc.UseWorktrees(wt)
 	svc.UseTerminal(term)
 	svc.UseReengager(o)
@@ -444,12 +483,22 @@ func TestFlowResumeCompletedRunAfterRestart(t *testing.T) {
 	}
 	svc.AdvanceRun(task.ID, "plan", "build")
 	svc.AdvanceRun(task.ID, "build", "critic")
+	if err := svc.UpdateStatus(task.ID, model.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	svc.SetRunPhase(task.ID, model.RunActive)
+	if err := svc.CompleteTurn(task.ID, "critic complete", "test report", "merge"); err != nil {
+		t.Fatal(err)
+	}
 	svc.AdvanceRun(task.ID, "critic", "gate")
 	if err := svc.FinishFlow(task.ID); err != nil { // clears the cursor, phase=complete
 		t.Fatalf("finish flow: %v", err)
 	}
 	// The state RecoverInFlight leaves after a restart caught the Revise mid-run:
-	// requeued to backlog (CreateTaskFull already left it there) with the resume marker.
+	// requeued to backlog with the resume marker.
+	if err := svc.UpdateStatus(task.ID, model.StatusBacklog); err != nil {
+		t.Fatal(err)
+	}
 	svc.SetResume(task.ID, true)
 
 	o.start(context.Background(), task)

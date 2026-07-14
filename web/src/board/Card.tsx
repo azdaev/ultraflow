@@ -62,7 +62,7 @@ export function Card({ task, activity, activityKind, now, contextTokens, context
   // they're reachable without aiming at the small inline buttons. Ported verbatim
   // from the previous TaskCard so behaviour is unchanged.
   const items: MenuItem[] = [{ label: "Open details", onSelect: () => onOpen(task.id) }];
-  if (isReview) {
+  if (isReview && task.handoff) {
     // Mirror the accept button: only a merge outcome (or a legacy worktree task
     // with no declared outcome) lands a branch; everything else just closes.
     const lands = task.outcome === "merge" || (!task.outcome && !!task.worktree);
@@ -121,7 +121,15 @@ export function Card({ task, activity, activityKind, now, contextTokens, context
 
         {task.port > 0 && DEV_LINK_STATUSES.has(status) && <DevServerLink port={task.port} />}
 
-        {isReview && <AcceptAction task={task} note={activity} />}
+        {isReview && task.handoff && <AcceptAction task={task} note={activity} />}
+        {isReview && !task.handoff && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber/30 bg-amber-tint px-2.5 py-2 text-amber">
+            <span className="mt-1 size-1.5 shrink-0 rounded-full bg-amber" />
+            <span className="text-[11px] font-medium leading-[15px]">
+              Incomplete handoff · no report
+            </span>
+          </div>
+        )}
 
         {showStepper && <FlowStepper flow={task.flow} status={status} run={run} />}
 

@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"ultraflow/internal/flow"
 	"ultraflow/internal/model"
@@ -78,6 +79,15 @@ func (s *Service) SetTurnDone(taskID string, done bool) bool {
 // guarded FinishForReview transition as solo, so a task cancelled in the same
 // instant isn't revived into review.
 func (s *Service) FinishFlow(taskID string) error {
+	t, err := s.store.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	if !t.Handoff {
+		reason := "flow reached review without a submitted report"
+		s.FailExecution(taskID, reason)
+		return fmt.Errorf("%s", reason)
+	}
 	if err := s.store.SetRunCursor(taskID, ""); err != nil {
 		log.Printf("task %s: finish flow cursor: %v", taskID, err)
 	}
@@ -111,6 +121,19 @@ func (s *Service) FinishFlow(taskID string) error {
 //
 // The caller (mcp finish_task) closes the live session regardless.
 func (s *Service) CompleteTurn(taskID, summary, report, outcome string) error {
+	if strings.TrimSpace(report) == "" {
+		return fmt.Errorf("finish_task requires a non-empty report")
+	}
+	task, err := s.store.GetTask(taskID)
+	if err != nil {
+		return err
+	}
+	if task.Status != model.StatusQueued && task.Status != model.StatusRunning {
+		return fmt.Errorf("task is no longer running")
+	}
+	if run, ok := s.Run(taskID); ok && run.Phase != model.RunComplete && run.Phase != model.RunActive {
+		return fmt.Errorf("flow step is not active")
+	}
 	if outcome != "" {
 		if err := s.store.SetOutcome(taskID, outcome); err != nil {
 			log.Printf("task %s: set outcome: %v", taskID, err)
@@ -122,9 +145,13 @@ func (s *Service) CompleteTurn(taskID, summary, report, outcome string) error {
 			s.publish("task_updated", map[string]any{"taskId": taskID, "outcome": outcome})
 		}
 	}
-	if report != "" {
-		s.appendEvent(taskID, "report", report)
+	if err := s.appendEvent(taskID, "report", report); err != nil {
+		return fmt.Errorf("record report: %w", err)
 	}
+	if err := s.store.SetHandoff(taskID, true); err != nil {
+		return fmt.Errorf("record handoff: %w", err)
+	}
+	s.publish("task_updated", map[string]any{"taskId": taskID, "handoff": true})
 	if summary == "" {
 		summary = "agent reported the step complete"
 	}

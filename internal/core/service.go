@@ -218,16 +218,19 @@ func (s *Service) PublishPaused(paused bool) {
 func (s *Service) Subscribe() chan []byte     { return s.events.Subscribe() }
 func (s *Service) Unsubscribe(ch chan []byte) { s.events.Unsubscribe(ch) }
 
-func (s *Service) appendEvent(taskID, kind, data string) {
+func (s *Service) appendEvent(taskID, kind, data string) error {
 	e := model.Event{TaskID: taskID, Kind: kind, Data: data, CreatedAt: time.Now()}
+	var persistErr error
 	if id, err := s.store.AppendEvent(e); err == nil {
 		e.ID = id
 	} else {
 		// Still fans out live (ID stays 0), but a failed persist wouldn't reach a
 		// client that resyncs from the DB — so surface it.
 		log.Printf("task %s: append %s event: %v", taskID, kind, err)
+		persistErr = err
 	}
 	s.publish("event", e)
+	return persistErr
 }
 
 // --- tasks ---
@@ -429,6 +432,9 @@ func (s *Service) MergeTask(id string) error {
 	if t.Status != model.StatusReview {
 		return fmt.Errorf("only a task in review can be merged (this one is %s)", t.Status)
 	}
+	if !t.Handoff {
+		return fmt.Errorf("this task has no submitted report to review")
+	}
 	if s.wt == nil || t.Worktree == "" {
 		return fmt.Errorf("this task has no worktree to merge")
 	}
@@ -483,6 +489,9 @@ func (s *Service) FinishReview(id string) error {
 	}
 	if t.Status != model.StatusReview {
 		return fmt.Errorf("only a task in review can be marked done (this one is %s)", t.Status)
+	}
+	if !t.Handoff {
+		return fmt.Errorf("this task has no submitted report to review")
 	}
 	s.releaseRuntime(t) // stop the dev server and free its port now the task is done
 	// Reclaim the worktree: a non-merge outcome still ran in one for every flow task,
@@ -1020,10 +1029,9 @@ func (s *Service) ResolveAgentExit(taskID string, crashed bool, detail string) {
 		}
 		return
 	}
-	// Clean exit without finish_task (e.g. the human ended the session): a
-	// running/queued agent that finished its turn goes to review.
-	if s.SwapStatus(taskID, []model.TaskStatus{model.StatusQueued, model.StatusRunning}, model.StatusReview) {
-		go s.NoteFreshness(taskID)
+	// Exit 0 is not proof of completion. Without finish_task there is no report,
+	// so presenting the task as reviewable would be a false handoff.
+	if s.FailExecution(taskID, "agent exited without calling finish_task — no report was submitted") {
 		return
 	}
 	// Otherwise it was still parked (or a late answer resumed it behind this dead
