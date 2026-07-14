@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -208,6 +209,64 @@ func newTestOrch(t *testing.T, limit int) *Orchestrator {
 	t.Helper()
 	return New(newTestSvc(t), "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")),
 		terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", limit)
+}
+
+// TestReserveDevPortIsLazyAndStartsHook proves the user-facing contract: a task
+// begins with no reserved port; once the agent asks, one is persisted and the
+// project hook is launched automatically in the task worktree.
+func TestReserveDevPortIsLazyAndStartsHook(t *testing.T) {
+	repo := gitRepo(t)
+	if err := os.MkdirAll(filepath.Join(repo, ".ultraflow"), 0o755); err != nil {
+		t.Fatalf("mkdir hook dir: %v", err)
+	}
+	hook := filepath.Join(repo, ".ultraflow", devserver.HookName)
+	if err := os.WriteFile(hook, []byte("printf '%s' \"$PORT\" > \"$PWD/hook-port\"\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+
+	svc := newTestSvc(t)
+	if _, err := svc.CreateProject("proj", repo); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, err := svc.CreateTaskFull("preview", "", "proj", "claude", "solo")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if task.Port != 0 {
+		t.Fatalf("new task reserved port %d before it was needed", task.Port)
+	}
+	workdir := t.TempDir()
+	svc.SetWorktree(task.ID, workdir)
+
+	o := New(svc, "/shared", worktree.New(filepath.Join(t.TempDir(), "wt")), terminal.NewManager(), port.NewAllocator(), devserver.NewManager(), "http://mcp", 1)
+	t.Cleanup(o.dev.StopAll)
+	p, err := o.StartDevServer(task.ID, "exit 99") // the configured hook wins
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	if p <= 0 {
+		t.Fatalf("reserve = %d; want a port and automatic hook start", p)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		b, readErr := os.ReadFile(filepath.Join(workdir, "hook-port"))
+		if readErr == nil {
+			if string(b) != fmt.Sprint(p) {
+				t.Fatalf("hook received PORT=%q; want %d", b, p)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("hook did not start in task worktree: %v", readErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	got, _ := svc.GetTask(task.ID)
+	if got.Port != p {
+		t.Fatalf("task persisted port %d; want %d", got.Port, p)
+	}
 }
 
 // TestSemaphoreRaiseWakesQueued verifies the core resizable-semaphore contract:

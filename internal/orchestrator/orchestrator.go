@@ -48,10 +48,11 @@ type Orchestrator struct {
 	// Resizable concurrency limit (mutex+cond, not a fixed channel semaphore, so
 	// SetLimit can change the ceiling at runtime: raising wakes queued acquirers,
 	// lowering only stops new starts).
-	mu     sync.Mutex
-	cond   *sync.Cond
-	active int
-	limit  int
+	mu        sync.Mutex
+	cond      *sync.Cond
+	active    int
+	limit     int
+	runtimeMu sync.Mutex // serializes on-demand port allocation per task
 
 	// paused, when true, holds ALL agents: acquire blocks every new/queued/out-of-band
 	// start on it, and SetPaused SIGSTOPs the live sessions so running agents freeze too.
@@ -288,8 +289,9 @@ func (o *Orchestrator) runClaimed(ctx context.Context, t model.Task) {
 	// the branch.
 	dir := o.prepareWorkdir(cur)
 
-	// Reserve a dev-server port and boot the project's dev hook if any.
-	prt := o.setupPort(cur, dir)
+	// Dev-server ports are provisioned lazily through MCP only when the agent
+	// actually needs a live preview. Most tasks therefore start with no port.
+	prt := 0
 
 	// A multi-step flow walks a graph sharing this worktree; solo stays on the
 	// execute() path below. Project .ultraflow/flows.yaml overrides are honored.
@@ -328,17 +330,17 @@ func (o *Orchestrator) resumeFlowAfterRestart(ctx context.Context, t model.Task,
 }
 
 // restorePort brings a resumed task's dev server back up on its already-reserved
-// port (a restart killed it), reserving a fresh one only if it never had a port.
-// Shared by the solo and flow restart-resume paths.
+// port (a restart killed it). A task that never requested a preview remains
+// portless. Shared by the solo and flow restart-resume paths.
 func (o *Orchestrator) restorePort(t model.Task) int {
 	if t.Port > 0 {
 		if o.ports != nil {
 			o.ports.Reserve(t.Port) // idempotent with main.go's startup re-reservation
 		}
-		o.startDevServer(t, t.Worktree, t.Port)
+		o.startDevServer(t, o.taskDir(t), t.Port)
 		return t.Port
 	}
-	return o.setupPort(t, t.Worktree)
+	return 0
 }
 
 // runWithSelfHeal runs a task's agent and, on an unexpected error, auto-retries up
@@ -512,11 +514,9 @@ func (o *Orchestrator) Revise(taskID, feedback string) error {
 	}
 	o.svc.AppendTaskEvent(taskID, "human_answer", feedback)
 
-	// Reuse the first run's port (its dev server stayed up through review).
+	// Reuse a port requested during the first run (its dev server stayed up
+	// through review). Do not allocate one merely because a revision started.
 	prt := t.Port
-	if prt == 0 {
-		prt = o.setupPort(t, dir)
-	}
 
 	o.launch(launchIntent{task: t, dir: dir, agent: ia, prompt: buildRevisePrompt(t, feedback, prt), port: prt,
 		runningMsg: "reworking on your feedback (Ctrl-C to interrupt)"})
@@ -656,47 +656,87 @@ func (o *Orchestrator) prepareWorkdir(t model.Task) string {
 	return w.Path
 }
 
-// setupPort reserves a distinct dev-server port for the task, records it on the
-// card, and boots the project's dev-server hook (if any) bound to that port. The
-// port is also injected into the agent's env by injectPort. Returns 0 when no
-// allocator is wired or a port couldn't be obtained (the task still runs, just
-// without a reserved port).
-func (o *Orchestrator) setupPort(t model.Task, dir string) int {
-	if o.ports == nil {
-		return 0
-	}
-	p, err := o.ports.Allocate()
+// StartDevServer lazily provisions a live-preview port and starts a detached
+// server for a running task. A project hook wins when configured; otherwise the
+// agent-supplied command is used, so users need no Ultraflow-specific setup.
+func (o *Orchestrator) StartDevServer(taskID, command string) (int, error) {
+	o.runtimeMu.Lock()
+	defer o.runtimeMu.Unlock()
+
+	t, err := o.svc.GetTask(taskID)
 	if err != nil {
-		o.svc.AppendTaskEvent(t.ID, "status", "couldn't allocate a dev-server port: "+err.Error())
-		return 0
+		return 0, err
 	}
-	o.svc.SetPort(t.ID, p)
-	o.svc.AppendTaskEvent(t.ID, "status", fmt.Sprintf("dev-server port %d reserved → http://localhost:%d", p, p))
-	o.startDevServer(t, dir, p)
-	return p
+	hook, hasHook := devserver.HookPath(o.repoPath(t))
+	if !hasHook && strings.TrimSpace(command) == "" {
+		return 0, fmt.Errorf("provide the project's dev-server command")
+	}
+	if o.ports == nil {
+		return 0, fmt.Errorf("dev-server port allocator is unavailable")
+	}
+	if o.dev == nil {
+		return 0, fmt.Errorf("dev-server manager is unavailable")
+	}
+	p := t.Port
+	allocated := false
+	if p <= 0 {
+		p, err = o.ports.Allocate()
+		if err != nil {
+			return 0, err
+		}
+		allocated = true
+		o.svc.SetPort(t.ID, p)
+		o.svc.AppendTaskEvent(t.ID, "status", fmt.Sprintf("dev-server port %d reserved → http://localhost:%d", p, p))
+	}
+	dir := o.taskDir(t)
+	if hasHook {
+		err = o.dev.Start(t.ID, dir, hook, p)
+	} else {
+		err = o.dev.StartCommand(t.ID, dir, command, p)
+	}
+	if err != nil {
+		if allocated {
+			o.ports.Release(p)
+			o.svc.SetPort(t.ID, 0)
+		}
+		return 0, err
+	}
+	o.svc.AppendTaskEvent(t.ID, "status", "started persistent dev server")
+	return p, nil
+}
+
+func (o *Orchestrator) taskDir(t model.Task) string {
+	if t.Worktree != "" {
+		return t.Worktree
+	}
+	if repo := o.repoPath(t); repo != "" {
+		return repo
+	}
+	return o.workdir
 }
 
 // startDevServer runs the project's .ultraflow/dev.sh hook (if present) as a
 // detached background dev server bound to p, so it stays up after the agent
 // finishes and the human can open the app from the Review card. No hook is a
-// no-op — the agent can still start its own server on the injected PORT.
-func (o *Orchestrator) startDevServer(t model.Task, dir string, p int) {
+// no-op — the agent can still start its own server on the port returned by MCP.
+func (o *Orchestrator) startDevServer(t model.Task, dir string, p int) bool {
 	if o.dev == nil {
-		return
+		return false
 	}
 	repo := o.repoPath(t)
 	if repo == "" {
-		return
+		return false
 	}
 	hook, ok := devserver.HookPath(repo)
 	if !ok {
-		return
+		return false
 	}
 	if err := o.dev.Start(t.ID, dir, hook, p); err != nil {
 		o.svc.AppendTaskEvent(t.ID, "status", "dev-server hook failed to start: "+err.Error())
-		return
+		return false
 	}
 	o.svc.AppendTaskEvent(t.ID, "status", "started dev server via .ultraflow/dev.sh")
+	return true
 }
 
 // repoPath returns the registered repo path for a task's project, or "" when the
@@ -731,16 +771,18 @@ const screenshotInstruction = `If you changed anything VISUAL (UI, frontend, lay
 	`under .ultraflow/shots/ in your working directory. The board shows them on the ` +
 	`review screen, so the human can see the change without running it.`
 
-// portInstruction tells the agent about its reserved dev-server port. Empty when
-// no port was allocated. Shared by the initial and send-back prompts.
+// portInstruction tells the agent how to provision a port on demand, or reports
+// the port already held by a resumed/revised task.
 func portInstruction(p int) string {
 	if p <= 0 {
-		return ""
+		return `If you need a live web preview (including for visual verification or screenshots), ` +
+			`call the MCP tool "start_dev_server" with this task ID and the project's normal dev command. ` +
+			`It allocates a unique port, keeps the server alive for review, and adds the preview link to the board.` + "\n\n"
 	}
 	return fmt.Sprintf(`A dev-server port is reserved for this task: PORT=%d (also `+
-		`ULTRAFLOW_PORT). If you start a dev server, bind it to $PORT so the human can `+
-		`open http://localhost:%d from the board. If this project has a `+
-		`.ultraflow/dev.sh hook, Ultraflow already started it on that port for you.`+"\n\n", p, p)
+		`ULTRAFLOW_PORT). To start or restart a persistent preview, call the MCP tool `+
+		`"start_dev_server" with this task ID and the project's normal dev command; it `+
+		`will reuse this port. The board URL is http://localhost:%d.`+"\n\n", p, p)
 }
 
 func buildPrompt(t model.Task, prt int) string {

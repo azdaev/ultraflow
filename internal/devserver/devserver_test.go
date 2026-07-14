@@ -51,6 +51,27 @@ func TestHookServesThenStops(t *testing.T) {
 	}
 }
 
+// TestCommandServesThenStops covers the zero-configuration path used by the MCP
+// tool: Ultraflow detaches the agent's ordinary dev command and supplies PORT.
+func TestCommandServesThenStops(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	port := freeTestPort(t)
+	m := NewManager()
+	if err := m.StartCommand("task-command", t.TempDir(), `exec python3 -m http.server "$PORT"`, port); err != nil {
+		t.Fatalf("start command: %v", err)
+	}
+	defer m.StopAll()
+	if !reachable(port, 3*time.Second) {
+		t.Fatalf("command dev server never came up on port %d", port)
+	}
+	m.Stop("task-command")
+	if !unreachable(port, 3*time.Second) {
+		t.Fatalf("command dev server still serving on %d after Stop", port)
+	}
+}
+
 // unreachable polls until a TCP connect to the port is refused (the server is
 // gone), tolerating the brief window between SIGKILL and the socket closing.
 func unreachable(port int, within time.Duration) bool {

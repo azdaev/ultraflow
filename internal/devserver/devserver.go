@@ -51,9 +51,21 @@ func NewManager() *Manager { return &Manager{proc: make(map[string]*exec.Cmd)} }
 // session (Setsid) so it survives the agent's PTY teardown; any prior dev server
 // for the task is stopped first. A no-op-safe error is returned if it can't spawn.
 func (m *Manager) Start(taskID, dir, hookPath string, port int) error {
+	cmd := exec.Command("sh", hookPath)
+	return m.start(taskID, dir, port, cmd)
+}
+
+// StartCommand launches an agent-supplied dev command with the same detached
+// lifetime as a project hook. This is the zero-configuration path: the agent
+// already knows how to run the app, while Ultraflow keeps it alive for review.
+func (m *Manager) StartCommand(taskID, dir, command string, port int) error {
+	cmd := exec.Command("sh", "-c", command)
+	return m.start(taskID, dir, port, cmd)
+}
+
+func (m *Manager) start(taskID, dir string, port int, cmd *exec.Cmd) error {
 	m.Stop(taskID) // replace any prior server for this task
 
-	cmd := exec.Command("sh", hookPath)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), portpkg.EnvVars(port)...)
 	// Own session/process group, so ending the agent's PTY session doesn't take the

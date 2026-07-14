@@ -115,6 +115,9 @@ func main() {
 	}
 
 	orch := orchestrator.New(svc, *workdir, wt, term, ports, dev, mcpURL, *maxConc)
+	// Agents start a detached dev server through MCP only when their task actually
+	// needs a live preview. The orchestrator allocates its port on demand.
+	svc.UseDevPortReserver(orch)
 	// So an answer to a self-heal escalation (a needs_human checkpoint whose agent
 	// has already stopped) re-launches the agent with the human's guidance.
 	svc.UseReengager(orch)

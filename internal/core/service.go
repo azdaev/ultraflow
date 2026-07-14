@@ -46,6 +46,13 @@ type reengager interface {
 	Reengage(taskID, guidance string) error
 }
 
+// devPortReserver provisions a dev-server port only when a running agent asks
+// for one. The orchestrator owns the actual allocation because it also knows the
+// task worktree and how to launch a project-level dev-server hook there.
+type devPortReserver interface {
+	StartDevServer(taskID, command string) (port int, err error)
+}
+
 // DefaultMaxAttempts is the self-heal retry budget when a task's flow doesn't pin
 // one: the orchestrator auto-retries this many times before escalating to the human.
 const DefaultMaxAttempts = 3
@@ -58,6 +65,7 @@ type Service struct {
 	wt       *worktree.Manager  // set via UseWorktrees; nil = merge/teardown disabled
 	term     termInput          // set via UseTerminal; nil = answers aren't delivered
 	reengage reengager          // set via UseReengager; nil = escalation answers aren't re-run
+	devPorts devPortReserver    // set via UseDevPortReserver; nil = on-demand ports unavailable
 	ports    *port.Allocator    // set via UsePorts; nil = no port release
 	dev      *devserver.Manager // set via UseDevServer; nil = no dev-server teardown
 
@@ -76,11 +84,21 @@ type Service struct {
 // both agree on where worktrees live, which terminal to write answers into, etc.
 // Each is nil in API-only/test setups (see the field comments for the degraded
 // behavior).
-func (s *Service) UseWorktrees(m *worktree.Manager)  { s.wt = m }
-func (s *Service) UseTerminal(t termInput)           { s.term = t }
-func (s *Service) UseReengager(r reengager)          { s.reengage = r }
-func (s *Service) UsePorts(p *port.Allocator)        { s.ports = p }
-func (s *Service) UseDevServer(d *devserver.Manager) { s.dev = d }
+func (s *Service) UseWorktrees(m *worktree.Manager)     { s.wt = m }
+func (s *Service) UseTerminal(t termInput)              { s.term = t }
+func (s *Service) UseReengager(r reengager)             { s.reengage = r }
+func (s *Service) UseDevPortReserver(r devPortReserver) { s.devPorts = r }
+func (s *Service) UsePorts(p *port.Allocator)           { s.ports = p }
+func (s *Service) UseDevServer(d *devserver.Manager)    { s.dev = d }
+
+// StartDevServer is the MCP-facing entry point for lazy dev-server setup. Most
+// tasks never need a browser, so they never consume a port or start a process.
+func (s *Service) StartDevServer(taskID, command string) (int, error) {
+	if s.devPorts == nil {
+		return 0, fmt.Errorf("dev-server startup is unavailable")
+	}
+	return s.devPorts.StartDevServer(taskID, command)
+}
 
 // releaseRuntime frees a finished task's dev-server port and stops its dev server.
 // Called only at terminal states — NOT on entering review, where both stay up so
