@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.21 — 2026-07-14
+
+- Ultraflow: Dark theme
+
 ## v0.10.20 — 2026-07-14
 
 - Ultraflow: Task outcomes beyond "merge to main"
