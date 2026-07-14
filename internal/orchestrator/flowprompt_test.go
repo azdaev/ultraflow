@@ -14,6 +14,9 @@ func TestSoloPromptRequestsTaskRename(t *testing.T) {
 
 	assertRenameContract(t, prompt, task.ID, true)
 	assertTaskText(t, prompt, task)
+	if !strings.Contains(prompt, "start_dev_server") {
+		t.Fatalf("fresh task prompt does not explain on-demand dev-server ports")
+	}
 }
 
 func TestFlowEntryPromptRequestsTaskRename(t *testing.T) {

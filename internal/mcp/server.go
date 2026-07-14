@@ -80,6 +80,25 @@ func New(svc *core.Service, term *terminal.Manager) *mcp.Server {
 		return text("Renamed task to: " + t.Title), nil, nil
 	})
 
+	type startDevServerArgs struct {
+		TaskID  string `json:"task_id" jsonschema:"the id of the task you are working on (given at start)"`
+		Command string `json:"command" jsonschema:"shell command that starts the project's dev server; it can use $PORT. Required unless the project has a .ultraflow/dev.sh hook"`
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "start_dev_server",
+		Description: "Start a persistent dev server only when this task needs a live web preview. " +
+			"Pass the project's normal dev command; it may use $PORT. Ultraflow reserves a unique port, " +
+			"runs the command detached so it stays alive during review, and adds a clickable link to the task card. " +
+			"A project-configured .ultraflow/dev.sh hook is used automatically when present.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a startDevServerArgs) (*mcp.CallToolResult, any, error) {
+		p, err := svc.StartDevServer(a.TaskID, a.Command)
+		if err != nil {
+			return nil, nil, err
+		}
+		url := fmt.Sprintf("http://localhost:%d", p)
+		return text(fmt.Sprintf("Dev server started with PORT=%d (ULTRAFLOW_PORT=%d) and will stay alive for review. Preview: %s", p, p, url)), nil, nil
+	})
+
 	type askArgs struct {
 		TaskID   string   `json:"task_id" jsonschema:"the id of the task you are working on (given at start)"`
 		Question string   `json:"question" jsonschema:"a clear, specific question for the human"`

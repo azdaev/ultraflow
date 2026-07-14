@@ -61,6 +61,38 @@ func callText(t *testing.T, cs *mcp.ClientSession, name string, args map[string]
 	return b.String()
 }
 
+type fakeDevPortReserver struct {
+	port    int
+	taskID  string
+	command string
+}
+
+func (f *fakeDevPortReserver) StartDevServer(taskID, command string) (int, error) {
+	f.taskID = taskID
+	f.command = command
+	return f.port, nil
+}
+
+// start_dev_server is the discoverable, agent-facing path for launching a
+// persistent preview only when needed; no human setup step is implied.
+func TestStartDevServerTool(t *testing.T) {
+	cs, svc := newTestClient(t)
+	fake := &fakeDevPortReserver{port: 45678}
+	svc.UseDevPortReserver(fake)
+
+	out := callText(t, cs, "start_dev_server", map[string]any{
+		"task_id": "task-123", "command": "npm run dev -- --port $PORT",
+	})
+	if fake.taskID != "task-123" || fake.command != "npm run dev -- --port $PORT" {
+		t.Fatalf("reserver got task=%q command=%q", fake.taskID, fake.command)
+	}
+	for _, want := range []string{"PORT=45678", "stay alive", "http://localhost:45678"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("tool response %q does not contain %q", out, want)
+		}
+	}
+}
+
 // create_task is the external input path: the tool must persist a real backlog task.
 func TestCreateTaskTool(t *testing.T) {
 	cs, svc := newTestClient(t)
