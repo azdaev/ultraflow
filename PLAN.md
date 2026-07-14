@@ -1,100 +1,105 @@
-# Plan: Dark theme
+# Plan: Restore the "Needs you" attention rail (ask_human)
 
-## Goal
+## The bug (root cause — confirmed)
 
-Add a dark theme to the Ultraflow board web UI. Users get a dark palette that
-mirrors the current "industrial concrete" light design, toggleable and remembered
-across reloads.
+When an agent calls `ask_human`, the question **used to** show in a loud, full-width
+band under the topbar (the **Attention rail**) where the human could read it and answer
+inline — without opening the task. That band was **removed** in the Paper redesign
+(commit `abe2f1c`, 2026-07-12), which deleted `web/src/components/AttentionRail.tsx` +
+`RailCard.tsx` and replaced them with a tiny `AttentionIndicator` pill in
+`web/src/board/Toolbar.tsx` that only shows a count and jumps into the card.
 
-## Diagnosis (how theming works today)
+The backend and data flow are **fine** — `AskHuman` sets `needs_human`, publishes
+`human_request`, the orchestrator refactor keeps the task parked (`turn.go` →
+`turnParked`, does not fail it), and `App.tsx` already derives the full
+`attention: AttentionItem[]` list (asks + failed + merge_failed). Only the visible
+surface for reading/answering is gone. **This is a presentation-only restore.**
 
-- The web UI is **Tailwind v4** with a `@theme` block in `web/src/index.css` that
-  defines every color as a `--color-*` token (board, surface, ink, muted, hairline,
-  steel, moss, rust, amber, accent, agent colors, …). Tailwind compiles utilities
-  like `bg-surface` / `text-ink` / `border-hairline` to `var(--color-surface)` etc.
-- **~95% of the UI already routes through these semantic tokens** (top usages:
-  `text-muted` ×82, `border-hairline` ×56, `text-ink` ×54, `bg-surface` ×34,
-  `bg-board` ×28…). This is the key win: **redefining the tokens under a dark scope
-  re-skins almost the whole app for free**, because the utilities read the variables.
-- **No theming infrastructure exists yet** — no `prefers-color-scheme`, no
-  `localStorage`, no `data-theme`, no `color-scheme`. `main.tsx` just renders `<App/>`.
-- Settings persist to the **backend** via `api.*`; but theme is a pure client-side
-  visual preference, so **localStorage** is the right store (no backend/SSE needed).
-- **Hardcoded, light-only colors** that will NOT adapt automatically (must be
-  tokenized). ~18 arbitrary-hex Tailwind utilities + inline hex, in:
-  - `web/src/board/Card.tsx` — `bg-[#FBFBFA]`, `border-[#E7E7E3]`, `text-[#8A8F86]`,
-    `text-[#A6A6A0]`, `text-[#B0B0AA]`, `#C99180` (closed-agent mark).
-  - `web/src/board/Column.tsx`, `web/src/components/AgentTerminal.tsx`,
-    `CheckpointContext.tsx`, `Markdown.tsx`, `ReviewPanel.tsx`, `TaskDetail.tsx` —
-    e.g. `bg-[#17171A]` (dark chips/terminals), `text-[#ECECEA]`, `text-[#B4B4AD]`,
-    `text-[#6FA96C]`, `text-[#E4795F]`.
-  - Note several of these (`#17171A`, `#ECECEA`) are already the *ink/board* tokens
-    inlined — in dark mode ink and board roughly swap, so they must become tokens.
-- A handful of Tailwind-default utilities (`text-white`, `bg-amber-500`,
-  `text-amber-600`) are used on colored button fills; those read fine in dark and
-  can stay, reviewed case-by-case.
+## Design source (draw-in-Paper-first ✔)
 
-## Approach (token override — the minimal, idiomatic path)
+The design already exists in Paper — file **"Ultraflow — Board"**
+(`https://app.paper.design/file/01KX9P6V1FN11E1WEGHH3N9J07/1-0`), artboard
+**"Board v2 — Attention-first"**, node **`AttentionRail` (AS-0)**. Exact spec extracted
+below (JSX pulled via Paper MCP). We implement against this rather than redrawing.
 
-1. **Dark token set** in `web/src/index.css`. Keep the `@theme` block as the light
-   defaults, then add an override scope that redefines the same `--color-*` names:
-   ```css
-   :root[data-theme="dark"] { --color-board:#17171a; --color-surface:#1e1e22; ... }
-   @media (prefers-color-scheme: dark) {
-     :root:not([data-theme="light"]) { /* same dark values */ }
-   }
-   ```
-   Also set `color-scheme: dark` in that scope so native scrollbars/inputs match, and
-   give the thin-scrollbar rule (`* { scrollbar-color }`) a dark variant.
-   Palette derived from the existing industrial system (dark concrete ground, raised
-   surfaces, inverted ink, and slightly-brightened steel/moss/rust/amber/accent so
-   the state colors keep their meaning on a dark ground). **Safety-orange `accent`
-   stays reserved for `needs_human`.**
+### Extracted spec (from Paper AS-0)
 
-2. **Tokenize the hardcoded hexes** listed above so they flip with the theme — map
-   each to the nearest semantic token (e.g. `bg-[#17171A]` → `bg-ink` or a new
-   `--color-terminal` token; `#FBFBFA/#E7E7E3` → `surface`/`hairline`;
-   `#8A8F86/#A6A6A0/#B0B0AA` → `muted`/`faint`). Add 1–2 new tokens only where no
-   existing one fits (e.g. terminal background).
+- **Rail band**: full width, `px-7 pt-4.5 pb-5.5`, `flex flex-col gap-3.5`,
+  bg `#F7F1ED` (warm peach ground), `border-b` `#E9DED7`. Renders **only when
+  there are attention items** (empty state is handled by the calm toolbar pill).
+- **Header row**: 8px accent dot `#F5501E` · **"Needs you"** Onest bold 15px ink ·
+  count badge (accent bg `#F5501E`, white JetBrains-Mono 11px) · spacer ·
+  right meta "oldest waiting 12m · answer to unblock an agent" in `#9A8A80` 12px.
+- **Cards row**: `flex gap-3.5`, each card `grow basis-0` (equal width),
+  `py-3.75 px-4 rounded-[13px] gap-2.75`, white bg. Three variants:
+  - **Checkpoint** (`needs_human`): border `#F3C9B6`, shadow
+    `#F5501F1F 0 6px 18px, #17171A0D 0 1px 4px`. Top: `Checkpoint` badge
+    (bg `#FDE7DE`, text `#C4400F`) · task title muted `#9A9A93` · timer mono
+    `#C98A6E`. Then the **question** (Onest semibold 15.5px ink), a context line
+    (`#6E6E68`), then **answer controls**: option chips (first = accent-filled
+    primary, rest = white/`#DFDFDA` border) — this is the existing `AnswerBox`.
+  - **Visual** (`needs_human` with a diff/shots): same shell; body shows diff stat
+    `+180` moss `#4F7A4D` / `−24` rust `#A9432B` · "N sections changed", and a
+    full-width accent CTA **"Review the full page"** (eye SVG) that opens TaskDetail.
+    Heuristic: render this variant when `request.shots?.length` or `Added/Removed`
+    are present; otherwise render the Checkpoint (chips) variant.
+  - **Failed** (`failed` / `merge_failed`): border `#EAA99A`, rust shadow
+    `#A9432B1A …`. Badge `Failed` (bg `#FADED7`, text `#BC2E1B`), error in a mono
+    code box (bg `#FBF1EE`, text `#9B3620`), actions **Retry** (dark `#17171A`) +
+    **View log** (opens thread). `merge_failed` → **Try merge again** + View log.
 
-3. **Toggle + persistence** (client-only):
-   - A tiny theme module: read `localStorage.theme` (`"dark" | "light" | null`);
-     null = follow system. Apply by setting `document.documentElement.dataset.theme`.
-   - **Anti-flash**: inline a 3-line script in `web/index.html` `<head>` that sets
-     `data-theme` from localStorage/system *before* paint (so no light flash on load).
-   - A **sun/moon icon button in the TopBar** (`web/src/board/TopBar.tsx`), sitting
-     with the pause / what's-new / gear controls, cycling light⇄dark and writing
-     localStorage. Add a `MoonIcon`/`SunIcon` to `web/src/board/icons.tsx`.
+Design reference screenshot: see the "Needs you" band in the Paper mock (also embedded
+in the finish report).
 
 ## Files to change
 
-- `web/src/index.css` — dark token override block, `color-scheme`, dark scrollbar.
-- `web/index.html` — pre-paint anti-flash theme script.
-- `web/src/board/TopBar.tsx` — theme toggle button + wire to theme module.
-- `web/src/board/icons.tsx` — `SunIcon` / `MoonIcon`.
-- New tiny `web/src/theme.ts` — get/set/apply theme + system-preference read.
-- Tokenize hardcoded hexes in: `board/Card.tsx`, `board/Column.tsx`,
-  `components/AgentTerminal.tsx`, `CheckpointContext.tsx`, `Markdown.tsx`,
-  `ReviewPanel.tsx`, `TaskDetail.tsx`.
+1. **`web/src/components/RailCard.tsx`** (recreate) — the three card variants above.
+   Start from the git version at `abe2f1c~1:web/src/components/RailCard.tsx` (it already
+   wires `AnswerBox`, `CheckpointContext`, `ContextMenu`, and the `open`/`retry`/`merge`/
+   `remove` actions) and **restyle** to the Paper spec. Reuse the `AttentionItem` type
+   from `useNotifications.ts` (identical shape) instead of redefining it.
+
+2. **`web/src/components/AttentionRail.tsx`** (recreate) — the band + header + equal-width
+   cards row. Base on `abe2f1c~1:web/src/components/AttentionRail.tsx`; restyle to spec;
+   **render nothing when `items.length === 0`** (don't reintroduce the always-present
+   empty band — the toolbar pill covers the calm state). Header meta: "oldest waiting …"
+   derived from the earliest `request.createdAt`.
+
+3. **`web/src/board/BoardPage.tsx`** — accept `attention: AttentionItem[]`, `now`, and
+   action handlers; render `<AttentionRail>` **between the `Toolbar` and the `Board`**
+   (full-width, matching the mock's "under topbar, above columns"). Keep the existing
+   `Toolbar` (project chips + pill) — the pill stays as the always-present calm/summary
+   anchor and OS-notification jump target; the rail is the read/answer surface when
+   something is waiting.
+
+4. **`web/src/App.tsx`** — pass the already-computed `attention` list + `now` down to
+   `BoardPage` (currently only `attentionCount` is passed). Wire `onOpen={openTaskDetail}`;
+   answering uses `api.answer`, retry `api.retry`, merge `api.merge`, remove `api.remove`
+   (all already exist in `api.ts`).
+
+5. **`web/src/index.css`** — add two tokens for the rail ground:
+   `--color-attention-ground: #f7f1ed;` and `--color-attention-line: #e9ded7;`. Reuse
+   existing tokens where within tolerance: card accent border ≈ `--color-accent-line`
+   (`#f6c3ad`), badges ≈ `--color-accent-tint`, diff moss/rust ≈ `--color-moss`/`--color-rust`.
+   Define the two card box-shadows inline (they're specific).
+
+## Notes / decisions
+
+- **No backend change.** `AskHuman`, the orchestrator (`turn.go`/`flow.go`), SSE, and the
+  `attention` derivation in `App.tsx` are all intact — this is purely restoring the UI.
+- **Keep the pill.** It gives the calm "Nothing needs you" state and stays the OS-notify
+  jump target; the rail only appears when `attentionCount > 0`. (If the human prefers the
+  mock exactly — no pill — that's a one-line removal, flag at review.)
+- **Inline answer** is the whole point of the "separate place": the `needs_human` card
+  embeds `AnswerBox` so the human answers without opening the task.
 
 ## Verification
 
-- Build: prepend the nvm bin dir to PATH (node/npm aren't on PATH), then
-  `cd web && npm run build` — must type-check and bundle clean.
-- Run the daemon on reserved `PORT=52595` against a seeded/live DB, open
-  `http://localhost:52595`, and check:
-  - Toggle flips the whole board (columns, cards, topbar, terminal, review panel,
-    settings modal, markdown) with no light-mode islands left behind.
-  - Reload keeps the chosen theme; first paint shows no light flash.
-  - With no stored pref, the OS dark setting is respected.
-  - State colors (running steel / done moss / failed rust / needs_human orange /
-    stale amber) stay legible and keep their meaning on the dark ground.
-- Screenshots of light + dark board (and one detail/review screen) into
-  `.ultraflow/shots/` for the review screen.
-
-## Decision (confirmed by human)
-
-**TopBar sun/moon toggle, default = follow system.** The human picked this over
-system-only and Settings-modal placement. So Build implements the toggle exactly as
-described in "Approach → 3": a sun/moon button in the TopBar controls row, choice
-persisted in localStorage, and no stored pref = follow the OS `prefers-color-scheme`.
+- Build with the nvm node on PATH (`~/.nvm/versions/node/v24.13.0/bin`):
+  `cd web && npm run build` (`tsc -b && vite build`).
+- Run the dev server bound to `PORT=62441` (or `.ultraflow/dev.sh`). Seed a pending
+  `ask_human` (per the "verify-frontend-sse" approach: seed DB / inject via `/mcp
+  ask_human`) and confirm the rail appears under the toolbar with the question + working
+  option chips; answering clears it. Also exercise a `failed` and a `merge_failed` card.
+- Capture screenshots of the rail (checkpoint + failed states) into `.ultraflow/shots/`
+  for the review screen.

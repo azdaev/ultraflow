@@ -4,12 +4,16 @@ import { ImageAttachStrip, useImageAttach, withAttachments } from "./ImageAttach
 
 interface Props {
   request: HumanRequest;
+  // slim drops the image dropzone (and paste-to-attach) for tight surfaces like
+  // the attention rail, where a quick decision — chips or a typed reply — is the
+  // point; attaching an image is a reason to open the task instead.
+  slim?: boolean;
 }
 
 // AnswerBox renders the live ask_human decision UI: one-tap option chips plus a
 // free-reply row. Both post to /api/human_requests/{id}/answer, which unblocks
 // the parked agent. Orange is the decision family.
-export function AnswerBox({ request }: Props) {
+export function AnswerBox({ request, slim }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [free, setFree] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -35,9 +39,12 @@ export function AnswerBox({ request }: Props) {
   // decision is keyboard-fast the way you'd triage in Linear/Superhuman. Skipped
   // while a field is focused so the digits still reach the free-reply box; re-bound
   // on busy so a settled answer can't fire twice (mirrors the buttons' disabled).
+  // Only bound in the full (non-slim) surface: the rail mounts one AnswerBox per
+  // pending checkpoint, and a single window listener per card would make "1" answer
+  // every one at once. There you click the chip; TaskDetail has exactly one box.
   useEffect(() => {
     const opts = request.options ?? [];
-    if (opts.length === 0 || busy) return;
+    if (opts.length === 0 || busy || slim) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const el = e.target as HTMLElement | null;
@@ -50,7 +57,7 @@ export function AnswerBox({ request }: Props) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request.id, busy]);
+  }, [request.id, busy, slim]);
 
   return (
     <div className="mt-1">
@@ -66,7 +73,7 @@ export function AnswerBox({ request }: Props) {
                 : "border border-hairline bg-surface text-ink hover:border-ink/30"
             } ${busy === opt ? "opacity-60" : ""}`}
           >
-            {i < 9 && (
+            {i < 9 && !slim && (
               <kbd
                 className={`grid h-4 min-w-4 place-items-center rounded px-1 font-mono text-[10px] font-medium ${
                   i === 0 ? "bg-white/20 text-white/90" : "bg-board text-faint"
@@ -80,7 +87,7 @@ export function AnswerBox({ request }: Props) {
         ))}
       </div>
 
-      <ImageAttachStrip attach={attach} compact />
+      {!slim && <ImageAttachStrip attach={attach} compact />}
 
       <form
         className="mt-2 flex items-center gap-2"
@@ -94,7 +101,7 @@ export function AnswerBox({ request }: Props) {
         <input
           value={free}
           onChange={(e) => setFree(e.target.value)}
-          {...attach.pasteProps}
+          {...(slim ? {} : attach.pasteProps)}
           placeholder={options.length ? "Other… type a different answer" : "Type your answer"}
           disabled={!!busy}
           className="min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-3 py-2 text-[13px] outline-none placeholder:text-muted/70 focus:border-accent/60"

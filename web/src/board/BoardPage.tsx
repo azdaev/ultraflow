@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { motion } from "motion/react";
 import type { Project, Task } from "../api";
+import type { AttentionItem } from "../useNotifications";
 import { TopBar } from "./TopBar";
 import { Toolbar } from "./Toolbar";
+import { AttentionRail } from "../components/AttentionRail";
 import { Board } from "./Board";
 
 interface Props {
@@ -17,8 +19,10 @@ interface Props {
   running: number;
   queued: number;
   paused: boolean;
-  // Attention count + jump target are derived once in App (same list the OS
+  // Attention list + jump target are derived once in App (same list the OS
   // notifications use) and passed down, so the toolbar badge can't drift from it.
+  // The rail reads/answers this list inline; the pill is its calm-state anchor.
+  attention: AttentionItem[];
   attentionCount: number;
   onOpenAttention: () => void;
   onTogglePause: () => void;
@@ -42,6 +46,7 @@ export function BoardPage({
   running,
   queued,
   paused,
+  attention,
   attentionCount,
   onOpenAttention,
   onTogglePause,
@@ -96,6 +101,7 @@ export function BoardPage({
         attentionCount={attentionCount}
         onOpenAttention={onOpenAttention}
       />
+      <AttentionRail items={attention} now={now} onOpen={onOpenTask} />
 
       {tasks.length === 0 ? (
         <EmptyBoard onNewTask={() => onNewTask()} />

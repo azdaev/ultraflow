@@ -19,6 +19,9 @@
   --color-accent-tint: #fdece4;
   --color-accent-line: #f6c3ad;
 
+  --color-attention-ground: #f7f1ed; /* "Needs you" rail band ground */
+  --color-attention-line: #e9ded7; /* rail band bottom border */
+
   --color-steel: #2f6db0; /* running */
   --color-steel-tint: #e9f0f7;
   --color-steel-strip: #edf2f8; /* running activity strip bg */
@@ -79,6 +82,9 @@
   --color-accent-tint: #38201a;
   --color-accent-line: #6d3b2a;
 
+  --color-attention-ground: #211a16;
+  --color-attention-line: #33271f;
+
   --color-steel: #5b9bd8;
   --color-steel-tint: #18242f;
   --color-steel-strip: #161f29;
@@ -114,6 +120,9 @@
     --color-accent: #f5501e;
     --color-accent-tint: #38201a;
     --color-accent-line: #6d3b2a;
+
+    --color-attention-ground: #211a16;
+    --color-attention-line: #33271f;
 
     --color-steel: #5b9bd8;
     --color-steel-tint: #18242f;

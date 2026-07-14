@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"log"
+	"time"
 
 	"ultraflow/internal/core"
 	"ultraflow/internal/model"
@@ -74,6 +75,37 @@ func main() {
 		"I made two empty-state variants — which direction?",
 		[]string{"Minimal (icon + one line)", "Guided (checklist)"},
 		"+64 −0 · web/src/App.tsx · affects first-run only")
+
+	// A LONG question with a context line — exercises the rail's wrapping and the
+	// "the question is the hero" hierarchy (the readability case the redesign fixes).
+	pay := mk("Wire the Stripe webhook", "", "ultraflow", "claude", "solo", model.StatusRunning, "Edit internal/pay/webhook.go")
+	svc.AskHuman(pay.ID,
+		"Should I verify the webhook signature with Stripe's official SDK helper, or roll a manual HMAC check against the raw body? The SDK adds a dependency but handles replay windows for us.",
+		[]string{"Stripe SDK helper", "Manual HMAC"},
+		"security-critical · the agent won't proceed until you pick")
+
+	// A VISUAL checkpoint: shots present → the rail routes to the full page instead
+	// of answering inline. Built through the store so we can attach fake shots/diff
+	// without a real worktree (captureContext would return empty for a seed task).
+	vis := mk("Redesign the landing page", "", "ultraflow", "claude", "solo", model.StatusRunning, "wrote web/src/Landing.tsx")
+	_ = st.CreateHumanRequest(model.HumanRequest{
+		ID: core.NewID(), TaskID: vis.ID, Status: "pending",
+		Question: "Frontend's ready — does the hero look right to build on?",
+		Added:    180, Removed: 24,
+		Shots:     []string{"hero.png", "hero-dark.png"},
+		CreatedAt: time.Now().Add(-1 * time.Minute),
+	})
+	svc.UpdateStatus(vis.ID, model.StatusNeedsHuman)
+
+	// A failure with a LONG error — exercises the two-line clamp in the failed row.
+	longFail := mk("Refactor worktree ports", "", "ultraflow", "claude", "solo", model.StatusFailed,
+		"./internal/worktree/ports.go:41:12: undefined: allocPort — the self-heal loop tried three times and each build failed on the same missing symbol; giving up so you can look")
+
+	// A merge that couldn't land: a review task whose latest event is merge_failed.
+	badMerge := mk("Add SSE reconnect backoff", "", "ultraflow", "claude", "solo", model.StatusReview, "")
+	port(badMerge, 41902)
+	svc.AppendTaskEvent(badMerge.ID, "merge_failed", "CONFLICT in web/src/App.tsx — auto-rebase onto main left the tree dirty")
+	_ = longFail
 
 	log.Printf("seeded %s", *dbPath)
 }
