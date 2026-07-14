@@ -2,7 +2,7 @@ import { AnimatePresence } from "motion/react";
 import type { Project, Task } from "../api";
 import { projectMap } from "../util";
 import { ContextMenu, useContextMenu } from "../components/ContextMenu";
-import { Card } from "./Card";
+import { Card, type CardEnter } from "./Card";
 import { DotsIcon, PlusIcon } from "./icons";
 
 // ColumnKind carries a column's fixed identity: its label and the semantic colour
@@ -35,11 +35,12 @@ interface Props {
   onOpen: (taskId: string) => void;
   onAddTask?: () => void; // backlog only — the dashed "Add task" row
   onClear?: () => void; // done only — the header ⋯ menu's "Clear done" action
+  enterOf?: (id: string) => CardEnter; // how each card animates in (new / moved-direction / still)
 }
 
 // Column is one pipeline stage: a coloured header (dot + caps label + count),
 // then its cards, with the backlog column capped by the "Add task" row.
-export function Column({ kind, tasks, now, activity, activityKind, context, contextCap, models, projects, onOpen, onAddTask, onClear }: Props) {
+export function Column({ kind, tasks, now, activity, activityKind, context, contextCap, models, projects, onOpen, onAddTask, onClear, enterOf }: Props) {
   const pm = projectMap(projects);
   const menu = useContextMenu();
   // The ⋯ affordance is only shown where it actually does something (Done, with
@@ -84,6 +85,7 @@ export function Column({ kind, tasks, now, activity, activityKind, context, cont
               model={models[t.id]}
               now={now}
               index={i}
+              enter={enterOf ? enterOf(t.id) : "new"}
               project={pm.get(t.project)}
               onOpen={onOpen}
             />

@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { motion } from "motion/react";
 import { api, type Project, type Task } from "../api";
 import {
@@ -27,6 +28,14 @@ const CONTEXT_WINDOW = 200_000;
 // to the point where the daemon's optional /compact would kick in.
 const NEAR_CAP = 0.88;
 
+// CardEnter is how a card should animate the frame it first appears in a column:
+//   "new"   — brand-new task: a quiet fade-up.
+//   number  — it moved here from another column; the value is the x-offset (px) it
+//             slides in FROM. Negative = arrived from the left (moved rightward down
+//             the pipeline); positive = arrived from the right (a revise/retry).
+//   false   — same column as last seen: don't re-animate (e.g. the 1s clock tick).
+export type CardEnter = "new" | number | false;
+
 interface Props {
   task: Task;
   activity?: string;
@@ -38,14 +47,22 @@ interface Props {
   project?: Project;
   onOpen: (taskId: string) => void;
   index?: number; // position in its column, for a subtle mount stagger
+  enter?: CardEnter; // how this card animates in (new / moved-direction / still)
 }
 
 // Card is the single task card, its layout varying by status. Backlog cards are
 // quiet (waiting), running cards carry a live activity strip + context meter,
 // review cards carry the merge/approve action + diff counts, and done cards are
 // muted. Every field maps to real board state — nothing here is decorative.
-export function Card({ task, activity, activityKind, now, contextTokens, contextCap, model, project, onOpen, index = 0 }: Props) {
+export function Card({ task, activity, activityKind, now, contextTokens, contextCap, model, project, onOpen, index = 0, enter = "new" }: Props) {
   const run = useRun(task.id);
+  // Freeze the entrance intent at mount. A card re-renders on the once-a-second
+  // clock tick; if we read `enter` live, a later "settled" (false) value would let
+  // Framer re-read initial and cancel a slide that's still in flight. Pinning the
+  // mount-time value keeps each entrance deterministic.
+  const born = useRef(enter).current;
+  const moved = typeof born === "number";
+  const initial = born === "new" ? { opacity: 0, y: 6 } : moved ? { opacity: 0, x: born } : false;
   const status = task.status;
   const needsHuman = status === "needs_human";
   const closed = CLOSED.has(status);
@@ -91,12 +108,11 @@ export function Card({ task, activity, activityKind, now, contextTokens, context
   return (
     <>
       <motion.button
-        layout
         onClick={() => onOpen(task.id)}
         onContextMenu={menu.openMenu}
-        initial={{ opacity: 0, y: 6 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ type: "spring", stiffness: 320, damping: 30, delay: Math.min(index * 0.03, 0.18) }}
+        initial={initial}
+        animate={{ opacity: 1, x: 0, y: 0 }}
+        transition={{ type: "spring", stiffness: 320, damping: 30, delay: moved ? 0 : Math.min(index * 0.03, 0.18) }}
         className={`flex w-full flex-col gap-2.25 rounded-xl border-[0.75px] p-3 text-left transition ${
           closed
             ? "border-cardline bg-chip"
