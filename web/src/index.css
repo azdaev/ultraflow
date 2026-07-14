@@ -23,6 +23,8 @@
   --color-steel-tint: #e9f0f7;
   --color-steel-strip: #edf2f8; /* running activity strip bg */
   --color-moss: #4f7a4d; /* done / ready */
+  --color-moss-solid: #4f7a4d; /* confirm-button fill (white text) — deeper than
+                                  label-moss so the text stays AA in both themes */
   --color-moss-tint: #eaf1e9;
   --color-moss-pill: #e8efe7; /* "nothing needs you" attention pill bg */
   --color-rust: #a9432b; /* failed */
@@ -37,8 +39,99 @@
   --color-codex: #10a37f;
   --color-opencode: #7a5af8;
 
+  /* Dark console surface, used for terminals, code blocks and image mats. It is a
+     dark island in the light theme and a slightly-raised panel in the dark one;
+     its ink and the +/− diff tones stay constant since the panel never turns
+     light. */
+  --color-terminal: #17171a;
+  --color-terminal-ink: #ececea;
+  --color-term-add: #6fa96c; /* diff + on the console */
+  --color-term-del: #e4795f; /* diff − on the console */
+
   --font-sans: "Onest Variable", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", monospace;
+}
+
+/* Dark theme — the same industrial system inverted: dark concrete ground, raised
+   surfaces, inverted ink, and state colors brightened so running/done/failed/
+   stale keep their meaning on a dark ground. Safety-orange accent stays reserved
+   for needs_human. Applied when data-theme="dark" is set (explicit preference),
+   or when the OS is dark and no explicit "light" preference overrides it. */
+:root {
+  color-scheme: light;
+  --scrollbar-thumb: #cfcfca;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --scrollbar-thumb: #3a3a40;
+
+  --color-board: #17171a;
+  --color-surface: #202024;
+  --color-ink: #ededeb;
+  --color-muted: #9c9c95;
+  --color-faint: #6b6b64;
+  --color-hairline: #2c2c31;
+  --color-cardline: #2a2a2f;
+  --color-chip: #26262b;
+  --color-chip-line: #33333a;
+
+  --color-accent: #f5501e;
+  --color-accent-tint: #38201a;
+  --color-accent-line: #6d3b2a;
+
+  --color-steel: #5b9bd8;
+  --color-steel-tint: #18242f;
+  --color-steel-strip: #161f29;
+  --color-moss: #7bab77;
+  --color-moss-solid: #3f7d3c;
+  --color-moss-tint: #1a251a;
+  --color-moss-pill: #1a241a;
+  --color-rust: #d9765c;
+  --color-rust-tint: #2e1c17;
+  --color-diff-minus: #e0664c;
+  --color-nearcap: #d98a3f;
+
+  --color-amber: #d1a24e;
+  --color-amber-tint: #2b2415;
+
+  --color-terminal: #202027;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --scrollbar-thumb: #3a3a40;
+
+    --color-board: #17171a;
+    --color-surface: #202024;
+    --color-ink: #ededeb;
+    --color-muted: #9c9c95;
+    --color-faint: #6b6b64;
+    --color-hairline: #2c2c31;
+    --color-cardline: #2a2a2f;
+    --color-chip: #26262b;
+    --color-chip-line: #33333a;
+
+    --color-accent: #f5501e;
+    --color-accent-tint: #38201a;
+    --color-accent-line: #6d3b2a;
+
+    --color-steel: #5b9bd8;
+    --color-steel-tint: #18242f;
+    --color-steel-strip: #161f29;
+    --color-moss: #7bab77;
+    --color-moss-solid: #3f7d3c;
+    --color-moss-tint: #1a251a;
+    --color-moss-pill: #1a241a;
+    --color-rust: #d9765c;
+    --color-rust-tint: #2e1c17;
+    --color-diff-minus: #e0664c;
+    --color-nearcap: #d98a3f;
+
+    --color-amber: #d1a24e;
+    --color-amber-tint: #2b2415;
+
+    --color-terminal: #202027;
+  }
 }
 
 html,
@@ -92,8 +185,23 @@ body {
   }
 }
 
-/* Thin custom scrollbars so columns feel light on the concrete ground. */
+/* Thin custom scrollbars so columns feel light on the concrete ground. The thumb
+   tone is themed via --scrollbar-thumb (inherited from :root). */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #cfcfca transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* The wordmark logomark is a solid-black glyph baked into logo.png — it would
+   vanish on the dark ground, so flip it to near-white in dark mode (invert only,
+   no hue rotation, since the mark is achromatic). Same two dark scopes as the
+   token overrides above: explicit data-theme="dark", and OS-dark with no light
+   preference pinned. */
+:root[data-theme="dark"] .brand-logo {
+  filter: invert(1) brightness(0.93);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brand-logo {
+    filter: invert(1) brightness(0.93);
+  }
 }

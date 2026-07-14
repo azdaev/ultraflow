@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
-import { GearIcon, PauseIcon, PlayIcon, SearchIcon, SparkIcon } from "./icons";
+import { useEffect, useRef, useState } from "react";
+import { GearIcon, MoonIcon, PauseIcon, PlayIcon, SearchIcon, SparkIcon, SunIcon } from "./icons";
+import { activeTheme, applyTheme, type Theme } from "../theme";
 
 interface Props {
   running: number;
@@ -21,6 +22,15 @@ interface Props {
 export function TopBar({ running, queued, query, onSearch, onSubmit, paused, onTogglePause, onNewTask, onOpenSettings, onOpenChangelog }: Props) {
   const searchRef = useRef<HTMLInputElement>(null);
 
+  // Theme toggle. Seeded from the theme actually on screen (stored pref or OS);
+  // clicking sets the opposite as an explicit preference.
+  const [theme, setTheme] = useState<Theme>(() => activeTheme());
+  const toggleTheme = () => {
+    const next: Theme = theme === "dark" ? "light" : "dark";
+    applyTheme(next);
+    setTheme(next);
+  };
+
   // "/" jumps to search (the GitHub/Linear/Slack convention), the keyboard
   // counterpart to "n" for a new task. Skipped while a field is focused so the
   // slash still types normally into a text input.
@@ -41,7 +51,7 @@ export function TopBar({ running, queued, query, onSearch, onSubmit, paused, onT
       {/* Brand wordmark (not interactive — "What's new" lives in its own button on
           the right, so the logo doesn't hijack clicks). */}
       <div className="flex grow basis-0 items-center gap-2.25">
-        <img src="/logo.png" alt="Ultraflow" className="h-[22px] w-auto shrink-0" />
+        <img src="/logo.png" alt="Ultraflow" className="brand-logo h-[22px] w-auto shrink-0" />
         <span className="text-[15px] font-bold leading-[18px] tracking-[-0.3px] text-ink">Ultraflow</span>
       </div>
 
@@ -109,6 +119,13 @@ export function TopBar({ running, queued, query, onSearch, onSubmit, paused, onT
           }`}
         >
           {paused ? <PlayIcon /> : <PauseIcon />}
+        </button>
+        <button
+          onClick={toggleTheme}
+          title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          className="grid size-8 shrink-0 place-items-center rounded-[9px] border-[0.75px] border-hairline bg-surface text-muted transition hover:border-ink/25 hover:text-ink"
+        >
+          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
         </button>
         <button
           onClick={onOpenChangelog}

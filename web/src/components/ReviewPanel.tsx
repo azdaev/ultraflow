@@ -150,7 +150,7 @@ function Changes({ taskId, sig }: { taskId: string; sig?: string }) {
         )}
 
         {diff && diff.patch && (
-          <details className="group rounded-lg border border-hairline bg-[#17171A]">
+          <details className="group rounded-lg border border-hairline bg-terminal">
             <summary className="cursor-pointer list-none px-3 py-2 font-mono text-[11px] text-muted hover:text-ink">
               <span className="group-open:hidden">▸ Show diff</span>
               <span className="hidden group-open:inline">▾ Hide diff</span>
@@ -181,7 +181,7 @@ export function ShotsGrid({ taskId, shots, maxH }: { taskId: string; shots: stri
           <img
             src={api.shotUrl(taskId, name)}
             alt={name}
-            className={`w-full object-contain bg-[#17171A] ${maxH}`}
+            className={`w-full object-contain bg-terminal ${maxH}`}
           />
           <span className="block truncate px-2 py-1 font-mono text-[10px] text-muted">{name}</span>
         </a>
@@ -208,16 +208,16 @@ export function DiffMagnitude({ added, removed, files }: { added: number; remove
 // DiffBody renders a unified patch with light per-line coloring (added green,
 // removed rust, hunk headers steel), horizontally scrollable so long lines don't
 // break the layout. The +/− tones are dark-bg variants (lighter than the light-
-// theme moss/diff-minus) so both read at AA contrast on the #17171A panel.
+// theme moss/diff-minus) so both read at AA contrast on the dark console panel.
 export function DiffBody({ patch, truncated }: { patch: string; truncated: boolean }) {
   const lines = patch.split("\n");
   return (
     <div className="max-h-[50vh] overflow-auto border-t border-white/10 p-3">
       <pre className="font-mono text-[11px] leading-[1.5]">
         {lines.map((line, i) => {
-          let color = "text-[#ECECEA]";
-          if (line.startsWith("+") && !line.startsWith("+++")) color = "text-[#6FA96C]";
-          else if (line.startsWith("-") && !line.startsWith("---")) color = "text-[#E4795F]";
+          let color = "text-terminal-ink";
+          if (line.startsWith("+") && !line.startsWith("+++")) color = "text-term-add";
+          else if (line.startsWith("-") && !line.startsWith("---")) color = "text-term-del";
           else if (line.startsWith("@@")) color = "text-steel";
           else if (line.startsWith("diff ") || line.startsWith("index ")) color = "text-muted";
           return (
