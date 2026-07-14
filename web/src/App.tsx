@@ -126,6 +126,7 @@ export function App() {
         running={running}
         queued={queued}
         paused={paused}
+        attention={attention}
         attentionCount={attention.length}
         onOpenAttention={() => attentionTarget && openTaskDetail(attentionTarget)}
         onTogglePause={() => {
