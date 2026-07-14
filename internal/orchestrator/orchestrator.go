@@ -467,8 +467,9 @@ func (o *Orchestrator) escalate(taskID string, budget int, lastErr string) {
 }
 
 // Idle-watcher tuning. A working Claude TUI streams a spinner/elapsed-timer
-// continuously, so a stretch of pure silence means the turn has ended and the agent
-// is parked at its prompt. The two error costs are asymmetric: waiting too long only
+// continuously, so a stretch of pure silence means the agent is parked or stuck at
+// its prompt. Silence is not proof of completion: the watcher fails an unreported
+// handoff and preserves its worktree for revision. The two error costs are asymmetric: waiting too long only
 // delays freeing a slot by seconds (cheap — a human-in-the-loop board), while acting
 // too soon SIGKILLs a genuinely-working agent mid-task and ships partial work. So
 // idleTimeout is deliberately generous — comfortably longer than any silent gap a

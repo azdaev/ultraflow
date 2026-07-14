@@ -671,7 +671,7 @@ func TestResolveCleanExitWhileParkedFails(t *testing.T) {
 // TestCleanExitAnswerRaceAlwaysTerminal hammers the clean-exit death path against
 // a concurrent human answer — the exact interleaving that twice stranded a task
 // in `running` behind a dead agent. Whatever the ordering, the task must always
-// come to rest terminal (review or failed), never in-flight. Run under -race.
+// come to rest failed, never in-flight or falsely reviewable. Run under -race.
 func TestCleanExitAnswerRaceAlwaysTerminal(t *testing.T) {
 	svc := newTestService(t)
 	svc.UseTerminal(&fakeTerm{})
@@ -685,23 +685,23 @@ func TestCleanExitAnswerRaceAlwaysTerminal(t *testing.T) {
 		go func() { defer wg.Done(); svc.ResolveAgentExit(task.ID, false, "") }()
 		wg.Wait()
 
-		if got, _ := svc.GetTask(task.ID); got.Status != model.StatusReview && got.Status != model.StatusFailed {
-			t.Fatalf("iter %d: task not terminal after race: %s", i, got.Status)
+		if got, _ := svc.GetTask(task.ID); got.Status != model.StatusFailed {
+			t.Fatalf("iter %d: incomplete handoff should fail, got %s", i, got.Status)
 		}
 	}
 }
 
-// TestResolveCleanExitRunningReviews: a running agent that exits cleanly after
-// ending its turn (never parked) goes to review.
-func TestResolveCleanExitRunningReviews(t *testing.T) {
+// TestResolveCleanExitRunningFails: exit 0 is not a handoff; without finish_task
+// and its report the task must be returned as failed, never reviewable.
+func TestResolveCleanExitRunningFails(t *testing.T) {
 	svc := newTestService(t)
 	task, _ := svc.CreateTask("t", "", "")
 	svc.UpdateStatus(task.ID, model.StatusRunning)
 
 	svc.ResolveAgentExit(task.ID, false, "")
 
-	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusReview {
-		t.Fatalf("expected review, got %s", got.Status)
+	if got, _ := svc.GetTask(task.ID); got.Status != model.StatusFailed {
+		t.Fatalf("expected failed, got %s", got.Status)
 	}
 }
 
@@ -820,7 +820,10 @@ func TestMergeTask(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(w.Path, "shipped.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	svc.UpdateStatus(task.ID, model.StatusReview)
+	svc.UpdateStatus(task.ID, model.StatusRunning)
+	if err := svc.CompleteTurn(task.ID, "implemented", "# Shipped\n\nAdded shipped.txt.", "merge"); err != nil {
+		t.Fatalf("complete handoff: %v", err)
+	}
 
 	if err := svc.MergeTask(task.ID); err != nil {
 		t.Fatalf("merge: %v", err)
@@ -845,6 +848,20 @@ func TestMergeTaskRejectsNonReview(t *testing.T) {
 	task, _ := svc.CreateTask("t", "", "")
 	if err := svc.MergeTask(task.ID); err == nil {
 		t.Fatal("expected merge of a backlog task to be rejected")
+	}
+}
+
+func TestReviewActionsRejectMissingHandoff(t *testing.T) {
+	svc := newTestService(t)
+	task, _ := svc.CreateTask("legacy", "", "")
+	if err := svc.UpdateStatus(task.ID, model.StatusReview); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.MergeTask(task.ID); err == nil {
+		t.Fatal("merge must reject a review with no submitted report")
+	}
+	if err := svc.FinishReview(task.ID); err == nil {
+		t.Fatal("mark done must reject a review with no submitted report")
 	}
 }
 

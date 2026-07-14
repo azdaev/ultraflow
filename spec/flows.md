@@ -45,14 +45,15 @@ the unchanged solo path (so the default can't regress); a multi-step flow enters
    its concurrency slot). The answer re-enters via `AnswerHuman → Reengage →
    resumeGate`, routed by the answer (approve → finish; reject or free-form
    feedback → loop back, seeding the feedback into the rebuild).
-3. **work step** → `runStep` runs one agent turn. A clean turn end (finish_task,
-   an idle turn-end, or a clean exit) advances the graph; a crash self-heals in
-   place up to the budget, then escalates as a `needs_human` item (resumed by
-   `resumeStep`, which keeps walking the flow rather than returning to review).
+3. **work step** → `runStep` runs one agent turn. Only `finish_task` with a
+   non-empty report advances the graph. An idle or clean exit without that handoff
+   fails the task; a crash self-heals in place up to the budget, then escalates as
+   a `needs_human` item (resumed by `resumeStep`, which keeps walking the flow
+   rather than returning to review).
 
-`finish_task` is flow-aware via `core.CompleteTurn`: a solo task goes straight to
-review, a mid-flow step only marks its turn done (the card never flashes to review
-between steps).
+`finish_task` is flow-aware via `core.CompleteTurn`: its report creates the durable
+handoff; a solo task goes straight to review, while a mid-flow step only marks its
+turn done (the card never flashes to review between steps).
 
 ## Persistence & resume
 

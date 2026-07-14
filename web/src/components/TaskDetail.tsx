@@ -266,10 +266,23 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
                 {/* Accept the work right here — so reviewing the diff/report and
                     approving happen in one place, instead of closing the drawer to
                     reach the card's merge button. Only for review (not failed). */}
-                {task.status === "review" && (
+                {task.status === "review" && task.handoff && (
                   <div className="mb-5 rounded-xl border border-hairline bg-board p-4">
                     <h3 className="eyebrow mb-2 text-ink">Accept the work</h3>
                     <AcceptAction task={task} />
+                  </div>
+                )}
+
+                {task.status === "review" && !task.handoff && (
+                  <div className="mb-5 rounded-xl border border-amber/35 bg-amber-tint p-4">
+                    <div className="mb-1.5 flex items-center gap-2 text-amber">
+                      <span className="size-2 rounded-full bg-amber" />
+                      <h3 className="eyebrow">Incomplete handoff</h3>
+                    </div>
+                    <p className="text-[13px] leading-relaxed text-ink/75">
+                      The agent stopped without submitting a report. Acceptance is
+                      disabled; send it back below to complete the handoff.
+                    </p>
                   </div>
                 )}
 
@@ -354,4 +367,3 @@ function Detail({
     </div>
   );
 }
-

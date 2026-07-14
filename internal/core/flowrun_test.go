@@ -63,6 +63,10 @@ func TestCompleteTurnAfterCompletedFlowGoesStraightToReview(t *testing.T) {
 		t.Fatalf("start run: %v", err)
 	}
 	_ = svc.UpdateStatus(task.ID, model.StatusRunning)
+	svc.SetRunPhase(task.ID, model.RunActive)
+	if err := svc.CompleteTurn(task.ID, "built", "final report", "merge"); err != nil {
+		t.Fatalf("complete final step: %v", err)
+	}
 	if err := svc.FinishFlow(task.ID); err != nil {
 		t.Fatalf("finish flow: %v", err)
 	}
@@ -80,6 +84,20 @@ func TestCompleteTurnAfterCompletedFlowGoesStraightToReview(t *testing.T) {
 	run, ok := svc.Run(task.ID)
 	if !ok || run.Phase != model.RunComplete || run.Cursor != "" {
 		t.Fatalf("historical flow progress changed: %+v (ok=%v)", run, ok)
+	}
+}
+
+func TestCompleteTurnRejectsMissingReport(t *testing.T) {
+	svc := newTestService(t)
+	task, _ := svc.CreateTaskFull("t", "", "", "claude", "solo")
+	_ = svc.UpdateStatus(task.ID, model.StatusRunning)
+
+	if err := svc.CompleteTurn(task.ID, "done", "  \n", "answer"); err == nil {
+		t.Fatal("finish_task without a report must fail")
+	}
+	got, _ := svc.GetTask(task.ID)
+	if got.Status != model.StatusRunning || got.Handoff {
+		t.Fatalf("rejected handoff changed task: status=%s handoff=%v", got.Status, got.Handoff)
 	}
 }
 

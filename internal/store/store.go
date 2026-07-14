@@ -58,6 +58,7 @@ var migrations = []string{
 	runsSchema,         // migration 7: runs (multi-step flow progress)
 	runPhaseSchema,     // migration 8: explicit recoverable step lifecycle
 	outcomeSchema,      // migration 9: tasks.outcome (declared task result)
+	handoffSchema,      // migration 10: explicit report handoff guards review
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -209,6 +210,27 @@ const runPhaseSchema = `ALTER TABLE runs ADD COLUMN phase TEXT NOT NULL DEFAULT 
 // heuristic.
 const outcomeSchema = `ALTER TABLE tasks ADD COLUMN outcome TEXT NOT NULL DEFAULT '';`
 
+// handoffSchema makes "review" mean an agent explicitly submitted a report via
+// finish_task. Existing reports are preserved as valid handoffs; legacy review
+// rows without one are reclassified as failed instead of remaining deceptively
+// approvable. The error event explains the repair in the normal task drawer.
+const handoffSchema = `
+ALTER TABLE tasks ADD COLUMN handoff INTEGER NOT NULL DEFAULT 0;
+UPDATE tasks
+SET handoff=1
+WHERE EXISTS (
+  SELECT 1 FROM events
+  WHERE events.task_id=tasks.id AND events.kind='report' AND trim(events.data)<>''
+);
+INSERT INTO events (task_id,kind,data,created_at)
+SELECT id,'error','agent stopped without submitting a report — return it to the agent to complete the handoff',CURRENT_TIMESTAMP
+FROM tasks
+WHERE status='review' AND handoff=0;
+UPDATE tasks
+SET status='failed', updated_at=CURRENT_TIMESTAMP
+WHERE status='review' AND handoff=0;
+`
+
 // rowScanner is the read side shared by *sql.Row and *sql.Rows, so one scan
 // function serves both a single-row Get and a multi-row list query.
 type rowScanner interface{ Scan(...any) error }
@@ -356,20 +378,22 @@ func (s *Store) RunsForTasks(ids []string) (map[string]model.Run, error) {
 
 func (s *Store) CreateTask(t model.Task) error {
 	_, err := s.db.Exec(
-		`INSERT INTO tasks (id,title,body,project,agent,flow,status,worktree,outcome,attempt,max_attempts,port,created_at,updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.Title, t.Body, t.Project, t.Agent, t.Flow, string(t.Status), t.Worktree, t.Outcome, t.Attempt, t.MaxAttempts, t.Port, t.CreatedAt, t.UpdatedAt)
+		`INSERT INTO tasks (id,title,body,project,agent,flow,status,worktree,outcome,handoff,attempt,max_attempts,port,created_at,updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.Title, t.Body, t.Project, t.Agent, t.Flow, string(t.Status), t.Worktree, t.Outcome, t.Handoff, t.Attempt, t.MaxAttempts, t.Port, t.CreatedAt, t.UpdatedAt)
 	return err
 }
 
-const taskCols = `id,title,body,project,agent,flow,status,worktree,outcome,attempt,max_attempts,port,resume,created_at,updated_at`
+const taskCols = `id,title,body,project,agent,flow,status,worktree,outcome,handoff,attempt,max_attempts,port,resume,created_at,updated_at`
 
 func scanTask(sc rowScanner) (model.Task, error) {
 	var t model.Task
 	var status string
+	var handoff int
 	var resume int
-	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Outcome, &t.Attempt, &t.MaxAttempts, &t.Port, &resume, &t.CreatedAt, &t.UpdatedAt)
+	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Outcome, &handoff, &t.Attempt, &t.MaxAttempts, &t.Port, &resume, &t.CreatedAt, &t.UpdatedAt)
 	t.Status = model.TaskStatus(status)
+	t.Handoff = handoff != 0
 	t.Resume = resume != 0
 	return t, err
 }
@@ -474,6 +498,11 @@ func (s *Store) SetWorktree(id, wt string) error {
 // an intermediate flow step that omits it doesn't clobber the final step's value.
 func (s *Store) SetOutcome(id, outcome string) error {
 	_, err := s.touchField(id, "outcome", outcome)
+	return err
+}
+
+func (s *Store) SetHandoff(id string, handoff bool) error {
+	_, err := s.touchField(id, "handoff", handoff)
 	return err
 }
 

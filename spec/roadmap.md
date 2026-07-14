@@ -20,8 +20,9 @@ The live terminal is now a calm, opt-in "peek at progress", not something to bab
       tracked under Hardening below.
 - [x] **Session auto-closes on stage completion.** `finish_task` sends the task to
       review and frees its slot; a bare turn-end is caught by the idle-watcher
-      (`watchIdle`) which sends the idle task to review and kills the session, so an
-      interactive TUI can no longer pin a concurrency slot forever.
+      (`watchIdle`) which marks the incomplete handoff failed and kills the session,
+      so an interactive TUI can no longer pin a concurrency slot forever or create
+      a report-less review.
 
 ## M0 — Walking skeleton  ← current
 

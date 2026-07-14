@@ -47,6 +47,11 @@ type Task struct {
 	// unset (legacy tasks / agents that don't declare one → fall back to the
 	// worktree+diff heuristic). Only "merge" merges a branch; the rest just finish.
 	Outcome string `json:"outcome"`
+	// Handoff is set only after finish_task submits a non-empty report. Review is
+	// a promise that this handoff exists; an agent exit or idle timeout must never
+	// manufacture it. Kept on the task so every board surface can enforce the same
+	// accept-action guard without separately loading the event thread.
+	Handoff bool `json:"handoff"`
 	// Self-heal sub-state. On an agent error the orchestrator auto-diagnoses and
 	// re-runs the task up to MaxAttempts times while it STAYS `running` — Attempt is
 	// how many auto-retries it has spent (0 = the original run, no sub-state; k>0 =
@@ -71,7 +76,7 @@ type Task struct {
 // completed. Solo tasks have no Run — they take the orchestrator's unchanged
 // single-agent path — so a Run existing is itself the signal that a task is a
 // multi-step flow. TurnDone is a transient per-step flag: the step's agent has
-// ended its turn (finish_task or an idle turn-end), so the orchestrator should
+// explicitly ended its turn via finish_task, so the orchestrator should
 // advance the graph rather than treat the agent's exit as a crash. Persisting
 // Cursor is what lets a daemon restart resume mid-flow instead of from step one.
 type Run struct {

@@ -32,6 +32,9 @@ export interface Task {
   // button label so not every task shows "Merge to main". One of "merge" | "answer"
   // | "design" | "applied" | "none", or "" when unset (fall back to worktree+diff).
   outcome: string;
+  // True only after finish_task submitted a non-empty report. Review actions are
+  // hidden without it, even if old/corrupt data still says status=review.
+  handoff: boolean;
   // Self-heal sub-state: attempt is how many auto-retries the agent has spent on an
   // error (0 = the original run; k>0 renders "fixing itself · k/N" on the running
   // card), maxAttempts is the retry budget before it escalates to the human.
