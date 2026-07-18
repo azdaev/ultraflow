@@ -68,4 +68,7 @@ type Repo interface {
 	// Settings
 	GetSetting(key string) (value string, ok bool, err error)
 	SetSetting(key, value string) error
+
+	// Feedback
+	AddFeedback(message, path string) error
 }

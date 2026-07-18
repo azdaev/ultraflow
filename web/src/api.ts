@@ -353,4 +353,13 @@ export const api = {
 	  headers: { "Content-Type": "application/json" },
 	  body: JSON.stringify(value),
 	}).then((r) => json<TelegramSettings>(r)),
+
+  // sendFeedback records a quick note from the board (the feedback button).
+  // path is the frontend route it was left from, for context.
+  sendFeedback: (text: string, path?: string) =>
+    fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, path: path ?? "" }),
+    }).then((r) => json<{ status: string }>(r)),
 };

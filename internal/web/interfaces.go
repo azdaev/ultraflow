@@ -49,4 +49,7 @@ type Service interface {
 	SetContextCap(n int) (int, error)
 	TelegramSettings() (core.TelegramSettings, bool, error)
 	SetTelegramSettings(cfg core.TelegramSettings) error
+
+	// Feedback
+	AddFeedback(message, path string) error
 }

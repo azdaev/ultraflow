@@ -67,3 +67,30 @@ func TestHandoffMigrationRepairsLegacyReviewTasks(t *testing.T) {
 		t.Fatalf("repair should explain itself with one error event: %s", fmt.Sprint(events))
 	}
 }
+
+func TestAddFeedback(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "feedback.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.AddFeedback("this is great", "/board"); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	var message, path string
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM feedback`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 feedback row, got %d", count)
+	}
+	if err := st.db.QueryRow(`SELECT message, path FROM feedback`).Scan(&message, &path); err != nil {
+		t.Fatal(err)
+	}
+	if message != "this is great" || path != "/board" {
+		t.Fatalf("got message=%q path=%q, want %q %q", message, path, "this is great", "/board")
+	}
+}

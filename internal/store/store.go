@@ -59,6 +59,7 @@ var migrations = []string{
 	runPhaseSchema,     // migration 8: explicit recoverable step lifecycle
 	outcomeSchema,      // migration 9: tasks.outcome (declared task result)
 	handoffSchema,      // migration 10: explicit report handoff guards review
+	feedbackSchema,     // migration 11: feedback (quick human feedback notes)
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -229,6 +230,18 @@ WHERE status='review' AND handoff=0;
 UPDATE tasks
 SET status='failed', updated_at=CURRENT_TIMESTAMP
 WHERE status='review' AND handoff=0;
+`
+
+// feedbackSchema (migration 11) adds a table for quick human feedback notes
+// left from the board — no auth, no rate limiting, this is a local single-user
+// daemon. path records the frontend route the note was left from, for context.
+const feedbackSchema = `
+CREATE TABLE IF NOT EXISTS feedback (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  message    TEXT NOT NULL,
+  path       TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMP NOT NULL
+);
 `
 
 // rowScanner is the read side shared by *sql.Row and *sql.Rows, so one scan
@@ -718,6 +731,15 @@ func (s *Store) SetSetting(key, value string) error {
 	_, err := s.db.Exec(
 		`INSERT INTO settings (key,value) VALUES (?,?)
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return err
+}
+
+// --- feedback ---
+
+// AddFeedback inserts a quick feedback note left from the board.
+func (s *Store) AddFeedback(message, path string) error {
+	_, err := s.db.Exec(`INSERT INTO feedback (message,path,created_at) VALUES (?,?,?)`,
+		message, path, time.Now())
 	return err
 }
 
