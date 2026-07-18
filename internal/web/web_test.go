@@ -93,6 +93,33 @@ func TestSettingsConcurrency(t *testing.T) {
 	}
 }
 
+// TestFeedback drives POST /api/feedback: a valid note is accepted, and an
+// empty one is rejected without landing a row.
+func TestFeedback(t *testing.T) {
+	ts, _ := newTestServer(t)
+	defer ts.Close()
+
+	res, err := http.Post(ts.URL+"/api/feedback", "application/json",
+		bytes.NewBufferString(`{"text":"love this","path":"/board"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	res, err = http.Post(ts.URL+"/api/feedback", "application/json",
+		bytes.NewBufferString(`{"text":"  ","path":"/board"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty text, got %d", res.StatusCode)
+	}
+	res.Body.Close()
+}
+
 func TestCreateAndBoard(t *testing.T) {
 	ts, _ := newTestServer(t)
 	defer ts.Close()

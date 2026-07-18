@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"ultraflow/internal/broker"
 	"ultraflow/internal/devserver"
@@ -1075,4 +1076,22 @@ func (s *Service) LatestActivity() (text, kind map[string]string, err error) {
 		kind[id] = a.Kind
 	}
 	return text, kind, nil
+}
+
+// maxFeedbackRunes caps a feedback note defensively — this is a quick note, not
+// a bug report attachment.
+const maxFeedbackRunes = 4000
+
+// AddFeedback records a quick human feedback note left from the board. message
+// is trimmed and must be non-empty; path is the frontend route it was left
+// from, kept for context.
+func (s *Service) AddFeedback(message, path string) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return errors.New("feedback message is empty")
+	}
+	if utf8.RuneCountInString(message) > maxFeedbackRunes {
+		message = string([]rune(message)[:maxFeedbackRunes])
+	}
+	return s.store.AddFeedback(message, path)
 }

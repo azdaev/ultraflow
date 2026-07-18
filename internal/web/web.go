@@ -130,6 +130,7 @@ func New(svc Service, term *terminal.Manager, staticDir, attachDir string, asset
 	r.GET("/api/uploads/:name", s.serveUpload)
 	r.GET("/api/events", s.events)
 	r.POST("/api/journal", s.journalUI)
+	r.POST("/api/feedback", s.feedbackHandler)
 	// The React build (and its assets) is everything that isn't an API route; serve
 	// it as the fallback so client-side paths reach index.html.
 	switch {
@@ -325,6 +326,27 @@ func (s *server) setConcurrencyHandler(c *gin.Context) {
 		s.conc.SetLimit(n)
 	}
 	writeJSON(c, http.StatusOK, map[string]any{"maxConcurrent": n})
+}
+
+// feedbackHandler records a quick human feedback note left from the board.
+func (s *server) feedbackHandler(c *gin.Context) {
+	var body struct {
+		Text string `json:"text"`
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		writeErr(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Text) == "" {
+		writeErr(c, http.StatusBadRequest, "text is required")
+		return
+	}
+	if err := s.svc.AddFeedback(body.Text, body.Path); err != nil {
+		writeErr(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeOK(c)
 }
 
 // setContextCapHandler validates and persists the per-agent context budget. 0

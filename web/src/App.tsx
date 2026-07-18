@@ -5,6 +5,7 @@ import { api, type Task } from "./api";
 import { Composer } from "./components/Composer";
 import { Settings } from "./components/Settings";
 import { Changelog } from "./components/Changelog";
+import { FeedbackButton } from "./components/FeedbackButton";
 import { TaskDetail } from "./components/TaskDetail";
 import { RunsContext } from "./runsContext";
 import { IN_FLIGHT, WAITING } from "./util";
@@ -152,6 +153,7 @@ export function App() {
         projects={projects}
       />
       <Changelog open={changelogOpen} onClose={() => setChangelogOpen(false)} />
+      <FeedbackButton />
       <TaskDetail
         task={openTask}
         request={openRequest}
