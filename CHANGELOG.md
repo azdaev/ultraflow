@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.25 — 2026-07-18
+
+- Ultraflow: Понятный отчёт для Gate
+
 ## v0.10.24 — 2026-07-14
 
 - Ultraflow: Animate kanban card state transitions
