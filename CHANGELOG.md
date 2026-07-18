@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.27 — 2026-07-19
+
+- Ultraflow: Blocker-состояние задач и PR-landing
+
 ## v0.10.26 — 2026-07-18
 
 - Ultraflow: Кнопка быстрого фидбека
