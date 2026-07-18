@@ -24,7 +24,11 @@ A `Step` is `{id, role, agent, prompt, gate, next[], routes[]}`:
   matching and then the first route remain the defaults for compatibility. A route
   whose next step is `""` finishes the flow (→ review). The built-in Gate therefore
   routes the exact `Approve` action to review and both `Request changes` and any
-  typed feedback back to Build.
+  typed feedback back to Build. When the preceding step left a `result` event,
+  `openGate` carries the latest result into the checkpoint and asks a task-specific
+  approval question. The decision surface states that approval moves to final
+  Review without merging, while changes/feedback return to Build. Legacy or custom
+  gates with no result keep their configured prompt and generic flow context.
 
 `Flow = {key, label, start, steps[]}`. Presets ship in code and double as
 templates; a project can override or add flows in `.ultraflow/flows.yaml` (parsed
@@ -54,6 +58,12 @@ the unchanged solo path (so the default can't regress); a multi-step flow enters
 `finish_task` is flow-aware via `core.CompleteTurn`: its report creates the durable
 handoff; a solo task goes straight to review, while a mid-flow step only marks its
 turn done (the card never flashes to review between steps).
+
+The built-in Critic's `finish_task` report is also the human-facing Gate brief. It
+must say whether the problem was confirmed, explain the root cause, describe the
+work performed, and list verification plus caveats in plain product language. The
+Gate review opens this result first; screenshots and the collapsed raw diff remain
+available as secondary technical evidence.
 
 ## Persistence & resume
 

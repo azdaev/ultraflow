@@ -84,6 +84,28 @@ func main() {
 		[]string{"Stripe SDK helper", "Manual HMAC"},
 		"security-critical · the agent won't proceed until you pick")
 
+	// A completed Plan → Build → Critic task parked at its final Gate. This fixture
+	// keeps the result-first approval handoff visible without running three agents:
+	// the rail explains the outcome, and the drawer opens the full Critic report.
+	gate := mk("Keep the settings modal open after saving", "The modal closes after an async save even when the user is still editing.", "ultraflow", "claude", "plan-build-critic-gate", model.StatusBacklog, "")
+	_ = svc.StartRun(gate.ID, "plan-build-critic-gate", "plan")
+	svc.AdvanceRun(gate.ID, "plan", "build")
+	svc.AdvanceRun(gate.ID, "build", "critic")
+	svc.AdvanceRun(gate.ID, "critic", "gate")
+	svc.SetRunPhase(gate.ID, model.RunWaiting)
+	svc.AppendTaskEvent(gate.ID, "report", "## What was found\n\nThe closing bug was reproduced. The save callback always dismissed the modal, including saves triggered while editing the name.\n\n## What changed\n\nThe unconditional close was removed and the related name-edit path now preserves the open modal.\n\n## Verification\n\nLint, the production build, and the focused Playwright flow all pass. No remaining caveats were found.")
+	svc.AppendTaskEvent(gate.ID, "result", "Confirmed the modal-closing bug, removed the unconditional close, and verified the fix with lint, build, and Playwright.")
+	_ = st.CreateHumanRequest(model.HumanRequest{
+		ID: core.NewID(), TaskID: gate.ID, Status: "pending",
+		Question: "Approve the completed work for “Keep the settings modal open after saving”?",
+		Options:  []string{"Approve", "Request changes"},
+		Context:  "Latest result\nConfirmed the modal-closing bug, removed the unconditional close, and verified the fix with lint, build, and Playwright.\n\nApprove completes this flow and moves the task to final Review; it does not merge the work. Request changes or typed feedback sends it back to Build.",
+		Added:    34, Removed: 11,
+		Files:     []model.ChangedFile{{Path: "web/src/components/Settings.tsx", Added: 28, Removed: 8}, {Path: "web/src/components/Modal.tsx", Added: 6, Removed: 3}},
+		CreatedAt: time.Now().Add(-2 * time.Minute),
+	})
+	svc.UpdateStatus(gate.ID, model.StatusNeedsHuman)
+
 	// A VISUAL checkpoint: shots present → the rail routes to the full page instead
 	// of answering inline. Built through the store so we can attach fake shots/diff
 	// without a real worktree (captureContext would return empty for a seed task).

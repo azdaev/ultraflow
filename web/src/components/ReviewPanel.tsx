@@ -27,18 +27,20 @@ export function ReviewPanel({
   sig,
   report,
   hasWorktree,
+  reportLabel = "Report",
 }: {
   taskId: string;
   sig?: string;
   report?: string;
   hasWorktree: boolean;
+  reportLabel?: string;
 }) {
   const tabs = useMemo(() => {
     const t: { key: "report" | "changes"; label: string; icon: string }[] = [];
-    if (report) t.push({ key: "report", label: "Report", icon: "¶" });
+    if (report) t.push({ key: "report", label: reportLabel, icon: "¶" });
     if (hasWorktree) t.push({ key: "changes", label: "Changes", icon: "±" });
     return t;
-  }, [report, hasWorktree]);
+  }, [report, hasWorktree, reportLabel]);
 
   const [tab, setTab] = useState<"report" | "changes">(tabs[0]?.key ?? "report");
   // Until the human picks a tab, follow the preferred default (tabs[0] — Report

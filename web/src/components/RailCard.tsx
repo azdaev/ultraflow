@@ -108,11 +108,18 @@ function NeedsHumanRow({
   // card, so this variant routes to the full page instead of answering inline. A
   // plain diff (added/removed, captured for nearly every ask) answers fine inline.
   const isVisual = shots.length > 0;
+  const isFinalGate =
+    task?.flow === "plan-build-critic-gate" &&
+    request.options?.includes("Approve") &&
+    request.options?.includes("Request changes");
+  const gateResult = isFinalGate
+    ? request.context.split("\n\n", 1)[0].replace(/^Latest result\s*/i, "").trim()
+    : "";
 
   return (
     <>
       <MetaLine
-        badge={isVisual ? "Visual" : "Checkpoint"}
+        badge={isVisual ? "Visual" : isFinalGate ? "Approval gate" : "Checkpoint"}
         badgeClass="bg-accent-tint text-accent"
         title={task?.title ?? "task"}
         time={ago(request.createdAt, now)}
@@ -120,7 +127,14 @@ function NeedsHumanRow({
         onOpen={() => onOpen(request.taskId)}
       />
 
-      {/* The hero: full card width so it wraps and stays legible instead of squishing. */}
+      {gateResult && (
+        <div className="rounded-lg bg-board px-3 py-2">
+          <span className="eyebrow mb-1 block text-muted">Latest result</span>
+          <p className="line-clamp-3 text-[12.5px]/[18px] text-ink/80">{gateResult}</p>
+        </div>
+      )}
+
+      {/* The decision follows the result, so approval never arrives without context. */}
       <p className="text-[15.5px]/[21px] font-semibold tracking-[-0.01em] text-ink">{request.question}</p>
 
       {isVisual ? (
@@ -146,8 +160,13 @@ function NeedsHumanRow({
         </>
       ) : (
         <>
-          {request.context && (
+          {request.context && !isFinalGate && (
             <p className="line-clamp-2 text-[12.5px]/[17px] text-muted">{request.context}</p>
+          )}
+          {isFinalGate && (
+            <p className="text-[11.5px]/[16px] text-muted">
+              Approve → final Review, no merge · feedback → Build
+            </p>
           )}
           <AnswerBox request={request} slim />
         </>

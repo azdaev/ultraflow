@@ -71,7 +71,11 @@ const (
 	criticPrompt = "This is the CRITIC step. Critically review the implementation already in this working " +
 		"directory against the task's intent: correctness, edge cases, missed requirements, and quality. Fix " +
 		"the problems you find directly. If something genuinely needs a human decision, call ask_human; " +
-		"otherwise leave the work in good shape for the human's gate review."
+		"otherwise leave the work in good shape for the human's gate review. Your finish_task report is the " +
+		"final brief the human will read before approving. In plain product language, state: (1) whether the " +
+		"reported problem was reproduced or otherwise confirmed, (2) its root cause, (3) the work actually " +
+		"performed, and (4) how the result was verified, including any remaining caveats. Do not submit a " +
+		"generic internal note such as 'review completed'."
 )
 
 // Load returns the flows available for a project: the built-in presets, with any
