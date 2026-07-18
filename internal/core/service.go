@@ -350,7 +350,37 @@ func (s *Service) UpdateStatus(id string, st model.TaskStatus) error {
 		return err
 	}
 	s.publish("task_updated", map[string]any{"taskId": id, "status": st, "updatedAt": updatedAt})
+	if !blockerSurvives(st) {
+		s.setBlocker(id, "", "")
+	}
 	return nil
+}
+
+// blockerSurvives reports whether a blocker still describes the task in status
+// st. Review, failed and needs_human are the parked states a blocker belongs to;
+// any other status means someone is acting on the task again (or it's finished),
+// so both status writers clear the blocker on entering one. That invariant —
+// not UI filtering — is what keeps a resolved failure from lingering as current.
+func blockerSurvives(st model.TaskStatus) bool {
+	return st == model.StatusReview || st == model.StatusFailed || st == model.StatusNeedsHuman
+}
+
+// setBlocker records — or with an empty kind, clears — the one thing currently
+// stopping a task (see model.Blocker), broadcasting only genuine changes.
+func (s *Service) setBlocker(id, kind, detail string) {
+	changed, err := s.store.SetBlocker(id, kind, detail)
+	if err != nil {
+		log.Printf("task %s: set blocker %q: %v", id, kind, err)
+		return
+	}
+	if !changed {
+		return
+	}
+	var b *model.Blocker
+	if kind != "" {
+		b = &model.Blocker{Kind: kind, Detail: detail}
+	}
+	s.publish("task_updated", map[string]any{"taskId": id, "blocker": b})
 }
 
 // SwapStatus is the guarded (compare-and-swap) form of UpdateStatus: it moves the
@@ -365,6 +395,9 @@ func (s *Service) SwapStatus(id string, from []model.TaskStatus, to model.TaskSt
 	}
 	if ok {
 		s.publish("task_updated", map[string]any{"taskId": id, "status": to})
+		if !blockerSurvives(to) {
+			s.setBlocker(id, "", "")
+		}
 	}
 	return ok
 }
@@ -444,6 +477,10 @@ func (s *Service) MergeTask(id string) error {
 		return fmt.Errorf("couldn't find the project repo to merge into")
 	}
 
+	if p.Landing == model.LandingPR {
+		return s.mergeViaPR(t, p)
+	}
+
 	_ = s.UpdateStatus(id, model.StatusMerging)
 	s.appendEvent(id, "status", "merging into "+p.Name)
 
@@ -453,8 +490,7 @@ func (s *Service) MergeTask(id string) error {
 	msg := "Ultraflow: " + t.Title
 	conflicted, _, rerr := s.wt.Rebase(p.RepoPath, id, msg)
 	if rerr != nil {
-		_ = s.UpdateStatus(id, model.StatusReview)
-		s.appendEvent(id, "merge_failed", "couldn't rebase onto main (your repo was left clean): "+rerr.Error())
+		s.parkMergeBlocked(id, "couldn't rebase onto main (your repo was left clean): "+rerr.Error())
 		return rerr
 	}
 	if conflicted {
@@ -464,9 +500,7 @@ func (s *Service) MergeTask(id string) error {
 	}
 
 	if _, err := s.wt.Merge(p.RepoPath, id, msg); err != nil {
-		_ = s.UpdateStatus(id, model.StatusReview)
-		// "merge_failed" (not "status") so the board lifts it into the attention rail.
-		s.appendEvent(id, "merge_failed", "merge couldn't complete (your repo was left clean): "+err.Error())
+		s.parkMergeBlocked(id, "merge couldn't complete (your repo was left clean): "+err.Error())
 		return err
 	}
 
@@ -477,6 +511,46 @@ func (s *Service) MergeTask(id string) error {
 	}
 	s.appendEvent(id, "status", "merged and cleaned up the worktree")
 	return nil
+}
+
+// mergeViaPR lands a reviewed task by pushing its branch and merging a GitHub
+// pull request (model.LandingPR) — the human's checkout is never touched, and
+// their local main catches up on the next `git pull`. A PR GitHub won't merge
+// yet (checks, protection, conflicts) parks the task with the PR's url as the
+// blocker: resolve it there or retry, and a retry that finds the PR merged
+// from the GitHub side finishes the task the same as merging it here.
+func (s *Service) mergeViaPR(t model.Task, p model.Project) error {
+	id := t.ID
+	_ = s.UpdateStatus(id, model.StatusMerging)
+	s.appendEvent(id, "status", "opening a PR to "+p.Name)
+
+	url, merged, out, err := s.wt.LandPR(id, "Ultraflow: "+t.Title)
+	if err != nil {
+		s.parkMergeBlocked(id, "PR landing failed (your repo was never touched): "+err.Error())
+		return err
+	}
+	if !merged {
+		detail := "PR opened but GitHub wouldn't merge it yet — resolve it there or retry: " + url + "\n" + out
+		s.parkMergeBlocked(id, detail)
+		return errors.New(detail)
+	}
+
+	_ = s.wt.Remove(p.RepoPath, id)
+	s.releaseRuntime(t)
+	if err := s.UpdateStatus(id, model.StatusDone); err != nil {
+		return err
+	}
+	s.appendEvent(id, "status", "merged via PR: "+url)
+	return nil
+}
+
+// parkMergeBlocked returns a failed landing to review with a "merge" blocker:
+// the event is the history entry, the blocker is what the card and attention
+// rail read as the current reason (cleared by the next attempt or agent turn).
+func (s *Service) parkMergeBlocked(id, detail string) {
+	_ = s.UpdateStatus(id, model.StatusReview)
+	s.appendEvent(id, "merge_failed", detail)
+	s.setBlocker(id, "merge", detail)
 }
 
 // FinishReview marks a reviewed task done without a merge — for tasks that ran in
@@ -734,6 +808,7 @@ func (s *Service) CreateProject(name, repoPath string) (model.Project, error) {
 		Name:      name,
 		RepoPath:  repoPath,
 		Color:     projectPalette[n%len(projectPalette)],
+		Landing:   model.LandingLocal,
 		CreatedAt: time.Now(),
 	}
 	if err := s.store.CreateProject(p); err != nil {
@@ -749,6 +824,20 @@ func (s *Service) ListProjects() ([]model.Project, error) { return s.store.ListP
 // the worktree manager branches from).
 func (s *Service) ProjectByName(name string) (model.Project, error) {
 	return s.store.ProjectByName(name)
+}
+
+// SetProjectLanding switches how a project's finished work lands: a local merge
+// into the checked-out branch, or a pushed branch merged as a GitHub PR (see
+// model.LandingLocal / LandingPR).
+func (s *Service) SetProjectLanding(id, landing string) error {
+	if landing != model.LandingLocal && landing != model.LandingPR {
+		return fmt.Errorf("unknown landing %q — use %q or %q", landing, model.LandingLocal, model.LandingPR)
+	}
+	if err := s.store.SetProjectLanding(id, landing); err != nil {
+		return err
+	}
+	s.publish("project_updated", map[string]any{"id": id, "landing": landing})
+	return nil
 }
 
 func (s *Service) DeleteProject(id string) error {
@@ -1019,15 +1108,11 @@ func (s *Service) AbandonRequests(taskID string) {
 // include `running` to catch an answer that lands in the gap.
 func (s *Service) ResolveAgentExit(taskID string, crashed bool, detail string) {
 	if crashed {
-		if s.SwapStatus(taskID, []model.TaskStatus{model.StatusQueued, model.StatusRunning, model.StatusNeedsHuman}, model.StatusFailed) {
-			s.AbandonRequests(taskID)
-			s.releaseRuntimeByID(taskID)
-			reason := "agent exited before reporting completion"
-			if detail != "" {
-				reason += ": " + detail
-			}
-			s.appendEvent(taskID, "error", reason)
+		reason := "agent exited before reporting completion"
+		if detail != "" {
+			reason += ": " + detail
 		}
+		s.FailExecution(taskID, reason)
 		return
 	}
 	// Exit 0 is not proof of completion. Without finish_task there is no report,
@@ -1037,11 +1122,8 @@ func (s *Service) ResolveAgentExit(taskID string, crashed bool, detail string) {
 	}
 	// Otherwise it was still parked (or a late answer resumed it behind this dead
 	// agent), so it never finished: fail it and retire the orphaned checkpoint.
-	if s.SwapStatus(taskID, []model.TaskStatus{model.StatusNeedsHuman, model.StatusRunning}, model.StatusFailed) {
-		s.AbandonRequests(taskID)
-		s.releaseRuntimeByID(taskID)
-		s.appendEvent(taskID, "error", "agent stopped while awaiting your answer")
-	}
+	// Queued is excluded so a human re-queue racing this death isn't killed too.
+	s.failFrom(taskID, []model.TaskStatus{model.StatusNeedsHuman, model.StatusRunning}, "agent stopped while awaiting your answer")
 }
 
 // releaseRuntimeByID frees a task's runtime by id, for the agent-exit paths that

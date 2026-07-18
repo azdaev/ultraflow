@@ -109,6 +109,7 @@ func New(svc Service, term *terminal.Manager, staticDir, attachDir string, asset
 	r.POST("/api/projects", s.createProject)
 	r.POST("/api/projects/pick", s.pickProject)
 	r.DELETE("/api/projects/:id", s.deleteProject)
+	r.PATCH("/api/projects/:id/landing", s.setProjectLanding)
 	r.GET("/api/tasks", s.listTasks)
 	r.POST("/api/tasks", s.createTask)
 	r.POST("/api/archive_closed", s.archiveClosed)
@@ -450,6 +451,30 @@ func validateRepoPath(path string) error {
 		return fmt.Errorf("%s isn't a git repo (no .git found)", path)
 	}
 	return nil
+}
+
+// setProjectLanding switches how a project's finished work lands: a local
+// merge, or a pushed branch merged as a GitHub PR. PR mode needs the `gh` CLI,
+// so it can't be enabled on a machine where landing would then always fail.
+func (s *server) setProjectLanding(c *gin.Context) {
+	var req struct {
+		Landing string `json:"landing"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeErr(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Landing == model.LandingPR {
+		if _, err := exec.LookPath("gh"); err != nil {
+			writeErr(c, http.StatusBadRequest, "PR landing needs the GitHub CLI (gh) installed and authenticated")
+			return
+		}
+	}
+	if err := s.svc.SetProjectLanding(c.Param("id"), req.Landing); err != nil {
+		writeErr(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeOK(c)
 }
 
 func (s *server) deleteProject(c *gin.Context) {

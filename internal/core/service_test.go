@@ -840,6 +840,133 @@ func TestMergeTask(t *testing.T) {
 	}
 }
 
+// TestMergeTaskDirtyRepoSetsBlocker covers a merge that can't land because the
+// human's repo holds uncommitted changes to a file the branch touches: the task
+// returns to review carrying a "merge" blocker (the card's current failure),
+// and any revival — here queueing a revision — clears it.
+func TestMergeTaskDirtyRepoSetsBlocker(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"}, {"config", "user.email", "t@t.dev"},
+		{"config", "user.name", "t"}, {"add", "."}, {"commit", "-q", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	svc := newTestService(t)
+	wt := worktree.New(filepath.Join(t.TempDir(), "wt"))
+	svc.UseWorktrees(wt)
+	if _, err := svc.CreateProject("proj", repo); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task, _ := svc.CreateTaskFull("ship it", "", "proj", "claude", "solo")
+	w, err := wt.Create(repo, task.ID)
+	if err != nil {
+		t.Fatalf("worktree create: %v", err)
+	}
+	svc.SetWorktree(task.ID, w.Path)
+	// The branch rewrites notes.txt while the human's checkout has an
+	// uncommitted edit to the same file — git refuses to merge over it.
+	if err := os.WriteFile(filepath.Join(w.Path, "notes.txt"), []byte("branch\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("local edit\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	svc.UpdateStatus(task.ID, model.StatusRunning)
+	if err := svc.CompleteTurn(task.ID, "implemented", "# Report", "merge"); err != nil {
+		t.Fatalf("complete handoff: %v", err)
+	}
+
+	if err := svc.MergeTask(task.ID); err == nil {
+		t.Fatal("expected merge over a dirty repo to fail")
+	}
+	got, _ := svc.GetTask(task.ID)
+	if got.Status != model.StatusReview {
+		t.Fatalf("status = %s; want review", got.Status)
+	}
+	if got.Blocker == nil || got.Blocker.Kind != "merge" {
+		t.Fatalf("blocker = %+v; want kind \"merge\"", got.Blocker)
+	}
+	if !svc.QueueRevision(task.ID) {
+		t.Fatal("blocked review should still queue for revision")
+	}
+	if got, _ = svc.GetTask(task.ID); got.Blocker != nil {
+		t.Fatalf("queueing a revision must clear the blocker, got %+v", got.Blocker)
+	}
+}
+
+// TestMergeTaskPRLanding covers the PR landing mode's routing: a project
+// switched to "pr" never merges into the local checkout — here, with no origin
+// to push to, the landing fails and the task parks in review with a "merge"
+// blocker while the repo's checkout stays untouched. Also guards the landing
+// value validation.
+func TestMergeTaskPRLanding(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"}, {"config", "user.email", "t@t.dev"},
+		{"config", "user.name", "t"}, {"commit", "--allow-empty", "-q", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	svc := newTestService(t)
+	wt := worktree.New(filepath.Join(t.TempDir(), "wt"))
+	svc.UseWorktrees(wt)
+	p, err := svc.CreateProject("proj", repo)
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := svc.SetProjectLanding(p.ID, "nonsense"); err == nil {
+		t.Fatal("expected an unknown landing value to be rejected")
+	}
+	if err := svc.SetProjectLanding(p.ID, model.LandingPR); err != nil {
+		t.Fatalf("set landing: %v", err)
+	}
+
+	task, _ := svc.CreateTaskFull("ship it", "", "proj", "claude", "solo")
+	w, err := wt.Create(repo, task.ID)
+	if err != nil {
+		t.Fatalf("worktree create: %v", err)
+	}
+	svc.SetWorktree(task.ID, w.Path)
+	if err := os.WriteFile(filepath.Join(w.Path, "shipped.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	svc.UpdateStatus(task.ID, model.StatusRunning)
+	if err := svc.CompleteTurn(task.ID, "implemented", "# Report", "merge"); err != nil {
+		t.Fatalf("complete handoff: %v", err)
+	}
+
+	if err := svc.MergeTask(task.ID); err == nil {
+		t.Fatal("expected PR landing without a remote to fail")
+	}
+	got, _ := svc.GetTask(task.ID)
+	if got.Status != model.StatusReview {
+		t.Fatalf("status = %s; want review", got.Status)
+	}
+	if got.Blocker == nil || got.Blocker.Kind != "merge" {
+		t.Fatalf("blocker = %+v; want kind \"merge\"", got.Blocker)
+	}
+	// PR mode's core promise: the human's checkout was never touched.
+	if _, err := os.Stat(filepath.Join(repo, "shipped.txt")); !os.IsNotExist(err) {
+		t.Fatal("PR landing must not write into the local checkout")
+	}
+}
+
 // TestMergeTaskRejectsNonReview guards the precondition: only a reviewed task
 // can be merged.
 func TestMergeTaskRejectsNonReview(t *testing.T) {

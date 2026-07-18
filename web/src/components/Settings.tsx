@@ -168,6 +168,18 @@ export function Settings({ open, onClose, projects }: Props) {
     }
   }
 
+  // setLanding switches where the project's finished work lands (local merge vs
+  // GitHub PR). The change arrives back over SSE (project_updated).
+  async function setLanding(p: Project, landing: "local" | "pr") {
+    if (p.landing === landing) return;
+    setErr(null);
+    try {
+      await api.setProjectLanding(p.id, landing);
+    } catch (e) {
+      setErr(errMsg(e, "couldn't switch how this project lands"));
+    }
+  }
+
   return (
     <Modal open={open} onClose={onClose} title="Settings" className="max-w-lg">
         {/* parallel agents */}
@@ -270,6 +282,27 @@ export function Settings({ open, onClose, projects }: Props) {
                 <div className="truncate font-mono text-[11px] text-muted">
                   {p.repoPath}
                 </div>
+              </div>
+              {/* landing mode: where accepted work goes */}
+              <div className="flex shrink-0 overflow-hidden rounded-md border border-hairline text-[11px] font-medium">
+                {(["local", "pr"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setLanding(p, mode)}
+                    title={
+                      mode === "local"
+                        ? "Merge into your checked-out branch — code on disk immediately"
+                        : "Push the branch and merge a GitHub PR — your checkout is never touched"
+                    }
+                    className={
+                      (p.landing ?? "local") === mode
+                        ? "bg-ink px-2 py-1 text-board"
+                        : "px-2 py-1 text-muted transition hover:bg-surface hover:text-ink"
+                    }
+                  >
+                    {mode === "local" ? "Local" : "PR"}
+                  </button>
+                ))}
               </div>
               <button
                 onClick={() => remove(p)}

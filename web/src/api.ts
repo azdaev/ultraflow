@@ -16,6 +16,10 @@ export interface Project {
   name: string;
   repoPath: string;
   color: string;
+  // How finished work lands: "local" merges into your checked-out branch (code
+  // on disk immediately), "pr" pushes the branch and merges a GitHub PR (your
+  // checkout is never touched; pull when you want it).
+  landing: "local" | "pr";
   createdAt: string;
 }
 
@@ -41,8 +45,17 @@ export interface Task {
   attempt: number;
   maxAttempts: number;
   port: number; // dev-server port reserved for this task (0 = none)
+  // Why the task is parked waiting on you right now, absent when nothing is.
+  // This — not the event log, which is history — is what failure UI renders,
+  // so a resolved error can't linger as current. kind: "error" | "merge".
+  blocker?: Blocker | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface Blocker {
+  kind: string;
+  detail: string;
 }
 
 export interface HumanRequest {
@@ -313,6 +326,16 @@ export const api = {
     fetch(`/api/projects/${id}`, { method: "DELETE" }).then((r) =>
       json<{ status: string }>(r),
     ),
+
+  // setProjectLanding switches how the project's finished work lands: "local"
+  // merges into your checked-out branch, "pr" pushes the branch and merges a
+  // GitHub PR without touching your checkout.
+  setProjectLanding: (id: string, landing: "local" | "pr") =>
+    fetch(`/api/projects/${id}/landing`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ landing }),
+    }).then((r) => json<{ status: string }>(r)),
 
   // settings returns the daemon-wide preferences the board can edit (currently
   // just the parallel-agent limit and its allowed range).

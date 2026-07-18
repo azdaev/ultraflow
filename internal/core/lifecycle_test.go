@@ -42,4 +42,13 @@ func TestTaskLifecycleModule(t *testing.T) {
 	if got.Status != model.StatusFailed {
 		t.Fatalf("status = %s; want failed", got.Status)
 	}
+	if got.Blocker == nil || got.Blocker.Kind != "error" || got.Blocker.Detail != "launch failed" {
+		t.Fatalf("failed task should carry its reason as the blocker, got %+v", got.Blocker)
+	}
+	if err := svc.RetryTask(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = svc.GetTask(task.ID); got.Blocker != nil {
+		t.Fatalf("re-queueing must clear the blocker, got %+v", got.Blocker)
+	}
 }

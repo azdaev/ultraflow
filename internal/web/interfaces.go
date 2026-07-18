@@ -41,6 +41,7 @@ type Service interface {
 	ListProjects() ([]model.Project, error)
 	CreateProject(name, repoPath string) (model.Project, error)
 	DeleteProject(id string) error
+	SetProjectLanding(id, landing string) error
 
 	// Settings
 	GetMaxConcurrent() (n int, ok bool, err error)

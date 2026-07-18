@@ -22,7 +22,7 @@ export const emptyBoardProjection: BoardProjection = {
   tasks: [], requests: [], activity: {}, activityKind: {}, projects: [], runs: {}, context: {}, contextCap: 0, models: {}, paused: false,
 };
 
-type TaskPatch = { taskId: string } & Partial<Pick<Task, "status" | "updatedAt" | "worktree" | "outcome" | "handoff" | "attempt" | "port" | "title" | "body">>;
+type TaskPatch = { taskId: string } & Partial<Pick<Task, "status" | "updatedAt" | "worktree" | "outcome" | "handoff" | "attempt" | "port" | "title" | "body" | "blocker">>;
 
 export type BoardEvent =
   | { kind: "snapshot"; data: BoardSnapshot }
@@ -31,6 +31,7 @@ export type BoardEvent =
   | { kind: "task_deleted"; data: { id: string } }
   | { kind: "project_created"; data: Project }
   | { kind: "project_deleted"; data: { id: string } }
+  | { kind: "project_updated"; data: { id: string } & Partial<Project> }
   | { kind: "human_request"; data: HumanRequest }
   | { kind: "human_answered" | "human_cancelled"; data: { id?: string; taskId?: string } }
   | { kind: "event"; data: { taskId: string; kind: string; data: string } }
@@ -43,7 +44,7 @@ export type BoardEvent =
 export function decodeBoardEvent(value: unknown): BoardEvent | null {
   if (!value || typeof value !== "object" || !("kind" in value) || !("data" in value)) return null;
   const event = value as { kind: string; data: unknown };
-  const known = new Set(["task_created", "task_updated", "task_deleted", "project_created", "project_deleted", "human_request", "human_answered", "human_cancelled", "event", "run_updated", "context", "model", "paused", "settings"]);
+  const known = new Set(["task_created", "task_updated", "task_deleted", "project_created", "project_deleted", "project_updated", "human_request", "human_answered", "human_cancelled", "event", "run_updated", "context", "model", "paused", "settings"]);
   return known.has(event.kind) ? event as BoardEvent : null;
 }
 
@@ -60,6 +61,7 @@ export function reduceBoardEvent(state: BoardProjection, event: BoardEvent): Boa
     case "task_deleted": { const id = event.data.id; return { ...state, tasks:state.tasks.filter(t => t.id !== id), requests:state.requests.filter(r => r.taskId !== id), runs:withoutKey(state.runs, id), activity:withoutKey(state.activity, id), activityKind:withoutKey(state.activityKind, id), context:withoutKey(state.context, id), models:withoutKey(state.models, id) }; }
     case "project_created": return state.projects.some(p => p.id === event.data.id) ? state : { ...state, projects:[...state.projects, event.data] };
     case "project_deleted": return { ...state, projects:state.projects.filter(p => p.id !== event.data.id) };
+    case "project_updated": return { ...state, projects:state.projects.map(p => p.id === event.data.id ? { ...p, ...event.data } : p) };
     case "human_request": return state.requests.some(r => r.id === event.data.id) ? state : { ...state, requests:[...state.requests, event.data] };
     case "human_answered": return { ...state, requests:state.requests.filter(r => r.id !== event.data.id) };
     case "human_cancelled": return { ...state, requests:state.requests.filter(r => event.data.id ? r.id !== event.data.id : r.taskId !== event.data.taskId) };

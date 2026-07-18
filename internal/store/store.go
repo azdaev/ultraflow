@@ -60,6 +60,8 @@ var migrations = []string{
 	outcomeSchema,      // migration 9: tasks.outcome (declared task result)
 	handoffSchema,      // migration 10: explicit report handoff guards review
 	feedbackSchema,     // migration 11: feedback (quick human feedback notes)
+	blockerSchema,      // migration 12: tasks.blocker_kind/_detail (current parked reason)
+	landingSchema,      // migration 13: projects.landing (local merge vs remote PR)
 }
 
 // migrate applies every migration newer than the DB's user_version in a single
@@ -244,6 +246,21 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 `
 
+// blockerSchema (migration 12) records why a parked task is currently waiting on
+// the human (model.Blocker). Empty kind = no blocker. Kept as columns rather
+// than derived from the event log so the board's "why it failed" is state that
+// transitions clear, not a query over history that can go stale.
+const blockerSchema = `
+ALTER TABLE tasks ADD COLUMN blocker_kind   TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN blocker_detail TEXT NOT NULL DEFAULT '';
+`
+
+// landingSchema (migration 13) records how a project's finished work lands:
+// "local" merges into the human's checked-out branch, "pr" pushes the branch
+// and merges a GitHub pull request without touching their checkout
+// (model.LandingLocal / LandingPR).
+const landingSchema = `ALTER TABLE projects ADD COLUMN landing TEXT NOT NULL DEFAULT 'local';`
+
 // rowScanner is the read side shared by *sql.Row and *sql.Rows, so one scan
 // function serves both a single-row Get and a multi-row list query.
 type rowScanner interface{ Scan(...any) error }
@@ -397,17 +414,21 @@ func (s *Store) CreateTask(t model.Task) error {
 	return err
 }
 
-const taskCols = `id,title,body,project,agent,flow,status,worktree,outcome,handoff,attempt,max_attempts,port,resume,created_at,updated_at`
+const taskCols = `id,title,body,project,agent,flow,status,worktree,outcome,handoff,attempt,max_attempts,port,resume,blocker_kind,blocker_detail,created_at,updated_at`
 
 func scanTask(sc rowScanner) (model.Task, error) {
 	var t model.Task
 	var status string
 	var handoff int
 	var resume int
-	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Outcome, &handoff, &t.Attempt, &t.MaxAttempts, &t.Port, &resume, &t.CreatedAt, &t.UpdatedAt)
+	var blockerKind, blockerDetail string
+	err := sc.Scan(&t.ID, &t.Title, &t.Body, &t.Project, &t.Agent, &t.Flow, &status, &t.Worktree, &t.Outcome, &handoff, &t.Attempt, &t.MaxAttempts, &t.Port, &resume, &blockerKind, &blockerDetail, &t.CreatedAt, &t.UpdatedAt)
 	t.Status = model.TaskStatus(status)
 	t.Handoff = handoff != 0
 	t.Resume = resume != 0
+	if blockerKind != "" {
+		t.Blocker = &model.Blocker{Kind: blockerKind, Detail: blockerDetail}
+	}
 	return t, err
 }
 
@@ -519,6 +540,20 @@ func (s *Store) SetHandoff(id string, handoff bool) error {
 	return err
 }
 
+// SetBlocker records — or with an empty kind, clears — a task's current blocker,
+// reporting whether the value actually changed so the caller broadcasts only real
+// changes. It doesn't touch updated_at: the status transition it accompanies does.
+func (s *Store) SetBlocker(id, kind, detail string) (bool, error) {
+	res, err := s.db.Exec(
+		`UPDATE tasks SET blocker_kind=?, blocker_detail=? WHERE id=? AND (blocker_kind<>? OR blocker_detail<>?)`,
+		kind, detail, id, kind, detail)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // SetTaskAttempt persists a task's self-heal retry counter and returns the new
 // updated_at so the caller can broadcast it and keep the card's live timer honest.
 func (s *Store) SetTaskAttempt(id string, attempt int) (time.Time, error) {
@@ -584,17 +619,24 @@ func (s *Store) RecoverInFlight() (int64, error) {
 
 func (s *Store) CreateProject(p model.Project) error {
 	_, err := s.db.Exec(
-		`INSERT INTO projects (id,name,repo_path,color,created_at) VALUES (?,?,?,?,?)`,
-		p.ID, p.Name, p.RepoPath, p.Color, p.CreatedAt)
+		`INSERT INTO projects (id,name,repo_path,color,landing,created_at) VALUES (?,?,?,?,?,?)`,
+		p.ID, p.Name, p.RepoPath, p.Color, p.Landing, p.CreatedAt)
 	return err
 }
 
-const projectCols = `id,name,repo_path,color,created_at`
+const projectCols = `id,name,repo_path,color,landing,created_at`
 
 func scanProject(sc rowScanner) (model.Project, error) {
 	var p model.Project
-	err := sc.Scan(&p.ID, &p.Name, &p.RepoPath, &p.Color, &p.CreatedAt)
+	err := sc.Scan(&p.ID, &p.Name, &p.RepoPath, &p.Color, &p.Landing, &p.CreatedAt)
 	return p, err
+}
+
+// SetProjectLanding switches how a project's finished work lands (see
+// model.Project.Landing). The caller validates the value.
+func (s *Store) SetProjectLanding(id, landing string) error {
+	_, err := s.db.Exec(`UPDATE projects SET landing=? WHERE id=?`, landing, id)
+	return err
 }
 
 func (s *Store) ListProjects() ([]model.Project, error) {

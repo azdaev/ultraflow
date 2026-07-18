@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { api, type HumanRequest, type Task, type TaskEvent } from "../api";
+import { api, type HumanRequest, type Project, type Task, type TaskEvent } from "../api";
 import { agentColor, agentLabel, friendlyModel, ago, flowOf } from "../util";
 import { FlowStepper } from "./FlowStepper";
 import { useRun } from "../runsContext";
@@ -14,6 +14,7 @@ import { useBodyScrollLock } from "../useBodyScrollLock";
 
 interface Props {
   task: Task | null;
+  project?: Project; // the task's project, for its landing mode (merge vs PR)
   request?: HumanRequest;
   activitySig?: string; // changes when a new event lands → re-fetch thread
   model?: string; // real model the agent ran (e.g. "claude-opus-4-8"), if detected
@@ -25,7 +26,7 @@ interface Props {
 // TaskDetail is a large, near-fullscreen modal: the live terminal takes most of
 // the space (that IS the activity view — no duplicated tool-by-tool thread), with
 // task details and the decision panel in a side rail.
-export function TaskDetail({ task, request, activitySig, model, paused, now, onClose }: Props) {
+export function TaskDetail({ task, project, request, activitySig, model, paused, now, onClose }: Props) {
   const run = useRun(task?.id ?? "");
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const termRef = useRef<AgentTerminalHandle>(null);
@@ -59,9 +60,9 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
   // terminal. A question task has a report but no worktree; a code task may have
   // either or both. Excludes a merged `done` task torn down with no report.
   const showReview = (canRevise || atGate) && (!!task?.worktree || !!report);
-  // We only surface errors now — the terminal shows tool activity live, so the
-  // old event thread was redundant. Errors matter for a failed card (no terminal).
-  const errors = events.filter((e) => e.kind === "error");
+  // Failures render from task.blocker (current state), never from the event log
+  // (history) — an old error would otherwise linger as "why it failed" long
+  // after a later turn resolved it.
 
   useEffect(() => {
     if (!taskId) return;
@@ -287,7 +288,7 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
                 {task.status === "review" && task.handoff && (
                   <div className="mb-5 rounded-xl border border-hairline bg-board p-4">
                     <h3 className="eyebrow mb-2 text-ink">Accept the work</h3>
-                    <AcceptAction task={task} />
+                    <AcceptAction task={task} landing={project?.landing} />
                   </div>
                 )}
 
@@ -306,17 +307,16 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
 
                 {canRevise && <ReviseBox taskId={task.id} />}
 
-                {errors.length > 0 && (
+                {task.blocker && (
                   <div className="mb-5 rounded-xl border border-rust/40 bg-board p-4">
-                    <h3 className="eyebrow mb-2 text-rust">Why it failed</h3>
-                    {errors.map((e) => (
-                      <p
-                        key={e.id}
-                        className="font-mono text-[12px] leading-relaxed text-rust"
-                      >
-                        {e.data}
-                      </p>
-                    ))}
+                    <h3 className="eyebrow mb-2 text-rust">
+                      {task.blocker.kind === "merge"
+                        ? "Merge blocked"
+                        : "Why it failed"}
+                    </h3>
+                    <p className="font-mono text-[12px] leading-relaxed text-rust">
+                      {task.blocker.detail}
+                    </p>
                   </div>
                 )}
 

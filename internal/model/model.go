@@ -18,6 +18,16 @@ const (
 	StatusCancelled  TaskStatus = "cancelled"
 )
 
+// How a project's finished work lands (Project.Landing). Local merges into the
+// checked-out branch of the human's repo — the result is on disk immediately,
+// but landing must touch their checkout. PR pushes the branch and merges a
+// GitHub pull request — the checkout is never touched, the remote is the source
+// of truth, and the human pulls when they want it.
+const (
+	LandingLocal = "local"
+	LandingPR    = "pr"
+)
+
 // Project is a registered codebase an agent works in: a name plus the local git
 // repo path that is the root for its tasks' worktrees. Color is a stable board
 // hue assigned at creation (distinct from the reserved status colors).
@@ -26,7 +36,18 @@ type Project struct {
 	Name      string    `json:"name"`
 	RepoPath  string    `json:"repoPath"`
 	Color     string    `json:"color"`
+	Landing   string    `json:"landing"` // LandingLocal | LandingPR
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+// Blocker is the one thing currently stopping a task and waiting on the human.
+// It is state, not history: transitions that put the task back in motion clear
+// it, so — unlike the event log — a resolved failure can never resurface as the
+// card's "why it failed". Kind is "error" (the agent run failed) or "merge"
+// (the branch couldn't land).
+type Blocker struct {
+	Kind   string `json:"kind"`
+	Detail string `json:"detail"`
 }
 
 // Task is a unit of work an agent runs, shown as a card on the board.
@@ -66,7 +87,11 @@ type Task struct {
 	// conversation via --continue) instead of pruning and starting it over. Set by
 	// store.RecoverInFlight at startup, cleared when the resume launches. A one-shot
 	// recovery signal, not a lifecycle state.
-	Resume    bool      `json:"resume"`
+	Resume bool `json:"resume"`
+	// Blocker is why the task is parked waiting on the human, nil when nothing
+	// is. The single source the board reads for a card's current failure — the
+	// event log stays history only.
+	Blocker   *Blocker  `json:"blocker,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

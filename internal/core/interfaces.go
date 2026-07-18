@@ -32,6 +32,7 @@ type Repo interface {
 	SetWorktree(id, wt string) error
 	SetOutcome(id, outcome string) error
 	SetHandoff(id string, handoff bool) error
+	SetBlocker(id, kind, detail string) (bool, error)
 	SetTaskAttempt(id string, attempt int) (time.Time, error)
 	SetPort(id string, port int) error
 	SetResume(id string, v bool) error
@@ -48,6 +49,7 @@ type Repo interface {
 
 	// Projects
 	CreateProject(p model.Project) error
+	SetProjectLanding(id, landing string) error
 	ListProjects() ([]model.Project, error)
 	ProjectByName(name string) (model.Project, error)
 	ProjectCount() (int, error)

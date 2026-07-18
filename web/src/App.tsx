@@ -72,15 +72,15 @@ export function App() {
     }));
     for (const t of tasks) {
       if (t.status === "failed") {
-        items.push({ type: "failed", task: t, activity: activity[t.id] });
-      } else if (t.status === "review" && activityKind[t.id] === "merge_failed") {
+        items.push({ type: "failed", task: t, activity: t.blocker?.detail || activity[t.id] });
+      } else if (t.status === "review" && t.blocker?.kind === "merge") {
         // A merge that couldn't land returns the card to review; raise it here so
         // it isn't a silent dead-end with only a tiny inline error.
-        items.push({ type: "merge_failed", task: t, message: activity[t.id] });
+        items.push({ type: "merge_failed", task: t, message: t.blocker.detail });
       }
     }
     return items;
-  }, [requests, tasks, byId, activity, activityKind]);
+  }, [requests, tasks, byId, activity]);
 
   // The toolbar's attention badge and its jump target read off this one list — the
   // same set the OS notifications use — so the count can never disagree with what
@@ -156,6 +156,7 @@ export function App() {
       <FeedbackButton />
       <TaskDetail
         task={openTask}
+        project={projects.find((p) => p.name === openTask?.project)}
         request={openRequest}
         activitySig={openTaskId ? activity[openTaskId] : undefined}
         model={openTaskId ? models[openTaskId] : undefined}

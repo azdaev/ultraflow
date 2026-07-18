@@ -137,7 +137,9 @@ export function Card({ task, activity, activityKind, now, contextTokens, context
 
         {task.port > 0 && DEV_LINK_STATUSES.has(status) && <DevServerLink port={task.port} />}
 
-        {isReview && task.handoff && <AcceptAction task={task} note={activity} />}
+        {isReview && task.handoff && (
+          <AcceptAction task={task} note={activity} landing={project?.landing} />
+        )}
         {isReview && !task.handoff && (
           <div className="flex items-start gap-2 rounded-lg border border-amber/30 bg-amber-tint px-2.5 py-2 text-amber">
             <span className="mt-1 size-1.5 shrink-0 rounded-full bg-amber" />

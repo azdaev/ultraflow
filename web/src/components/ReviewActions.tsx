@@ -118,7 +118,15 @@ const OUTCOMES: Record<string, Spec> = {
 // task's declared outcome, falling back — when the agent declared none — to the
 // old rule, but tightened: a worktree whose diff is empty is closed, not merged,
 // so a question answered inside a worktree no longer shows "Merge to main".
-export function AcceptAction({ task, note }: { task: Task; note?: string }) {
+export function AcceptAction({
+  task,
+  note,
+  landing,
+}: {
+  task: Task;
+  note?: string;
+  landing?: "local" | "pr"; // the project's landing mode — "pr" relabels the merge
+}) {
   const declared = OUTCOMES[task.outcome];
   // Legacy task with no declared outcome but a live worktree: we need the diff to
   // decide whether there is anything to land.
@@ -152,13 +160,16 @@ export function AcceptAction({ task, note }: { task: Task; note?: string }) {
     spec = empty ? close("Approve & close", "Finishing…", "no diff") : OUTCOMES.merge;
   }
 
+  // In PR landing mode the merge happens on GitHub, not in the local checkout —
+  // the label must not promise "to main" when the truth is "via a PR".
+  const pr = spec.merge && landing === "pr";
   return (
     <MossAction
       icon={
         spec.merge ? <MergeIcon className="text-white" /> : <CheckIcon className="text-white" />
       }
-      label={spec.label}
-      busyLabel={spec.busyLabel}
+      label={pr ? "Merge via PR" : spec.label}
+      busyLabel={pr ? "Opening PR…" : spec.busyLabel}
       errFallback={spec.errFallback}
       run={() => spec.run(task.id)}
       trailing={

@@ -53,13 +53,21 @@ func (s *Service) FinishForReview(id string) bool {
 // FailExecution is the guarded terminal transition to failed plus its cleanup
 // (retire checkpoints, free the runtime, record the reason).
 func (s *Service) FailExecution(id, reason string) bool {
-	if !s.SwapStatus(id, []model.TaskStatus{model.StatusQueued, model.StatusRunning, model.StatusNeedsHuman}, model.StatusFailed) {
+	return s.failFrom(id, []model.TaskStatus{model.StatusQueued, model.StatusRunning, model.StatusNeedsHuman}, reason)
+}
+
+// failFrom is the one place a task gives up: the guarded swap to failed, its
+// cleanup, and the reason recorded twice on purpose — as an event (history) and
+// as the blocker (the card's current "why it failed", cleared on any revival).
+func (s *Service) failFrom(id string, from []model.TaskStatus, reason string) bool {
+	if !s.SwapStatus(id, from, model.StatusFailed) {
 		return false
 	}
 	s.AbandonRequests(id)
 	s.releaseRuntimeByID(id)
 	if reason != "" {
 		s.appendEvent(id, "error", reason)
+		s.setBlocker(id, "error", reason)
 	}
 	return true
 }
