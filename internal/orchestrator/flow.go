@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"ultraflow/internal/agent"
 	"ultraflow/internal/flow"
@@ -178,9 +179,30 @@ func (o *Orchestrator) openGate(t model.Task, fl flow.Flow, step flow.Step) {
 	}
 	gateContext := fmt.Sprintf("Flow: %s — %s\nApproving continues to the next step (the default). Your answer routes what happens next.",
 		fl.Label, fl.Caption(step.ID))
+	// A completed work step already left a concise result for the human. Carry the
+	// latest one into the gate instead of replacing it with graph mechanics: the
+	// attention card should explain what was achieved before asking for approval.
+	// Legacy/custom gates without a result retain their existing prompt and context.
+	if result := o.latestTaskResult(t.ID); result != "" {
+		q = fmt.Sprintf("Approve the completed work for “%s”?", t.Title)
+		gateContext = fmt.Sprintf("Latest result\n%s\n\nApprove completes this flow and moves the task to final Review; it does not merge the work. Request changes or typed feedback sends it back to Build.", result)
+	}
 	if _, err := o.svc.AskHuman(t.ID, q, step.GateOptions(), gateContext); err != nil {
 		log.Printf("task %s: open gate %s: %v", t.ID, step.ID, err)
 	}
+}
+
+func (o *Orchestrator) latestTaskResult(taskID string) string {
+	events, err := o.svc.TaskEvents(taskID)
+	if err != nil {
+		return ""
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == "result" && strings.TrimSpace(events[i].Data) != "" {
+			return strings.TrimSpace(events[i].Data)
+		}
+	}
+	return ""
 }
 
 // launchWalk resumes walkFlow in the background on a fresh concurrency slot under

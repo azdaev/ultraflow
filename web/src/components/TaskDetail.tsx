@@ -36,6 +36,9 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
   // ask_human is different: that agent idles on a still-live session, so its
   // terminal stays real. `run.gate` is the signal that tells the two apart.
   const atGate = task?.status === "needs_human" && !!run?.gate;
+  const gateResult = atGate
+    ? request?.context.split("\n\n", 1)[0].replace(/^Latest result\s*/i, "").trim()
+    : "";
   const live = task?.status === "running" || (task?.status === "needs_human" && !atGate);
   // Send-back is available whenever the agent has parked the task for a decision.
   const canRevise = task?.status === "review" || task?.status === "failed";
@@ -176,7 +179,7 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
                     <div className="mb-2 flex items-center gap-2">
                       <span className="h-1.5 w-1.5 rounded-full bg-moss" />
                       <h3 className="eyebrow text-muted">
-                        {atGate ? "Ready for your review" : "What the agent did"}
+                        {atGate ? "Result being approved" : "What the agent did"}
                       </h3>
                     </div>
                     <ReviewPanel
@@ -184,6 +187,7 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
                       sig={activitySig}
                       report={report}
                       hasWorktree={!!task.worktree}
+                      reportLabel={atGate ? "Result report" : "Report"}
                     />
                   </>
                 ) : done ? (
@@ -254,9 +258,23 @@ export function TaskDetail({ task, request, activitySig, model, paused, now, onC
                     <p className="text-[15px] font-semibold leading-snug text-ink">
                       {request.question}
                     </p>
-                    <div className="mt-2">
-                      <CheckpointContext request={request} />
-                    </div>
+                    {atGate && gateResult ? (
+                      <div className="mt-3 rounded-lg bg-surface px-3 py-2.5">
+                        <span className="eyebrow mb-1 block text-muted">Latest result</span>
+                        <p className="text-[12.5px] leading-relaxed text-ink/80">{gateResult}</p>
+                      </div>
+                    ) : (
+                      <div className="mt-2">
+                        <CheckpointContext request={request} />
+                      </div>
+                    )}
+                    {atGate && (
+                      <p className="mt-3 rounded-lg border border-hairline bg-surface px-3 py-2 text-[12px] leading-relaxed text-ink/75">
+                        <span className="font-semibold text-ink">What happens next:</span>{" "}
+                        Approve moves this task to final Review without merging it. Request
+                        changes or typed feedback sends it back to Build.
+                      </p>
+                    )}
                     <div className="mt-3">
                       <AnswerBox request={request} />
                     </div>

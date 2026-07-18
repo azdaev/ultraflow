@@ -13,6 +13,7 @@ import (
 	"ultraflow/internal/agent"
 	"ultraflow/internal/core"
 	"ultraflow/internal/devserver"
+	"ultraflow/internal/flow"
 	"ultraflow/internal/model"
 	"ultraflow/internal/port"
 	"ultraflow/internal/terminal"
@@ -276,6 +277,14 @@ func TestFlowWalksSharedWorktreeToGateThenApprove(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("want one gate checkpoint, got %d", len(reqs))
 	}
+	if got, want := reqs[0].Question, "Approve the completed work for “build a thing”?"; got != want {
+		t.Fatalf("gate question = %q, want %q", got, want)
+	}
+	for _, want := range []string{"Latest result", "completed test step", "final Review", "does not merge", "back to Build"} {
+		if !strings.Contains(reqs[0].Context, want) {
+			t.Fatalf("gate context %q missing %q", reqs[0].Context, want)
+		}
+	}
 
 	// Approve → the flow finishes to review.
 	if err := svc.AnswerHuman(reqs[0].ID, "Approve"); err != nil {
@@ -289,6 +298,34 @@ func TestFlowWalksSharedWorktreeToGateThenApprove(t *testing.T) {
 	// gate finishes; it doesn't loop back into the graph).
 	if n := len(fake.turns()); n != 3 {
 		t.Fatalf("approve should not run another step; turns=%d", n)
+	}
+}
+
+// TestOpenGateWithoutResultKeepsConfiguredCopy covers custom/legacy flows that
+// reached a gate without a finish_task result in their history. They keep their
+// configured question and generic flow context instead of showing an empty brief.
+func TestOpenGateWithoutResultKeepsConfiguredCopy(t *testing.T) {
+	svc := newTestSvc(t)
+	task, err := svc.CreateTaskFull("legacy task", "", "", "claude", "solo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := &Orchestrator{svc: svc}
+	fl := flow.Flow{
+		Key: "legacy", Label: "Legacy", Start: "gate",
+		Steps: []flow.Step{{ID: "gate", Role: "gate", Gate: true, Prompt: "Use the configured question?"}},
+	}
+	o.openGate(task, fl, fl.Steps[0])
+
+	reqs, err := svc.PendingRequests()
+	if err != nil || len(reqs) != 1 {
+		t.Fatalf("pending requests = %v, %v; want one", reqs, err)
+	}
+	if reqs[0].Question != "Use the configured question?" {
+		t.Fatalf("question = %q; want configured fallback", reqs[0].Question)
+	}
+	if !strings.Contains(reqs[0].Context, "Flow: Legacy") || strings.Contains(reqs[0].Context, "Latest result") {
+		t.Fatalf("context = %q; want generic legacy context", reqs[0].Context)
 	}
 }
 

@@ -1,6 +1,9 @@
 package flow
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestResolveDefaultsToSolo(t *testing.T) {
 	if got := Resolve("").Key; got != "solo" {
@@ -139,6 +142,21 @@ func TestGateOptions(t *testing.T) {
 	opts := gate.GateOptions()
 	if len(opts) != 2 || opts[0] != "Approve" || opts[1] != "Request changes" {
 		t.Fatalf("gate options: got %v", opts)
+	}
+}
+
+func TestCriticPromptRequiresHumanFacingGateBrief(t *testing.T) {
+	for _, want := range []string{
+		"whether the reported problem was reproduced or otherwise confirmed",
+		"root cause",
+		"work actually performed",
+		"how the result was verified",
+		"remaining caveats",
+		"plain product language",
+	} {
+		if !strings.Contains(criticPrompt, want) {
+			t.Fatalf("critic prompt missing %q", want)
+		}
 	}
 }
 
